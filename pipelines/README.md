@@ -1,77 +1,65 @@
 # pipelines/ — Phase 2 (ingestion)
 
-Placeholder. Phase 2 builds scheduled pulls from Zoho CRM, D-Tools Cloud, and
-QuickBooks Online into the `raw_*` datasets, following the same GitHub Actions
-pattern as Intel Engine: one workflow per source, cron-scheduled, manually
-triggerable.
+Scheduled pulls from Zoho CRM, D-Tools Cloud, and QuickBooks Online into the
+`raw_*` datasets. One GitHub Actions workflow per source
+(`.github/workflows/ingest-*.yml`): cron-scheduled (06:00/06:20/06:40 UTC),
+manually triggerable via `workflow_dispatch`, one `concurrency` group per
+source+client so runs never overlap.
 
-## Design (settled now so Phase 2 starts from decisions, not debates)
+## How a run works
 
-- **One workflow per source** (`zoho.yml`, `dtools.yml`, `qbo.yml`), each with
-  `schedule:` cron + `workflow_dispatch:` for manual runs, and a
-  `concurrency:` group per source so runs never overlap.
-- **Auth to GCP: Workload Identity Federation, never key files.** The workflow
-  exchanges its GitHub OIDC token for `ingest-writer` credentials via
-  `google-github-actions/auth@v2`.
-- **Source-system credentials** (Zoho/D-Tools/QBO OAuth tokens) live in GitHub
-  Environment secrets. The one-time OAuth consent clicks are a human step —
-  credential grants stay with Henry.
-- **Load pattern:** append-only landing tables in `raw_*`, one per source
-  entity, with `_loaded_at` timestamps. Dedup/latest-record logic belongs in
-  `staging` (Phase 3), not in the loader.
+1. **Auth to GCP:** Workload Identity Federation — the workflow's GitHub OIDC
+   token is exchanged for `ingest-writer` credentials
+   (`google-github-actions/auth@v2`). No key files anywhere.
+2. **Source credentials:** read at runtime from **Secret Manager in the
+   client's project** (`flywheel-*` secrets). GitHub holds no client secrets
+   — only two non-sensitive repo *variables* (`WIF_PROVIDER`,
+   `WIF_SERVICE_ACCOUNT`). Setup: `scripts/05-ingestion-infra.sh`, then
+   [docs/phase-2-credentials.md](../docs/phase-2-credentials.md).
+3. **Load pattern:** append-only landing tables, one per source entity, full
+   record as a JSON `payload` column plus `_source_id`, `_modified_at`,
+   `_loaded_at`, `_run_id`. Partitioned on `_loaded_at`, clustered on
+   `_source_id`. Dedup/latest-record logic belongs in `staging` (Phase 3).
+4. **Incremental:** per-entity watermarks in `raw_<source>._flywheel_state`
+   (append-only; latest row wins). Zoho uses `If-Modified-Since`; QBO filters
+   on `MetaData.LastUpdatedTime`; D-Tools full-pulls every run (small data).
+   `--full-refresh` ignores watermarks.
 
-## One-time WIF setup (run in Phase 2, per client)
+## Sharp edges handled
+
+- **QBO rotates refresh tokens.** Each refresh can return a new token and
+  kill the old one. `qbo/ingest.py` writes the new token back to Secret
+  Manager immediately (`ingest-writer` has `secretVersionAdder` on that one
+  secret). This is why credentials live in Secret Manager, not GitHub.
+- **Zoho data centers.** The token endpoint depends on the tenant's region
+  (`ZOHO_ACCOUNTS_HOST`, default `accounts.zoho.com`); record calls follow
+  the `api_domain` the token response returns.
+- **D-Tools endpoints are VERIFY-on-first-run.** Paths/pagination in
+  `lib/sources.py` are best-effort; the fetcher is generic, so a wrong path
+  is a one-line fix in `sources.py`.
+
+## Layout
+
+```
+lib/util.py       pure helpers (env parsing, row building, watermarks) — stdlib only
+lib/config.py     loads clients/<slug>/client.env; per-client source enablement
+lib/sources.py    per-source settings: entities, fields, pagination
+lib/bq.py         landing tables, loads, watermark state   (imports google-cloud-bigquery)
+lib/secret_store.py  Secret Manager read/write             (imports google-cloud-secret-manager)
+lib/web.py        requests session with retry/backoff
+lib/runner.py     shared run scaffolding (args, logging, land+watermark)
+zoho/ dtools/ qbo/   one ingest.py per source
+tests/            stdlib-only unit tests (run in CI without pip installs)
+```
+
+## Running locally
 
 ```sh
-PROJECT=livewire-dw
-REPO=<github-org>/flywheel-warehouse    # set to this repo's actual org/name
-
-gcloud iam workload-identity-pools create flywheel-github \
-  --project="$PROJECT" --location=global \
-  --display-name="Flywheel GitHub Actions"
-
-gcloud iam workload-identity-pools providers create-oidc github \
-  --project="$PROJECT" --location=global \
-  --workload-identity-pool=flywheel-github \
-  --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition="assertion.repository == '$REPO'"
-
-POOL_ID=$(gcloud iam workload-identity-pools describe flywheel-github \
-  --project="$PROJECT" --location=global --format='value(name)')
-
-gcloud iam service-accounts add-iam-policy-binding \
-  "ingest-writer@$PROJECT.iam.gserviceaccount.com" \
-  --project="$PROJECT" \
-  --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/$POOL_ID/attribute.repository/$REPO"
+pip install -r pipelines/requirements.txt
+gcloud auth application-default login   # or impersonate ingest-writer
+python -m pipelines.zoho.ingest --client livewire --dry-run   # plan only
+python -m pipelines.zoho.ingest --client livewire --limit 25  # smoke run
 ```
 
-## Example workflow shape (commented until Phase 2)
-
-```yaml
-# name: ingest-zoho
-# on:
-#   schedule:
-#     - cron: "0 6 * * *"        # daily 06:00 UTC
-#   workflow_dispatch:
-# concurrency:
-#   group: ingest-zoho
-#   cancel-in-progress: false
-# permissions:
-#   contents: read
-#   id-token: write              # required for WIF
-# jobs:
-#   ingest:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: google-github-actions/auth@v2
-#         with:
-#           workload_identity_provider: projects/<num>/locations/global/workloadIdentityPools/flywheel-github/providers/github
-#           service_account: ingest-writer@livewire-dw.iam.gserviceaccount.com
-#       - name: Pull from Zoho → raw_zoho
-#         env:
-#           ZOHO_REFRESH_TOKEN: ${{ secrets.ZOHO_REFRESH_TOKEN }}
-#         run: python pipelines/zoho/ingest.py --client livewire
-```
+A client without a given source simply omits `raw_<source>` from
+`DATASETS_RAW` — the pipeline exits 0 with "source disabled".
