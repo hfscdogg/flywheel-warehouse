@@ -123,8 +123,9 @@ load_client() {
   # word-split at call sites: run $BQ show ...
   BQ="bq --headless=true --project_id=$GCP_PROJECT_ID"
 
-  # bq mk wants repeated '--label k=v'; bq update wants '--set_label k:v'.
-  BQ_MK_LABELS="--label managed-by=$LABEL_MANAGED_BY --label client=$CLIENT_SLUG --label env=$LABEL_ENV"
+  # bq mk and bq update both want colon form here: mk uses repeated
+  # '--label k:v' (verified against bq 2.1.36); update uses '--set_label k:v'.
+  BQ_MK_LABELS="--label managed-by:$LABEL_MANAGED_BY --label client:$CLIENT_SLUG --label env:$LABEL_ENV"
   BQ_UPDATE_LABELS="--set_label managed-by:$LABEL_MANAGED_BY --set_label client:$CLIENT_SLUG --set_label env:$LABEL_ENV"
 
   export CLOUDSDK_CORE_DISABLE_PROMPTS=1

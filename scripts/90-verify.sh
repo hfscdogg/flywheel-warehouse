@@ -65,17 +65,24 @@ for email in "$SA_HERMES_READER_EMAIL" "$SA_INGEST_WRITER_EMAIL"; do
   fi
 done
 
-# 3. Policy assertions
-MARTS_POLICY="$($BQ get-iam-policy --format=prettyjson "$GCP_PROJECT_ID:$DATASET_MARTS" 2>/dev/null || true)"
-if printf '%s' "$MARTS_POLICY" | grep -q "$SA_HERMES_READER_EMAIL"; then
+# 3. Policy assertions — read the dataset access array via 'bq show'.
+# ('bq get-iam-policy' on a DATASET needs Google allowlisting and errors out,
+# which || true would swallow — making the positive check false-FAIL and the
+# negative checks vacuous. 03-iam.sh writes access entries; read the same.)
+MARTS_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$DATASET_MARTS" 2>/dev/null || true)"
+if [ -z "$MARTS_ACCESS" ]; then
+  record FAIL "policy: could not read access on $DATASET_MARTS"
+elif printf '%s' "$MARTS_ACCESS" | grep -q "$SA_HERMES_READER_EMAIL"; then
   record PASS "policy: hermes-reader bound on $DATASET_MARTS"
 else
   record FAIL "policy: hermes-reader NOT bound on $DATASET_MARTS"
 fi
 
 for ds in $DATASETS_RAW $DATASET_STAGING; do
-  DS_POLICY="$($BQ get-iam-policy --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null || true)"
-  if printf '%s' "$DS_POLICY" | grep -q "$SA_HERMES_READER_EMAIL"; then
+  DS_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null || true)"
+  if [ -z "$DS_ACCESS" ]; then
+    record FAIL "policy: could not read access on $ds"
+  elif printf '%s' "$DS_ACCESS" | grep -q "$SA_HERMES_READER_EMAIL"; then
     record FAIL "policy: hermes-reader UNEXPECTEDLY bound on $ds"
   else
     record PASS "policy: hermes-reader has no grant on $ds"

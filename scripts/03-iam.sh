@@ -19,7 +19,54 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 [ $# -ge 1 ] || usage_and_exit "$0"
 load_client "$1"
-require_cmd gcloud bq
+require_cmd gcloud bq python3
+
+# grant_dataset_role <sa-email> <role> <dataset>
+# Dataset-level grants via dataset access entries (bq show → append → bq
+# update --source). 'bq add-iam-policy-binding' on a DATASET needs Google
+# allowlisting; access entries are the GA mechanism for the same grant.
+# Check-then-converge: no-op when the entry already exists.
+grant_dataset_role() {
+  ds_email="$1"; ds_role="$2"; ds_name="$3"
+  if is_dry_run; then
+    log "[dry-run] bq update --source <access+={\"role\":\"$ds_role\",\"userByEmail\":\"$ds_email\"}> $GCP_PROJECT_ID:$ds_name"
+    return 0
+  fi
+  ds_tmp="$(mktemp)"
+  $BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds_name" > "$ds_tmp"
+  if DS_EMAIL="$ds_email" DS_ROLE="$ds_role" python3 - "$ds_tmp" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+email, role = os.environ["DS_EMAIL"], os.environ["DS_ROLE"]
+# BigQuery stores premium role strings as legacy names in the access array.
+LEGACY = {"roles/bigquery.dataViewer": "READER",
+          "roles/bigquery.dataEditor": "WRITER",
+          "roles/bigquery.dataOwner": "OWNER"}
+wanted = {role, LEGACY.get(role, role)}
+with open(path) as f:
+    ds = json.load(f)
+access = ds.get("access", [])
+if any(e.get("userByEmail") == email and e.get("role") in wanted for e in access):
+    sys.exit(3)  # already present — converged
+access.append({"role": role, "userByEmail": email})
+with open(path, "w") as f:
+    json.dump({"access": access}, f)
+sys.exit(0)
+PYEOF
+  then
+    run $BQ update --source "$ds_tmp" "$GCP_PROJECT_ID:$ds_name"
+    log "  granted $ds_role to $ds_email on $ds_name"
+  else
+    rc=$?
+    if [ "$rc" -eq 3 ]; then
+      log "  $ds_email already has $ds_role on $ds_name — converging"
+    else
+      rm -f "$ds_tmp"
+      die "failed to compute access entries for $GCP_PROJECT_ID:$ds_name"
+    fi
+  fi
+  rm -f "$ds_tmp"
+}
 
 info "IAM bindings for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
 
@@ -29,9 +76,7 @@ run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
   --role=roles/bigquery.jobUser --condition=None --format=none --quiet
 
 info "hermes-reader: read access on $DATASET_MARTS ONLY"
-run $BQ add-iam-policy-binding \
-  --member="serviceAccount:$SA_HERMES_READER_EMAIL" \
-  --role=roles/bigquery.dataViewer "$GCP_PROJECT_ID:$DATASET_MARTS"
+grant_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
 
 info "ingest-writer: query jobs at project level"
 run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
@@ -40,9 +85,7 @@ run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
 
 info "ingest-writer: dataset-level write access (not project-level)"
 for ds in $ALL_DATASETS; do
-  run $BQ add-iam-policy-binding \
-    --member="serviceAccount:$SA_INGEST_WRITER_EMAIL" \
-    --role=roles/bigquery.dataEditor "$GCP_PROJECT_ID:$ds"
+  grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
 done
 
 # Project Owner does NOT include token creation. This is what lets ADMIN_USER
