@@ -1,0 +1,11 @@
+# Credentials must never land in this repo. Keys (if ever minted) live in
+# ~/.flywheel/keys/<client>/ — see scripts/04-agent-key.sh.
+keys/
+*-key.json
+hermes-reader.json
+ingest-writer.json
+.env.local
+
+# Tooling detritus
+.bigqueryrc
+.DS_Store
