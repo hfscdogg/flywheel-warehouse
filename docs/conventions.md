@@ -45,7 +45,8 @@ client-slug validation in `scripts/lib/common.sh` guarantees compliance.
 - Numbered in run order: `00–09` preflight/read-only, `01–49` create/converge,
   `90–98` verify, `99` teardown.
 - Bash, `set -euo pipefail`, bash-3.2 compatible (macOS default shell — no
-  associative arrays, no `mapfile`).
+  associative arrays, no `mapfile`). `03-iam.sh` additionally requires
+  `python3` (JSON handling for dataset access entries).
 - Client slug is always required positional argument #1.
 - Every `gcloud` call passes `--project`; every `bq` call passes
   `--project_id` and `--headless=true`. Never rely on `gcloud config`.
@@ -54,9 +55,18 @@ client-slug validation in `scripts/lib/common.sh` guarantees compliance.
 - `DRY_RUN=1` prints the full command plan without executing or requiring the
   SDK.
 
-## bq flag asymmetries worth remembering
+## bq sharp edges worth remembering
 
-- `bq mk` labels: repeated `--label key=value` (equals sign)
-- `bq update` labels: repeated `--set_label key:value` (colon)
+- Labels use colon form in both places: `bq mk` takes repeated
+  `--label key:value` and `bq update` takes repeated `--set_label key:value`
+  (verified against bq 2.1.36, which rejects `--label key=value`).
 - `bq mk` on an existing dataset exits 1; `bq mk --force` exits 0 but silently
-  skips (which is why we don't use it)
+  skips (which is why we don't use it).
+- `bq add-iam-policy-binding` / `bq get-iam-policy` on a **dataset** require
+  Google allowlisting ("This feature requires allowlisting"). Dataset-level
+  grants therefore go through **access entries** instead: `bq show` the
+  dataset JSON, append to the `access` array, `bq update --source` — see
+  `grant_dataset_role` in `scripts/03-iam.sh`. BigQuery normalizes premium
+  roles to legacy names in that array (`dataViewer`→`READER`,
+  `dataEditor`→`WRITER`, `dataOwner`→`OWNER`), so converge checks must accept
+  both forms. Reads (verification) use `bq show` on the same array.

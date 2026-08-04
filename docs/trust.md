@@ -16,12 +16,16 @@ permissions:
 | `roles/bigquery.dataViewer` | the `marts` dataset only | read KPI tables |
 | `roles/bigquery.jobUser` | project | run the queries that read them |
 
-That's the entire grant. You can verify it yourself at any time:
+That's the entire grant. You can verify it yourself at any time by reading
+each dataset's access list:
 
 ```sh
-bq get-iam-policy <your-project>:marts       # hermes-reader appears here…
-bq get-iam-policy <your-project>:raw_zoho    # …and nowhere else
+bq show --format=prettyjson <your-project>:marts      # hermes-reader appears in "access"…
+bq show --format=prettyjson <your-project>:raw_zoho   # …and nowhere else
 ```
+
+(BigQuery displays the read grant under its legacy name `READER` in that
+list — same permission, older label.)
 
 ## What they cannot see
 
