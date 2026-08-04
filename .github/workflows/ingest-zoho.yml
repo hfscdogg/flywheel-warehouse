@@ -1,0 +1,41 @@
+name: ingest-zoho
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      full_refresh:
+        description: Ignore watermarks and pull everything
+        type: boolean
+        default: false
+
+concurrency:
+  group: ingest-zoho-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipelines/requirements.txt
+      - name: Ingest Zoho CRM → raw_zoho
+        run: >
+          python -m pipelines.zoho.ingest
+          --client "${{ inputs.client || 'livewire' }}"
+          ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
