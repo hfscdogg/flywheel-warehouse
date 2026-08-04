@@ -26,7 +26,7 @@ One GCP project per client. The project is the namespace, so dataset names stay 
 |-------|------|--------|
 | 0 | GCP project, billing, APIs (human, ~30 min) | ✅ done for Livewire — [docs/phase-0-checklist.md](docs/phase-0-checklist.md) |
 | 1 | Warehouse scaffold: datasets, IAM, scoped read-only service account | ✅ this repo — [scripts/](scripts/) |
-| 2 | Ingestion: scheduled pulls from Zoho / D-Tools / QBO | 🔜 [pipelines/](pipelines/README.md) |
+| 2 | Ingestion: scheduled pulls from Zoho / D-Tools / QBO | ✅ built — awaiting credential load, [docs/phase-2-credentials.md](docs/phase-2-credentials.md) |
 | 3 | Staging + KPI mart SQL | 🔜 [sql/](sql/) |
 | 4 | Agent goal cards | 🔜 [goal-cards/](goal-cards/README.md) |
 | 5 | Productization: trust doc + onboarding runbook | drafted — [docs/trust.md](docs/trust.md), [docs/runbook-new-client.md](docs/runbook-new-client.md) |

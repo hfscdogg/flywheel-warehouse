@@ -45,6 +45,12 @@ No long-lived key files by default. The agents authenticate by **impersonating**
 rotate. A downloadable key is created only if an agent runtime genuinely cannot
 impersonate, and then `scripts/04-agent-key.sh` handles rotation and revocation.
 
+The same principle covers ingestion: your API credentials (CRM, projects,
+accounting) are stored in **your own project's Secret Manager** — GitHub and
+Flywheel hold nothing. The pipelines federate into your project with
+short-lived tokens (no keys) and read the credentials at runtime. Revoke any
+of them in your own console anytime.
+
 ## Revoke anytime
 
 One command, under a minute:
