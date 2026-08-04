@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLUG="$1"
 shift
 load_client "$SLUG"
-require_cmd gcloud bq
+require_cmd gcloud bq python3
 
 MODE="--revoke-agent"
 ASSUME_YES=0
@@ -61,15 +61,56 @@ remove_project_binding() { # <sa-email> <role>
   fi
 }
 
-remove_dataset_binding() { # <sa-email> <role> <dataset>
-  local email="$1" role="$2" ds="$3"
-  if is_dry_run || $BQ get-iam-policy --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null \
-      | grep -q "$email"; then
-    run $BQ remove-iam-policy-binding \
-      --member="serviceAccount:$email" --role="$role" "$GCP_PROJECT_ID:$ds"
-  else
-    info "dataset binding $role for $email on $ds already absent"
+# revoke_dataset_role <sa-email> <role> <dataset>
+# Mirror of grant_dataset_role in 03-iam.sh: dataset-level revocation via
+# access entries ('bq remove-iam-policy-binding' on a dataset needs Google
+# allowlisting). Accepts both premium and legacy role names in the access
+# array (dataViewer→READER, dataEditor→WRITER). Re-runnable: absent entry
+# or absent dataset is a no-op.
+revoke_dataset_role() {
+  ds_email="$1"; ds_role="$2"; ds_name="$3"
+  if is_dry_run; then
+    log "[dry-run] bq update --source <access-={\"role\":\"$ds_role\",\"userByEmail\":\"$ds_email\"}> $GCP_PROJECT_ID:$ds_name"
+    return 0
   fi
+  if ! probe $BQ show --format=none "$GCP_PROJECT_ID:$ds_name"; then
+    info "dataset $ds_name absent — nothing to revoke"
+    return 0
+  fi
+  ds_tmp="$(mktemp)"
+  $BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds_name" > "$ds_tmp"
+  if DS_EMAIL="$ds_email" DS_ROLE="$ds_role" python3 - "$ds_tmp" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+email, role = os.environ["DS_EMAIL"], os.environ["DS_ROLE"]
+LEGACY = {"roles/bigquery.dataViewer": "READER",
+          "roles/bigquery.dataEditor": "WRITER",
+          "roles/bigquery.dataOwner": "OWNER"}
+wanted = {role, LEGACY.get(role, role)}
+with open(path) as f:
+    ds = json.load(f)
+access = ds.get("access", [])
+kept = [e for e in access
+        if not (e.get("userByEmail") == email and e.get("role") in wanted)]
+if len(kept) == len(access):
+    sys.exit(3)  # already absent — converged
+with open(path, "w") as f:
+    json.dump({"access": kept}, f)
+sys.exit(0)
+PYEOF
+  then
+    run $BQ update --source "$ds_tmp" "$GCP_PROJECT_ID:$ds_name"
+    log "  revoked $ds_role from $ds_email on $ds_name"
+  else
+    rc=$?
+    if [ "$rc" -eq 3 ]; then
+      info "dataset grant $ds_role for $ds_email on $ds_name already absent"
+    else
+      rm -f "$ds_tmp"
+      die "failed to compute access entries for $GCP_PROJECT_ID:$ds_name"
+    fi
+  fi
+  rm -f "$ds_tmp"
 }
 
 delete_all_user_keys() { # <sa-email>
@@ -100,7 +141,7 @@ revoke_sa() { # <sa-email> <label>  — bindings assumed already removed
 revoke_agent() {
   info "Revoking agent access for '$CLIENT_SLUG' ($SA_HERMES_READER_EMAIL)"
   remove_project_binding "$SA_HERMES_READER_EMAIL" roles/bigquery.jobUser
-  remove_dataset_binding "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
+  revoke_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
   revoke_sa "$SA_HERMES_READER_EMAIL" "hermes-reader"
   info "Agent access revoked. Re-grant: 03-iam.sh + 'gcloud iam service-accounts enable'."
 }
@@ -109,7 +150,7 @@ revoke_writer() {
   info "Revoking pipeline access ($SA_INGEST_WRITER_EMAIL)"
   remove_project_binding "$SA_INGEST_WRITER_EMAIL" roles/bigquery.jobUser
   for ds in $ALL_DATASETS; do
-    remove_dataset_binding "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
+    revoke_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
   done
   revoke_sa "$SA_INGEST_WRITER_EMAIL" "ingest-writer"
 }
