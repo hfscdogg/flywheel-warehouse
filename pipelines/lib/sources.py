@@ -17,21 +17,34 @@ ZOHO = {
 }
 
 DTOOLS = {
-    # D-Tools Cloud REST API (X-API-Key auth). VERIFY on first live run:
-    # endpoint paths and pagination params below are best-effort from docs
-    # and must be confirmed against the account's API reference — the
-    # fetcher is generic (path + list pagination), so fixing an entry here
-    # is the whole change. Full pull every run (small data volumes);
-    # incremental can come later if volumes ever warrant it.
-    "base_url": "https://api.dtools.cloud",
+    # D-Tools Cloud API, verified against the live API reference
+    # (https://dtcloudapi.d-tools.cloud/apidocs/index.html, linked from
+    # https://docs.d-tools.cloud/en/collections/7640732-cloud-api-documentation).
+    # Auth is TWO headers: the account's API key in X-API-Key, PLUS a fixed
+    # Basic Authorization value that D-Tools publishes verbatim in its public
+    # docs ("this is the only one that works") — it is shared across all
+    # tenants and is not a secret.
+    # Endpoints are RPC-style (/api/v1/<Entity>/Get<Entities>). List
+    # endpoints paginate with page/pageSize (server default 20) and wrap the
+    # list under an entity-named key ('opportunities', 'projects') plus a
+    # total count — hence per-entity list_key. GetQuotes is the exception
+    # (verified live): it REQUIRES opportunityId (400 without it, despite the
+    # spec marking it optional) and returns a bare array, so quotes are
+    # fetched per opportunity id (per_opportunity).
+    # Full pull every run (small data volumes); incremental can come later.
+    "base_url": "https://dtcloudapi.d-tools.cloud",
+    "auth_basic": "Basic RFRDbG91ZEFQSVVzZXI6MyNRdVkrMkR1QCV3Kk15JTU8Yi1aZzlV",
     "entities": [
-        {"name": "opportunities", "path": "/api/v1/opportunities"},
-        {"name": "quotes", "path": "/api/v1/quotes"},
-        {"name": "projects", "path": "/api/v1/projects"},
+        {"name": "opportunities", "path": "/api/v1/Opportunities/GetOpportunities",
+         "list_key": "opportunities"},
+        {"name": "quotes", "path": "/api/v1/Quotes/GetQuotes",
+         "per_opportunity": True},
+        {"name": "projects", "path": "/api/v1/Projects/GetProjects",
+         "list_key": "projects"},
     ],
     "id_field": "id",
-    "modified_field": "updatedDate",
-    "page_size": 100,
+    "modified_field": "modifiedDate",
+    "page_size": 20,
 }
 
 QBO = {
