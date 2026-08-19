@@ -51,6 +51,16 @@ gcloud secrets versions add <secret-name> --project livewire-dw --data-file=-
 
 ## 3. QuickBooks Online (~15 min)
 
+> **App status — submitted, not yet approved (checked 2026-08-19).** The app
+> is **Flywheel Ingestion** (Intuit Developer team: Livewire), created
+> 2026-08-18. The production **App Assessment Questionnaire** was submitted
+> the same day; Intuit's only reply so far is the automated
+> "we have received your submission" acknowledgement — no approval notice has
+> arrived. Production keys stay gated until Intuit approves, so steps 1–3
+> below can only be completed against **sandbox/development** keys for now.
+> Re-check the Intuit Developer Portal (My Apps → Flywheel Ingestion →
+> Production) before loading production secrets.
+
 1. At [developer.intuit.com](https://developer.intuit.com/): create (or open)
    an app with the **Accounting** scope (`com.intuit.quickbooks.accounting`);
    note the **production** client ID and secret.
