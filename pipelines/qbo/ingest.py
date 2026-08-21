@@ -8,7 +8,7 @@ secretVersionAdder on that one secret), so the pipeline stays stateless.
 
 import logging
 
-from ..lib import runner
+from ..lib import runner, util
 from ..lib.sources import QBO
 
 log = logging.getLogger("flywheel.ingest.qbo")
@@ -30,7 +30,7 @@ def get_access_token(http, project_id):
         headers={"Accept": "application/json"},
         timeout=30,
     )
-    resp.raise_for_status()
+    util.raise_for_status(resp, "QBO token refresh")
     body = resp.json()
 
     # Rotation writeback — this must happen before anything else can fail.
@@ -60,7 +60,7 @@ def fetch_entity(http, token, realm_id, entity, since, limit):
             params={"query": query, "minorversion": QBO["minorversion"]},
             timeout=60,
         )
-        resp.raise_for_status()
+        util.raise_for_status(resp, f"QBO query {entity}")
         page = resp.json().get("QueryResponse", {}).get(entity, [])
         records.extend(page)
         if limit and len(records) >= limit:
