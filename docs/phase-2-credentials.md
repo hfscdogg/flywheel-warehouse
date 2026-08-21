@@ -51,15 +51,28 @@ gcloud secrets versions add <secret-name> --project livewire-dw --data-file=-
 
 ## 3. QuickBooks Online (~15 min)
 
-> **App status — submitted, not yet approved (checked 2026-08-19).** The app
+> **App status — production access is open (re-checked 2026-08-21).** The app
 > is **Flywheel Ingestion** (Intuit Developer team: Livewire), created
 > 2026-08-18. The production **App Assessment Questionnaire** was submitted
-> the same day; Intuit's only reply so far is the automated
-> "we have received your submission" acknowledgement — no approval notice has
-> arrived. Production keys stay gated until Intuit approves, so steps 1–3
-> below can only be completed against **sandbox/development** keys for now.
-> Re-check the Intuit Developer Portal (My Apps → Flywheel Ingestion →
-> Production) before loading production secrets.
+> and completed the same day, and the app was then authorized against the
+> live QuickBooks Online company **LIVEWIRE LLC** — Intuit's App Center sent
+> the "you've connected Flywheel Ingestion" confirmation at 14:36 UTC on
+> 2026-08-18, 2 minutes after the questionnaire acknowledgement.
+>
+> There is **no separate approval notice to wait for.** Intuit's
+> questionnaire acknowledgement is itself the completion notice — it states
+> "no further action is required at this time." Production keys unblock once
+> the questionnaire is submitted and the Production Settings tab (host
+> domain, launch URL, disconnect URL, hosting country/IP, regulated
+> industries) is complete; Intuit does not email an approval. A successful
+> App Center connection to a real company is the proof that production keys
+> are live. Separate App Store *listing* review applies only to apps
+> published publicly — this one is internal and never needs it.
+>
+> So steps 1–3 below can be completed with **production** keys now. Confirm
+> in the portal first: My Apps → Flywheel Ingestion → Production Settings →
+> App assessment questionnaire should read *Submission status: Completed*,
+> and Keys & credentials should show the production client ID and secret.
 
 1. At [developer.intuit.com](https://developer.intuit.com/): create (or open)
    an app with the **Accounting** scope (`com.intuit.quickbooks.accounting`);
