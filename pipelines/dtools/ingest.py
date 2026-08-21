@@ -15,7 +15,7 @@ DTOOLS were verified against the live API reference
 
 import logging
 
-from ..lib import runner
+from ..lib import runner, util
 from ..lib.sources import DTOOLS
 
 log = logging.getLogger("flywheel.ingest.dtools")
@@ -40,7 +40,7 @@ def fetch_entity(http, api_key, entity, limit):
             params={"page": page, "pageSize": DTOOLS["page_size"]},
             timeout=60,
         )
-        resp.raise_for_status()
+        util.raise_for_status(resp, f"D-Tools {entity['path']}")
         body = resp.json()
         batch = body if isinstance(body, list) else body.get(entity.get("list_key", "items"), [])
         records.extend(batch)
@@ -62,7 +62,7 @@ def fetch_quotes(http, api_key, entity, opportunity_ids, limit):
             params={"opportunityId": oid},
             timeout=60,
         )
-        resp.raise_for_status()
+        util.raise_for_status(resp, f"D-Tools {entity['path']} opportunityId={oid}")
         body = resp.json()
         records.extend(body if isinstance(body, list) else body.get("items", []))
         if limit and len(records) >= limit:

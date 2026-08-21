@@ -8,7 +8,7 @@ Credentials come from Secret Manager in the client's project.
 import logging
 import os
 
-from ..lib import runner
+from ..lib import runner, util
 from ..lib.sources import ZOHO
 
 log = logging.getLogger("flywheel.ingest.zoho")
@@ -24,7 +24,7 @@ def get_access_token(http, project_id):
         "client_secret": secret_store.get(project_id, "flywheel-zoho-client-secret"),
         "refresh_token": secret_store.get(project_id, "flywheel-zoho-refresh-token"),
     }, timeout=30)
-    resp.raise_for_status()
+    util.raise_for_status(resp, "Zoho token refresh")
     body = resp.json()
     if "access_token" not in body:
         raise RuntimeError(f"Zoho token refresh failed: {body}")
@@ -47,7 +47,7 @@ def fetch_module(http, token, api_domain, module, since, limit):
         )
         if resp.status_code == 304 or resp.status_code == 204:
             break  # 304: nothing modified since watermark; 204: module empty
-        resp.raise_for_status()
+        util.raise_for_status(resp, f"Zoho module {module}")
         body = resp.json()
         records.extend(body.get("data", []))
         if limit and len(records) >= limit:
