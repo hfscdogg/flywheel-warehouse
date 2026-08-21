@@ -51,28 +51,34 @@ gcloud secrets versions add <secret-name> --project livewire-dw --data-file=-
 
 ## 3. QuickBooks Online (~15 min)
 
-> **App status — production access is open (re-checked 2026-08-21).** The app
-> is **Flywheel Ingestion** (Intuit Developer team: Livewire), created
-> 2026-08-18. The production **App Assessment Questionnaire** was submitted
-> and completed the same day, and the app was then authorized against the
-> live QuickBooks Online company **LIVEWIRE LLC** — Intuit's App Center sent
-> the "you've connected Flywheel Ingestion" confirmation at 14:36 UTC on
-> 2026-08-18, 2 minutes after the questionnaire acknowledgement.
+> **Livewire status: live since 2026-08-21.** All four QBO secrets hold
+> production values and the daily `ingest-qbo` cron is green. Steps 1–3
+> below are done for Livewire — they remain here for the next client.
+
+> **There is no approval notice to wait for.** This trips people up, so it
+> is worth stating plainly. Intuit's "Application Assessment Questionnaire
+> Completed" email *is* the completion notice — it says "no further action
+> is required at this time." Production keys unblock once the questionnaire
+> is submitted **and** the Production Settings tab is complete (host domain,
+> launch URL, disconnect URL, hosting country/IP, regulated industries).
+> Intuit never emails an approval. A successful App Center connection to a
+> real company is the proof that production keys are live. Separate App
+> Store *listing* review applies only to publicly published apps — an
+> internal ingestion app never enters it.
 >
-> There is **no separate approval notice to wait for.** Intuit's
-> questionnaire acknowledgement is itself the completion notice — it states
-> "no further action is required at this time." Production keys unblock once
-> the questionnaire is submitted and the Production Settings tab (host
-> domain, launch URL, disconnect URL, hosting country/IP, regulated
-> industries) is complete; Intuit does not email an approval. A successful
-> App Center connection to a real company is the proof that production keys
-> are live. Separate App Store *listing* review applies only to apps
-> published publicly — this one is internal and never needs it.
+> Two failure modes to know about, both seen on this app:
 >
-> So steps 1–3 below can be completed with **production** keys now. Confirm
-> in the portal first: My Apps → Flywheel Ingestion → Production Settings →
-> App assessment questionnaire should read *Submission status: Completed*,
-> and Keys & credentials should show the production client ID and secret.
+> - **Waiting for an approval that will never arrive.** Check the portal
+>   instead: My Apps → *app* → Production Settings → App assessment
+>   questionnaire should read *Submission status: Completed*, and Keys &
+>   credentials should show the production client ID and secret.
+> - **Loading development keys and getting a 403 from the data API.** A
+>   sandbox refresh token refreshes cleanly against
+>   `oauth.platform.intuit.com` and then fails with `403` against the
+>   production host `quickbooks.api.intuit.com`, because sandbox traffic
+>   must go to `sandbox-quickbooks.api.intuit.com`. If token refresh
+>   succeeds but every query 403s, the loaded keys are the wrong pair.
+>   Livewire lost two weeks of nightly runs to exactly this.
 
 1. At [developer.intuit.com](https://developer.intuit.com/): create (or open)
    an app with the **Accounting** scope (`com.intuit.quickbooks.accounting`);
