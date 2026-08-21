@@ -21,8 +21,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 load_client "$1"
 require_cmd gcloud
 
-[ -n "${GITHUB_REPO:-}" ] && [ -n "${WIF_POOL:-}" ] \
-  || die "GITHUB_REPO and WIF_POOL must be set in clients/$CLIENT_SLUG/client.env (uncomment the Phase 2 block)"
+if [ -z "${GITHUB_REPO:-}" ] || [ -z "${WIF_POOL:-}" ]; then
+  die "GITHUB_REPO and WIF_POOL must be set in clients/$CLIENT_SLUG/client.env (uncomment the Phase 2 block)"
+fi
 
 SECRET_NAMES="flywheel-zoho-client-id flywheel-zoho-client-secret flywheel-zoho-refresh-token \
 flywheel-dtools-api-key \
