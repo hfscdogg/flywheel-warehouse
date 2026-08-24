@@ -78,4 +78,5 @@ docs/        Phase 0 checklist, trust doc, operator runbook, conventions
 pipelines/   Phase 2: ingestion pipelines (GitHub Actions + WIF)
 sql/         Phase 3: staging + marts models (run via scripts/06-transform.sh)
 goal-cards/  Phase 4 placeholder: KPI goal cards for the agents
+zoho-reference/  Zoho Analytics dashboard extraction — reconciliation source of truth
 ```
