@@ -27,7 +27,7 @@ One GCP project per client. The project is the namespace, so dataset names stay 
 | 0 | GCP project, billing, APIs (human, ~30 min) | ✅ done for Livewire — [docs/phase-0-checklist.md](docs/phase-0-checklist.md) |
 | 1 | Warehouse scaffold: datasets, IAM, scoped read-only service account | ✅ this repo — [scripts/](scripts/) |
 | 2 | Ingestion: scheduled pulls from Zoho / D-Tools / QBO | ✅ live for Livewire — all three sources ingesting on the daily cron (QBO backfilled 110,656 rows 2026-08-21), [docs/phase-2-credentials.md](docs/phase-2-credentials.md) |
-| 3 | Staging + KPI mart SQL | 🔜 [sql/](sql/) |
+| 3 | Staging + KPI mart SQL | 🚧 models + daily transform in repo, first live run pending — [sql/](sql/) |
 | 4 | Agent goal cards | 🔜 [goal-cards/](goal-cards/README.md) |
 | 5 | Productization: trust doc + onboarding runbook | drafted — [docs/trust.md](docs/trust.md), [docs/runbook-new-client.md](docs/runbook-new-client.md) |
 
@@ -75,7 +75,7 @@ Details: [docs/trust.md](docs/trust.md).
 clients/     per-client config (one dir per client; _template to copy)
 scripts/     Phase 1: idempotent gcloud/bq scripts, numbered in run order
 docs/        Phase 0 checklist, trust doc, operator runbook, conventions
-pipelines/   Phase 2 placeholder: ingestion workflows (GitHub Actions + WIF)
-sql/         Phase 3 placeholder: staging + marts models
+pipelines/   Phase 2: ingestion pipelines (GitHub Actions + WIF)
+sql/         Phase 3: staging + marts models (run via scripts/06-transform.sh)
 goal-cards/  Phase 4 placeholder: KPI goal cards for the agents
 ```
