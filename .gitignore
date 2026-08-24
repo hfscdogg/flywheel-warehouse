@@ -9,3 +9,5 @@ ingest-writer.json
 # Tooling detritus
 .bigqueryrc
 .DS_Store
+__pycache__/
+*.pyc
