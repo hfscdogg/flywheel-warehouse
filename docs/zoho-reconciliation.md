@@ -37,8 +37,8 @@ the week that straddles the month edge.
 
 | # | Mart logic | Zoho definition | Verdict |
 |---|---|---|---|
-| P1 | `is_won` = stage matches `/won/`, `is_lost` = `/lost/` (stg_zoho__deals) | `Forecast Type`: **21 Won stages**, most without the word "won" (RFP Sent, Change Order, Tentatively Scheduled, Rough-In*, Trim-Out*, Finish-Out*, Punch Out*, Service Call*, Installation Complete); **4 Lost stages**, two without "lost" (Client decided not to do work, Client in holding pattern) | **MISMATCH — HIGH.** The mart undercounts Won severely (any operational-stage deal) and undercounts Lost (2 of 4 stages). Every downstream column (deals_won, won_amount, win_rate_pct, open pipeline) shifts. Recommend: encode the explicit stage lists in `stg_zoho__deals` (payload has `$.Stage` verbatim). |
-| P2 | No test-record exclusion | Total Revenue QT excludes `Test Record = true` | **MISMATCH — MEDIUM.** Add `$.Test_Record` extraction + exclusion or won totals run high by test deals. |
+| P1 | `is_won` = stage matches `/won/`, `is_lost` = `/lost/` (stg_zoho__deals) | `Forecast Type`: **21 Won stages**, most without the word "won" (RFP Sent, Change Order, Tentatively Scheduled, Rough-In*, Trim-Out*, Finish-Out*, Punch Out*, Service Call*, Installation Complete); **4 Lost stages**, two without "lost" (Client decided not to do work, Client in holding pattern) | **RESOLVED 2026-08-24.** `stg_zoho__deals` now derives `forecast_type` (Won/Lost/Open) from Zoho's explicit stage lists; `is_won`/`is_lost` follow it. Unknown/new stages classify Open, same as Zoho's formula. (Historic verdict: regex matching undercounted Won severely and missed 2 of 4 Lost stages.) |
+| P2 | No test-record exclusion | Total Revenue QT excludes `Test Record = true` | **RESOLVED 2026-08-24.** `stg_zoho__deals` extracts `is_test_record` (`$.Test_Record`); `kpi_sales_pipeline` excludes test records from every metric (absent field = not a test). |
 | P3 | Won amount = `Amount` of won deals, all history, by closing month | Total Closed Won Revenue = `Amount` where **Prob = 100**, last **18 months** | **PARTIAL.** Same amount column; different won-definition (P1) and window. Also note Zoho holds two "won" definitions (stage list vs Prob=100) that disagree with each other — pick one per comparison. |
 | P4 | `win_rate_pct` = won/(won+lost) closed that month | Zoho `Win Rate %` same shape over Forecast Type | Matches once P1 is settled. |
 | P5 | `median_days_to_win` = median(created → closing), won only | Zoho `Avg Sales Cycle` = **mean**(Age in Days) over **Won AND Lost**, where open-ended deals use `now()` | **DIFFERENT METRIC — LOW.** Both defensible; don't expect them to tie. Goal card "sales_pipeline_velocity" (median lead→proposal) matches neither yet. |
@@ -94,9 +94,12 @@ transform at 07:00 UTC. Rules for any totals comparison:
 
 ## Recommended next steps (explicit decisions, not silent fixes)
 
-1. **P1/P2 (mart-side correctness):** encode Zoho's Forecast Type stage
-   lists and Test Record exclusion in `stg_zoho__deals` — these reflect how
-   Livewire actually runs its pipeline, independent of the dashboard.
+1. ~~**P1/P2 (mart-side correctness)**~~ — done 2026-08-24: Forecast Type
+   stage lists and the Test Record exclusion are encoded in
+   `stg_zoho__deals` / `kpi_sales_pipeline`. One caveat to verify on the
+   next live run: the `$.Test_Record` JSON path assumes the CRM field's API
+   name; if `is_test_record` comes back all-NULL, correct the path (the
+   exclusion fails safe — NULL = kept, matching pre-fix behavior).
 2. **S1/S2 (coverage):** decide whether Zoho Finance (subscriptions,
    invoices) and Stage History/Meetings ingestion joins the roadmap; churn
    and RMR metrics are impossible without the former, weekly pipeline

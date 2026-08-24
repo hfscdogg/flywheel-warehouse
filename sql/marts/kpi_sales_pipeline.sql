@@ -8,7 +8,9 @@
 --   leads_created         leads created in the month
 --   deals_created         deals created in the month
 --   new_pipeline_amount   sum of amounts on deals created in the month
---   deals_won/won_amount  deals closed-won in the month (by closing date)
+--   deals_won/won_amount  deals closed-won in the month (by closing date;
+--                         won/lost per Zoho's Forecast Type stage lists —
+--                         see stg_zoho__deals; test records excluded)
 --   deals_lost/lost_amount  deals closed-lost in the month
 --   win_rate_pct          won / (won + lost) among deals closed that month
 --   median_days_to_win    median days from deal creation to won-close
@@ -21,6 +23,9 @@ CREATE OR REPLACE TABLE marts.kpi_sales_pipeline AS
 WITH deals AS (
   SELECT *, COALESCE(closing_date, DATE(modified_at)) AS closed_date
   FROM staging.stg_zoho__deals
+  -- Test records are excluded from Zoho's revenue reporting
+  -- (docs/zoho-reconciliation.md P2); absent field = not a test.
+  WHERE NOT COALESCE(is_test_record, FALSE)
 ),
 leads AS (
   SELECT * FROM staging.stg_zoho__leads
