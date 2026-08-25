@@ -33,8 +33,8 @@ wrong path — a one-line `COALESCE` fix in the model.
 
 The same posture applies to the **Zoho custom-field API names** in
 `stg_zoho__deals` (`Commercial`, `Alarm_Monitoring_Plan`,
-`Pick_Service_Plan`): derived from the CRM display names, unverified
-against a live payload.
+`Pick_Service_Plan`, `Marketing_Channel`): derived from the CRM display
+names, unverified against a live payload.
 
 ## Access
 

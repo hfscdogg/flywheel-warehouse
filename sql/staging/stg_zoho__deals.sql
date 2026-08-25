@@ -33,6 +33,7 @@ fields AS (
     JSON_VALUE(payload, '$.Commercial')                        AS commercial,
     JSON_VALUE(payload, '$.Alarm_Monitoring_Plan')             AS alarm_monitoring_plan,
     JSON_VALUE(payload, '$.Pick_Service_Plan')                 AS pick_service_plan,
+    JSON_VALUE(payload, '$.Marketing_Channel')                 AS marketing_channel,
     JSON_VALUE(payload, '$.Account_Name.id')                   AS account_id,
     JSON_VALUE(payload, '$.Account_Name.name')                 AS account_name,
     JSON_VALUE(payload, '$.Contact_Name.id')                   AS contact_id,
