@@ -1,5 +1,10 @@
 # Phase 4 — the agent endpoint (hermes-mcp)
 
+> **Livewire status**: live since 2026-08-25. Hermes Agent (Nous Research)
+> connected via `hermes mcp add` with the bearer token; both scope checks
+> below verified from the agent's seat — `kpi_sales_pipeline` returns rows,
+> `raw_zoho.deals` returns Access Denied.
+
 How an agent gets query access to a client's warehouse. One shape for every
 client and every agent runtime: a small MCP server on Cloud Run **in the
 client's project, running as `hermes-reader`**. No service-account keys
