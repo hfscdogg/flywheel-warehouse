@@ -14,8 +14,10 @@ staging; the `transform` workflow runs daily at 07:00 UTC.
 One row per calendar month, first CRM activity through three months ahead.
 Leads/deals created, won/lost counts and amounts, `win_rate_pct`,
 `median_days_to_win` (deal creation → won close), and forward-looking
-`open_deals_closing`/`open_amount_closing` (open deals by expected close
-month). Feeds the `sales_pipeline_velocity` goal card.
+`open_deals_closing`/`open_amount_closing`/`open_expected_closing` (open
+deals by expected close month; `open_expected_closing` is Zoho's
+probability-weighted Expected Revenue, the dashboard's pipeline measure).
+Feeds the `sales_pipeline_velocity` goal card.
 
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 

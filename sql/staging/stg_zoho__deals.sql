@@ -19,11 +19,20 @@ fields AS (
     JSON_VALUE(payload, '$.Pipeline')                          AS pipeline,
     SAFE_CAST(JSON_VALUE(payload, '$.Amount') AS NUMERIC)      AS amount,
     SAFE_CAST(JSON_VALUE(payload, '$.Probability') AS INT64)   AS probability_pct,
+    SAFE_CAST(JSON_VALUE(payload, '$.Expected_Revenue') AS NUMERIC)
+                                                               AS expected_revenue,
     SAFE_CAST(JSON_VALUE(payload, '$.Closing_Date') AS DATE)   AS closing_date,
     JSON_VALUE(payload, '$.Lead_Source')                       AS lead_source,
     -- Custom checkbox excluded from Zoho's revenue reporting; NULL when the
     -- field is absent from the payload (treated as not-a-test downstream).
     SAFE_CAST(JSON_VALUE(payload, '$.Test_Record') AS BOOL)    AS is_test_record,
+    -- Custom fields behind the dashboard's L4B and RMR splits
+    -- (zoho-reference/formulas.md). API names are best-effort from the
+    -- display names ("Commercial?", the two service-plan pickers) — same
+    -- VERIFY-on-first-run posture as the D-Tools paths.
+    JSON_VALUE(payload, '$.Commercial')                        AS commercial,
+    JSON_VALUE(payload, '$.Alarm_Monitoring_Plan')             AS alarm_monitoring_plan,
+    JSON_VALUE(payload, '$.Pick_Service_Plan')                 AS pick_service_plan,
     JSON_VALUE(payload, '$.Account_Name.id')                   AS account_id,
     JSON_VALUE(payload, '$.Account_Name.name')                 AS account_name,
     JSON_VALUE(payload, '$.Contact_Name.id')                   AS contact_id,

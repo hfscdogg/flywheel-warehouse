@@ -14,10 +14,13 @@
 --   deals_lost/lost_amount  deals closed-lost in the month
 --   win_rate_pct          won / (won + lost) among deals closed that month
 --   median_days_to_win    median days from deal creation to won-close
---   open_deals_closing / open_amount_closing
+--   open_deals_closing / open_amount_closing / open_expected_closing
 --                         still-open deals whose expected close falls in the
 --                         month (a forecast view; empty for past months that
---                         have no overdue open deals)
+--                         have no overdue open deals). open_amount_closing is
+--                         raw deal amount; open_expected_closing is Zoho's
+--                         probability-weighted Expected Revenue — the measure
+--                         the Operating Metrics dashboard plots as pipeline.
 --   computed_at           build timestamp
 CREATE OR REPLACE TABLE marts.kpi_sales_pipeline AS
 WITH deals AS (
@@ -77,7 +80,8 @@ deal_closed AS (
 open_pipeline AS (
   SELECT DATE_TRUNC(closing_date, MONTH) AS month,
          COUNT(*) AS open_deals_closing,
-         SUM(COALESCE(amount, 0)) AS open_amount_closing
+         SUM(COALESCE(amount, 0)) AS open_amount_closing,
+         SUM(COALESCE(expected_revenue, 0)) AS open_expected_closing
   FROM deals
   WHERE NOT is_won AND NOT is_lost AND closing_date IS NOT NULL
   GROUP BY month
@@ -96,6 +100,7 @@ SELECT
   cl.median_days_to_win,
   COALESCE(op.open_deals_closing, 0)  AS open_deals_closing,
   COALESCE(op.open_amount_closing, 0) AS open_amount_closing,
+  COALESCE(op.open_expected_closing, 0) AS open_expected_closing,
   CURRENT_TIMESTAMP()                 AS computed_at
 FROM months m
 LEFT JOIN lead_activity l USING (month)

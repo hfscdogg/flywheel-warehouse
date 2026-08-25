@@ -31,6 +31,11 @@ skipped, mirroring the pipelines' "source disabled" behavior.
 not observed payloads. An all-NULL column after the first live run means a
 wrong path — a one-line `COALESCE` fix in the model.
 
+The same posture applies to the **Zoho custom-field API names** in
+`stg_zoho__deals` (`Commercial`, `Alarm_Monitoring_Plan`,
+`Pick_Service_Plan`): derived from the CRM display names, unverified
+against a live payload.
+
 ## Access
 
 Staging tables are readable by `ingest-writer` only; agents never see them
