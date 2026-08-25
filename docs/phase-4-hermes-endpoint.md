@@ -34,10 +34,18 @@ DRY_RUN=1 ./scripts/07-hermes-endpoint.sh <client>   # see the plan
 
 The script enables the Cloud Run/Build/Secret Manager APIs, generates a
 bearer token into the client's own Secret Manager (`hermes-endpoint-token`),
-builds `hermes-mcp/` from source, and deploys it with
-`--service-account hermes-reader`. It ends by printing the MCP URL and how
-to read the token. `./scripts/07-hermes-endpoint.sh <client> url` reprints
-that at any time.
+grants the project's default compute service account the
+`cloudbuild.builds.builder` role (source deploys build as that account, and
+newer projects don't grant it build permissions — without this the deploy
+fails at "Uploading sources" with PERMISSION_DENIED), builds `hermes-mcp/`
+from source, and deploys it with `--service-account hermes-reader`. It ends
+by printing the MCP URL and how to read the token.
+`./scripts/07-hermes-endpoint.sh <client> url` reprints that at any time.
+
+First-run notes: the build takes 3–5 minutes; if a step fails with
+"API has not been used … or it is disabled" or an IAM PERMISSION_DENIED
+right after a grant, that's propagation — wait a minute and re-run the same
+command (every step is idempotent).
 
 The service accepts unauthenticated *transport* (`--allow-unauthenticated`)
 because agents can't do Google IAM auth; the app returns 401 to every
