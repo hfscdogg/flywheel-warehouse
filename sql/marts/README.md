@@ -19,6 +19,17 @@ deals by expected close month; `open_expected_closing` is Zoho's
 probability-weighted Expected Revenue, the dashboard's pipeline measure).
 Feeds the `sales_pipeline_velocity` goal card.
 
+## kpi_sales_weekly — weekly sales scoreboard (Zoho CRM)
+
+The same funnel as `kpi_sales_pipeline` at week grain, for "how much did we
+sell last week" and "what was our close rate" questions. Weeks are
+Sunday→Saturday, keyed by `week_ending` (the Saturday), matching the Zoho
+Analytics convention — its Date Dimension query tables filter `Weekday = 7`
+— so "last week" means the same span it means in the dashboard. Carries
+leads/deals created, won/lost counts and amounts, `close_rate_pct`, and
+`won_amount_trailing_4w`. Won revenue is deal `Amount` at close, the
+dashboard's measure.
+
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 
 One row per D-Tools project: quoted price/cost/margin, plus invoiced-to-date,
