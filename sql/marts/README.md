@@ -30,6 +30,17 @@ leads/deals created, won/lost counts and amounts, `close_rate_pct`, and
 `won_amount_trailing_4w`. Won revenue is deal `Amount` at close, the
 dashboard's measure.
 
+## kpi_marketing_attribution — deal outcomes by channel (Zoho CRM)
+
+One row per (`week_ending`, `marketing_channel`), same Saturday-ending weeks
+as `kpi_sales_weekly`. Channel is the CRM's own "Marketing Channel" field on
+deals — sales-team attribution, no web analytics involved.
+`is_marketing_sourced` marks the channels the dashboard's "Marketing
+Pipeline Amount" formula counts (Google Ads/LSA/organic/GBP, Houzz,
+email/newsletter, website inquiry, direct), so "what did marketing bring in"
+means the same thing here as in Zoho. Deals with no channel set appear as
+`(unset)` — a high share there means CRM data entry, not a data bug.
+
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 
 One row per D-Tools project: quoted price/cost/margin, plus invoiced-to-date,
