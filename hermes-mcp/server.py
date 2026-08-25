@@ -25,17 +25,30 @@ import secrets
 import uvicorn
 from google.cloud import bigquery
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 PROJECT = os.environ.get("GCP_PROJECT_ID") or None
 DATASET = os.environ.get("DATASET_MARTS", "marts")
-TOKEN = os.environ["HERMES_TOKEN"]
+# .strip(): a token minted through a pipe can carry a trailing newline into
+# the secret and thus into this env var, while the client's $(...) strips it
+# — the mismatch 401s every request (hit on livewire-dw's first deploy).
+TOKEN = os.environ["HERMES_TOKEN"].strip()
 MAX_BYTES_BILLED = int(os.environ.get("MAX_BYTES_BILLED", str(1024**3)))
 MAX_ROWS = int(os.environ.get("MAX_ROWS", "1000"))
 
 # Cloud Run scales to zero between conversations, so no per-session state.
-mcp = FastMCP("flywheel-marts", stateless_http=True)
+# DNS-rebinding protection off: its default Host allowlist is localhost-only
+# and rejects Cloud Run's *.run.app hosts with "Invalid Host header" (hit on
+# livewire-dw's first live handshake). The protection guards browser-reachable
+# localhost servers; behind Cloud Run's routing + bearer auth it adds nothing.
+mcp = FastMCP(
+    "flywheel-marts",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False),
+)
 
 _bq = None
 

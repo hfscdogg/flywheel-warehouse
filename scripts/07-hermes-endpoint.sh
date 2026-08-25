@@ -51,11 +51,14 @@ print_connection_info() {
 }
 
 mint_token_version() {
+  # sys.stdout.write, not print: a trailing newline would be stored in the
+  # secret and injected into HERMES_TOKEN, while clients' $(...) strips it —
+  # the server also strips defensively, but keep the stored value exact.
   if is_dry_run; then
-    log "[dry-run] python3 -c 'import secrets; print(secrets.token_hex(32))' | gcloud secrets versions add $TOKEN_SECRET --data-file=- --project $GCP_PROJECT_ID"
+    log "[dry-run] python3 -c '...secrets.token_hex(32), no trailing newline' | gcloud secrets versions add $TOKEN_SECRET --data-file=- --project $GCP_PROJECT_ID"
     return 0
   fi
-  python3 -c 'import secrets; print(secrets.token_hex(32))' \
+  python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_hex(32))' \
     | gcloud secrets versions add "$TOKEN_SECRET" --data-file=- --project "$GCP_PROJECT_ID" >/dev/null
   log "  new token version added to secret '$TOKEN_SECRET'"
 }
