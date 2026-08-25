@@ -88,6 +88,23 @@ case "$ACTION" in
       --member "serviceAccount:$SA_HERMES_READER_EMAIL" \
       --role roles/secretmanager.secretAccessor --format=none --quiet
 
+    # 'gcloud run deploy --source' builds with the project's default COMPUTE
+    # service account, which on newer projects has no build permissions —
+    # the deploy then dies at "Uploading sources" with PERMISSION_DENIED
+    # (hit on livewire-dw's first deploy, 2026-08-25). builds.builder is
+    # Google's documented remediation; it touches only the build identity,
+    # never hermes-reader.
+    info "Cloud Build default SA: builder role (required for source deploys)"
+    if is_dry_run; then
+      log "[dry-run] gcloud projects add-iam-policy-binding $GCP_PROJECT_ID --member serviceAccount:<project-number>-compute@developer.gserviceaccount.com --role roles/cloudbuild.builds.builder"
+    else
+      PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')"
+      [ -n "$PROJECT_NUMBER" ] || die "could not resolve project number for $GCP_PROJECT_ID"
+      run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+        --role roles/cloudbuild.builds.builder --format=none --quiet
+    fi
+
     info "Deploying $HERMES_MCP_SERVICE to Cloud Run ($RUN_REGION) as $SA_HERMES_READER_EMAIL"
     run gcloud run deploy "$HERMES_MCP_SERVICE" \
       --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
