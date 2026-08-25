@@ -30,7 +30,10 @@ from starlette.responses import JSONResponse
 
 PROJECT = os.environ.get("GCP_PROJECT_ID") or None
 DATASET = os.environ.get("DATASET_MARTS", "marts")
-TOKEN = os.environ["HERMES_TOKEN"]
+# .strip(): a token minted through a pipe can carry a trailing newline into
+# the secret and thus into this env var, while the client's $(...) strips it
+# — the mismatch 401s every request (hit on livewire-dw's first deploy).
+TOKEN = os.environ["HERMES_TOKEN"].strip()
 MAX_BYTES_BILLED = int(os.environ.get("MAX_BYTES_BILLED", str(1024**3)))
 MAX_ROWS = int(os.environ.get("MAX_ROWS", "1000"))
 
