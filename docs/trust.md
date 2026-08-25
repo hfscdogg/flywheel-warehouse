@@ -40,10 +40,20 @@ same way (expects **Access Denied**).
 
 ## How access works
 
-No long-lived key files by default. The agents authenticate by **impersonating**
-`hermes-reader` — short-lived tokens, minted on demand, nothing to leak or
-rotate. A downloadable key is created only if an agent runtime genuinely cannot
-impersonate, and then `scripts/04-agent-key.sh` handles rotation and revocation.
+No long-lived key files. The agents reach the warehouse through a small
+query endpoint (**hermes-mcp**) that runs **in your project, as
+`hermes-reader`** — Cloud Run's runtime identity is the scoped service
+account, so there is no credential file anywhere, every query appears in
+your own Cloud Run logs, and the endpoint physically cannot read anything
+outside `marts`. Agents authenticate to it with a bearer token stored in
+your Secret Manager; rotating or deleting it is one command
+(`scripts/07-hermes-endpoint.sh`, see
+[phase-4-hermes-endpoint.md](phase-4-hermes-endpoint.md)).
+
+Direct impersonation of `hermes-reader` (short-lived tokens, no key) remains
+available for runtimes with their own Google identity, and
+`scripts/04-agent-key.sh` exists as a last-resort key escape hatch — but the
+endpoint is the default for agent access.
 
 The same principle covers ingestion: your API credentials (CRM, projects,
 accounting) are stored in **your own project's Secret Manager** — GitHub and
