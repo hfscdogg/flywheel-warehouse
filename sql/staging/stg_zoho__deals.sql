@@ -21,6 +21,9 @@ fields AS (
     SAFE_CAST(JSON_VALUE(payload, '$.Probability') AS INT64)   AS probability_pct,
     SAFE_CAST(JSON_VALUE(payload, '$.Closing_Date') AS DATE)   AS closing_date,
     JSON_VALUE(payload, '$.Lead_Source')                       AS lead_source,
+    -- Custom checkbox excluded from Zoho's revenue reporting; NULL when the
+    -- field is absent from the payload (treated as not-a-test downstream).
+    SAFE_CAST(JSON_VALUE(payload, '$.Test_Record') AS BOOL)    AS is_test_record,
     JSON_VALUE(payload, '$.Account_Name.id')                   AS account_id,
     JSON_VALUE(payload, '$.Account_Name.name')                 AS account_name,
     JSON_VALUE(payload, '$.Contact_Name.id')                   AS contact_id,
@@ -31,12 +34,38 @@ fields AS (
     SAFE_CAST(JSON_VALUE(payload, '$.Modified_Time') AS TIMESTAMP) AS modified_at,
     _loaded_at                                                 AS loaded_at
   FROM latest
+),
+classified AS (
+  SELECT
+    *,
+    -- Won/Lost/Open per the Zoho Analytics "Forecast Type" formula column on
+    -- Potentials (zoho-reference/formulas.md) — the org's authoritative stage
+    -- classification. Most Won stages don't contain the word "won" and two
+    -- Lost stages don't contain "lost", so explicit lists, not patterns.
+    -- A stage outside both lists (including a newly added picklist value)
+    -- classifies as Open, same as Zoho's formula.
+    CASE
+      WHEN stage IN (
+        'RFP Sent', 'Closed Won', 'Closed Won - Service',
+        'Closed Won - Design Retainer', 'Closed Won - Not Ready',
+        'Change Order', 'Tentatively Scheduled',
+        'Rough-In', 'Rough-In Scheduled', 'Rough-In Complete',
+        'Trim-Out', 'Trim Out Scheduled', 'Trim-Out Complete',
+        'Finish-Out', 'Finish Out Scheduled', 'Finish-Out Complete',
+        'Punch Out', 'Punch Out Scheduled',
+        'Service Call Scheduled', 'Service Call Complete',
+        'Installation Complete'
+      ) THEN 'Won'
+      WHEN stage IN (
+        'Closed Lost to Competition', 'Client decided not to do work',
+        'Client in holding pattern', 'Closed Lost - Unable to Contact'
+      ) THEN 'Lost'
+      ELSE 'Open'
+    END AS forecast_type
+  FROM fields
 )
 SELECT
   *,
-  -- Zoho's default closed stages are "Closed Won" / "Closed Lost" /
-  -- "Closed-Lost to Competition". Matched loosely so renamed stages that
-  -- keep the words still classify.
-  REGEXP_CONTAINS(LOWER(COALESCE(stage, '')), 'won')  AS is_won,
-  REGEXP_CONTAINS(LOWER(COALESCE(stage, '')), 'lost') AS is_lost
-FROM fields;
+  forecast_type = 'Won'  AS is_won,
+  forecast_type = 'Lost' AS is_lost
+FROM classified;
