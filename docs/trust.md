@@ -38,6 +38,12 @@ list — same permission, older label.)
 `marts` as `hermes-reader` (expects success) and then queries a raw dataset the
 same way (expects **Access Denied**).
 
+And to be explicit about the other direction: **Flywheel-the-company holds no
+standing access to your warehouse at all.** The credential above belongs to
+agents working for *you*, inside *your* project. The full map of who can see
+what — your humans, your agents, and the (opt-in, aggregates-only, not yet
+built) community learning tier — is in [access-tiers.md](access-tiers.md).
+
 ## How access works
 
 No long-lived key files. The agents reach the warehouse through a small
