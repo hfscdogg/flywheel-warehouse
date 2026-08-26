@@ -23,6 +23,7 @@ skipped, mirroring the pipelines' "source disabled" behavior.
 | Source | Models |
 |--------|--------|
 | Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals` |
+| Zoho Billing | `stg_zohobilling__subscriptions`, `stg_zohobilling__customers` |
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
 

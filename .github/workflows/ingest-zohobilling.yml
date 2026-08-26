@@ -1,0 +1,40 @@
+name: ingest-zohobilling
+
+on:
+  schedule:
+    - cron: "10 6 * * *" # between zoho (06:00) and dtools (06:20)
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+
+concurrency:
+  group: ingest-zohobilling-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipelines/requirements.txt
+      - name: Ingest Zoho Billing → raw_zohobilling
+        env:
+          ZOHO_BILLING_ORG_ID: ${{ vars.ZOHO_BILLING_ORG_ID }}
+        # Full pull every run by design (see pipelines/zohobilling/ingest.py):
+        # no --full-refresh flag, no watermark to ignore.
+        run: >
+          python -m pipelines.zohobilling.ingest
+          --client "${{ inputs.client || 'livewire' }}"

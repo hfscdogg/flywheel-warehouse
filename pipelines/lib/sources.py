@@ -16,6 +16,31 @@ ZOHO = {
     "page_size": 200,
 }
 
+ZOHO_BILLING = {
+    # Zoho Billing (formerly Zoho Subscriptions) REST API v1. Same OAuth
+    # refresh-token flow as Zoho CRM but a DIFFERENT scope family
+    # (ZohoSubscriptions.*), so it gets its own client/refresh-token secrets;
+    # the token response's api_domain pins the data center.
+    # Every call needs the org header X-com-zoho-subscriptions-organizationid
+    # (ZOHO_BILLING_ORG_ID env var).
+    # List endpoints paginate with page/per_page and report continuation via
+    # page_context.has_more_page; each entity wraps its list under its own
+    # plural key and carries its own id field.
+    # Full pull every run: the whole subscription book is small (~2k rows),
+    # and it keeps cancelled/expired records in sync, which a modified-time
+    # incremental would miss.
+    "api_path": "billing/v1",
+    "org_header": "X-com-zoho-subscriptions-organizationid",
+    "entities": [
+        {"name": "subscriptions", "path": "subscriptions",
+         "list_key": "subscriptions", "id_field": "subscription_id"},
+        {"name": "customers", "path": "customers",
+         "list_key": "customers", "id_field": "customer_id"},
+    ],
+    "modified_field": "last_modified_time",
+    "page_size": 200,
+}
+
 DTOOLS = {
     # D-Tools Cloud API, verified against the live API reference
     # (https://dtcloudapi.d-tools.cloud/apidocs/index.html, linked from

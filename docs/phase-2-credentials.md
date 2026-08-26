@@ -39,6 +39,35 @@ gcloud secrets versions add <secret-name> --project livewire-dw --data-file=-
 > `.in`, …) in step 3 and set `ZOHO_ACCOUNTS_HOST` as an env var on the
 > workflow. The pipeline follows the `api_domain` Zoho returns.
 
+## 1b. Zoho Billing (~10 min)
+
+Zoho Billing uses a different OAuth scope family from CRM, so it needs its
+own Self Client credentials — the CRM refresh token will not work here.
+
+1. [Zoho API Console](https://api-console.zoho.com/) → **Add Client** →
+   **Self Client** (a second one, or reuse the existing client and generate
+   a code with the Billing scope).
+2. Generate a code with scope
+   `ZohoSubscriptions.subscriptions.READ,ZohoSubscriptions.customers.READ`.
+3. Exchange it for a refresh token exactly as in step 3 above.
+4. Load the three values:
+   - `flywheel-zohobilling-client-id`
+   - `flywheel-zohobilling-client-secret`
+   - `flywheel-zohobilling-refresh-token`
+5. Find the **organization id** — Billing → **Settings → Organization
+   Profile**, or `GET https://www.zohoapis.com/billing/v1/organizations`
+   with the token from step 3. Every API call needs it.
+6. Set it as a repo variable (it is an identifier, not a secret):
+
+   ```sh
+   gh variable set ZOHO_BILLING_ORG_ID --repo hfscdogg/flywheel-warehouse --body '<org-id>'
+   ```
+
+The pipeline pulls the **full** subscription book each run rather than
+incrementally: cancelled and expired subscriptions are exactly what the
+subscription audit needs, and a modified-time watermark would stop
+refreshing rows that stopped changing.
+
 ## 2. D-Tools Cloud (~5 min)
 
 1. In D-Tools Cloud: **Settings → Integrations / API** → generate an API key.
@@ -111,7 +140,7 @@ gh variable set WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse --body 'i
 ## 5. Smoke run
 
 Trigger each workflow manually (Actions tab → `ingest-zoho` /
-`ingest-dtools` / `ingest-qbo` → **Run workflow**). Then confirm rows landed:
+`ingest-zohobilling` / `ingest-dtools` / `ingest-qbo` → **Run workflow**). Then confirm rows landed:
 
 ```sh
 bq query --use_legacy_sql=false \
