@@ -11,12 +11,14 @@ class TestClientConfig(unittest.TestCase):
         self.assertEqual(cfg.project_id, "livewire-dw")
         self.assertEqual(cfg.bq_location, "US")
         self.assertEqual(
-            cfg.raw_datasets, ["raw_zoho", "raw_dtools", "raw_qbo"]
+            cfg.raw_datasets,
+            ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo"],
         )
 
     def test_source_enablement(self):
         cfg = config.load_client("livewire")
         self.assertEqual(cfg.raw_dataset_for("zoho"), "raw_zoho")
+        self.assertEqual(cfg.raw_dataset_for("zohobilling"), "raw_zohobilling")
         self.assertIsNone(cfg.raw_dataset_for("hubspot"))
 
     def test_unknown_client(self):

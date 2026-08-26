@@ -11,7 +11,8 @@ This repo does two jobs at once:
 
 ```
 Zoho CRM ─────┐
-D-Tools Cloud ├──▶  raw_zoho / raw_dtools / raw_qbo  ──▶  staging  ──▶  marts
+Zoho Billing  ├──▶  raw_zoho / raw_zohobilling /       ──▶  staging  ──▶  marts
+D-Tools Cloud │     raw_dtools / raw_qbo
 QuickBooks ───┘          (ingest-writer SA)                             │
                                                                         ▼
                                                           Hermes agents (hermes-reader SA:
