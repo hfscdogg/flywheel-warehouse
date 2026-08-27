@@ -1,0 +1,41 @@
+name: ingest-alarmdotcom
+
+on:
+  schedule:
+    - cron: "30 6 * * *" # after dtools (06:20), before qbo (06:40)
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+
+concurrency:
+  group: ingest-alarmdotcom-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipelines/requirements.txt
+      - name: Ingest Alarm.com → raw_alarmdotcom
+        env:
+          ALARMDOTCOM_DEALER_ID: ${{ vars.ALARMDOTCOM_DEALER_ID }}
+          # Set only if v1 404s; the docs show both v1 and v1.0 forms.
+          ALARMDOTCOM_API_VERSION: ${{ vars.ALARMDOTCOM_API_VERSION }}
+        # Full pull every run (no documented modified-time filter).
+        run: >
+          python -m pipelines.alarmdotcom.ingest
+          --client "${{ inputs.client || 'livewire' }}"

@@ -28,6 +28,7 @@ fi
 SECRET_NAMES="flywheel-zoho-client-id flywheel-zoho-client-secret flywheel-zoho-refresh-token \
 flywheel-zohobilling-client-id flywheel-zohobilling-client-secret flywheel-zohobilling-refresh-token \
 flywheel-dtools-api-key \
+flywheel-alarmdotcom-username flywheel-alarmdotcom-password flywheel-alarmdotcom-client-id \
 flywheel-qbo-client-id flywheel-qbo-client-secret flywheel-qbo-refresh-token flywheel-qbo-realm-id"
 ROTATING_SECRET="flywheel-qbo-refresh-token"
 SECRET_LABELS="managed-by=$LABEL_MANAGED_BY,client=$CLIENT_SLUG,env=$LABEL_ENV"
