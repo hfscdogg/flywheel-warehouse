@@ -44,7 +44,13 @@ def parse_ts(value):
 
 
 def get_path(record, dotted):
-    """record["MetaData"]["LastUpdatedTime"] via 'MetaData.LastUpdatedTime'."""
+    """record["MetaData"]["LastUpdatedTime"] via 'MetaData.LastUpdatedTime'.
+
+    `dotted` may be None for a source that documents no such field (Alarm.com
+    exposes no modified timestamp); the value is simply absent.
+    """
+    if not dotted:
+        return None
     cur = record
     for part in dotted.split("."):
         if not isinstance(cur, dict):

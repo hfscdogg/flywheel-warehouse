@@ -78,6 +78,43 @@ refreshing rows that stopped changing.
 > against the API reference shown alongside your key. If an endpoint 404s,
 > fix the path in `sources.py` — that's the entire change.
 
+## 2b. Alarm.com Partner Portal (~10 min)
+
+The Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi) uses an
+OAuth **password grant** with a rep's credentials — there is no separate app
+registration.
+
+1. Identify (or create) a Partner Portal **rep login** for integration use.
+   Rep permissions gate what the API returns: properties the rep cannot see
+   come back `null` rather than erroring, so use a rep with customer-list
+   access.
+2. Get the `client_id` your dealer account uses for API access (Alarm.com
+   web services provides it: webservices@alarm.com).
+3. Load three secrets:
+   - `flywheel-alarmdotcom-username` (rep username)
+   - `flywheel-alarmdotcom-password` (rep password)
+   - `flywheel-alarmdotcom-client-id`
+4. Set the dealer id as a repo variable (an identifier, not a secret):
+
+   ```sh
+   gh variable set ALARMDOTCOM_DEALER_ID --repo hfscdogg/flywheel-warehouse --body '<dealer-id>'
+   ```
+
+5. Verify the token grant before the first run:
+
+   ```sh
+   curl -s -X POST https://alarmadmin.alarm.com/AdminApiAccess/token \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     --data-urlencode 'grant_type=password' \
+     --data-urlencode 'username=<rep>' --data-urlencode 'password=<pass>' \
+     --data-urlencode 'client_id=<client-id>' | python3 -m json.tool
+   ```
+
+VERIFY on first run: the customer-list path, its pagination, and the response
+envelope come from the public docs, not observed responses. The docs show
+both `/v1/` and `/v1.0/` forms — if the run 404s, set the
+`ALARMDOTCOM_API_VERSION` repo variable to `v1.0` rather than editing code.
+
 ## 3. QuickBooks Online (~15 min)
 
 > **Livewire status: live since 2026-08-21.** All four QBO secrets hold
@@ -140,7 +177,8 @@ gh variable set WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse --body 'i
 ## 5. Smoke run
 
 Trigger each workflow manually (Actions tab → `ingest-zoho` /
-`ingest-zohobilling` / `ingest-dtools` / `ingest-qbo` → **Run workflow**). Then confirm rows landed:
+`ingest-zohobilling` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-qbo`
+→ **Run workflow**). Then confirm rows landed:
 
 ```sh
 bq query --use_legacy_sql=false \

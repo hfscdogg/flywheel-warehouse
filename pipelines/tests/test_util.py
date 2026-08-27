@@ -137,3 +137,13 @@ class TestRaiseForStatus(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGetPathNoField(unittest.TestCase):
+    def test_none_field_yields_none(self):
+        # Sources with no modified timestamp (Alarm.com) pass None here.
+        self.assertIsNone(util.get_path({"a": 1}, None))
+        self.assertIsNone(util.max_modified([{"a": 1}], None))
+
+    def test_dotted_path_still_works(self):
+        self.assertEqual(util.get_path({"a": {"b": 2}}, "a.b"), 2)

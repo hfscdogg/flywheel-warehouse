@@ -72,6 +72,29 @@ DTOOLS = {
     "page_size": 20,
 }
 
+ALARMDOTCOM = {
+    # Alarm.com Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi).
+    # Auth is an OAuth password grant against a *different* path on the same
+    # host (/AdminApiAccess/token) using a REP's username and password plus a
+    # client id; the response bearer token authorizes PartnerApi calls.
+    # Rep credentials gate visibility: properties a rep cannot see come back
+    # null rather than erroring, so an all-NULL column can mean permissions
+    # rather than a wrong path.
+    # VERIFY on first run: the customer list path, its pagination, and the
+    # response envelope are written from the public docs, not observed
+    # responses. The docs show both /v1/ and /v1.0/ forms; api_version is
+    # configurable so a 404 is a one-line fix.
+    "token_url": "https://alarmadmin.alarm.com/AdminApiAccess/token",
+    "base_url": "https://alarmadmin.alarm.com/PartnerApi",
+    "api_version": "v1",
+    "entities": [
+        {"name": "customers", "path": "dealers/{dealer_id}/customers",
+         "id_field": "customerId"},
+    ],
+    "modified_field": None,  # no modified timestamp documented; full pull
+    "page_size": 200,
+}
+
 QBO = {
     # QuickBooks Online v3 query API, incremental on MetaData.LastUpdatedTime.
     "base_url": "https://quickbooks.api.intuit.com",
