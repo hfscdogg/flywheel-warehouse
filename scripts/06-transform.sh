@@ -53,6 +53,29 @@ source_enabled() {
   return 1
 }
 
+# stg_<source>__<entity>.sql -> raw_<source>.<entity>, the table it reads.
+model_raw_table() {
+  local b
+  b="$(basename "$1" .sql)"
+  case "$b" in
+    stg_*__*) b="${b#stg_}"; printf 'raw_%s.%s' "${b%%__*}" "${b#*__}" ;;
+    *) printf '' ;;
+  esac
+}
+
+# A source can be enabled in DATASETS_RAW before its pipeline has ever run
+# (a new source, or one still waiting on credentials). Its staging model would
+# then fail on a missing table and, under set -e, take the whole transform —
+# including every mart — down with it. Skip those models instead: the source
+# is configured, the data just is not there yet.
+raw_table_present() {
+  local tbl="$1"
+  [ -n "$tbl" ] || return 0            # not a staging model; nothing to check
+  is_dry_run && return 0               # dry-run never touches BigQuery
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  $BQ show --format=none "$GCP_PROJECT_ID:$tbl" >/dev/null 2>&1
+}
+
 if [ $# -ge 1 ]; then
   info "Transform (selected models) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
   for f in "$@"; do
@@ -66,6 +89,11 @@ else
     src="$(model_source "$f")"
     if [ -n "$src" ] && ! source_enabled "$src"; then
       info "skip $(basename "$f") — client has no raw_$src (source disabled)"
+      continue
+    fi
+    raw_tbl="$(model_raw_table "$f")"
+    if ! raw_table_present "$raw_tbl"; then
+      info "skip $(basename "$f") — $raw_tbl not found (source enabled, no data landed yet)"
       continue
     fi
     run_sql "$f"
