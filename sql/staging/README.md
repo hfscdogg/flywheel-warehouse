@@ -16,7 +16,11 @@ SQL tree serves every client with zero templating.
 Run via [`scripts/06-transform.sh`](../../scripts/06-transform.sh) (staging
 then marts); the `transform` workflow runs it daily at 07:00 UTC, after the
 ingests. Models for a source missing from the client's `DATASETS_RAW` are
-skipped, mirroring the pipelines' "source disabled" behavior.
+skipped, mirroring the pipelines' "source disabled" behavior. A model whose
+raw table does not exist yet is skipped too — a source can be enabled before
+its first successful pipeline run (new source, or one still waiting on
+credentials), and one missing table must not take the whole transform, marts
+included, down with it.
 
 ## Models
 
