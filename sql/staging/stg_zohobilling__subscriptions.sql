@@ -2,9 +2,11 @@
 -- Grain: one row per subscription_id.
 -- Source: raw_zohobilling.subscriptions (append-only; payload = Billing v1 record).
 --
--- Field names are best-effort from the Zoho Billing v1 API (same
--- VERIFY-on-first-run posture as the D-Tools paths): an all-NULL column
--- after the first live run means a wrong path, not an empty book.
+-- Field paths VERIFIED against live payloads on the first run (2026-08-27,
+-- 2,209 subscriptions): status, customer_name, amount and the billing dates
+-- all populate. The date fields are sparse by design — next_billing_at only
+-- on active subscriptions, cancelled_at only on cancelled ones — so a low
+-- non-zero count there is correct, not a wrong path.
 CREATE OR REPLACE TABLE staging.stg_zohobilling__subscriptions AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
@@ -23,8 +25,11 @@ fields AS (
     JSON_VALUE(payload, '$.customer_id')                          AS customer_id,
     JSON_VALUE(payload, '$.customer_name')                        AS customer_name,
     LOWER(JSON_VALUE(payload, '$.email'))                         AS email,
-    JSON_VALUE(payload, '$.plan.plan_code')                       AS plan_code,
-    JSON_VALUE(payload, '$.plan.name')                            AS plan_name,
+    -- Plan fields are top-level on the LIST endpoint (verified against live
+    -- payloads 2026-08-27); the nested $.plan object only appears on the
+    -- per-subscription GET.
+    JSON_VALUE(payload, '$.plan_code')                            AS plan_code,
+    JSON_VALUE(payload, '$.plan_name')                            AS plan_name,
     SAFE_CAST(JSON_VALUE(payload, '$.amount') AS NUMERIC)         AS amount,
     JSON_VALUE(payload, '$.interval_unit')                        AS interval_unit,
     SAFE_CAST(JSON_VALUE(payload, '$.interval') AS INT64)         AS interval_count,
