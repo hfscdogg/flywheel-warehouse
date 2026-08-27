@@ -50,6 +50,18 @@ and are **customer-level**: `customer_project_count > 1` means they're
 shared across that customer's projects. `qbo_matched = FALSE` rows need a
 name fixed on one side.
 
+## kpi_subscription_audit — vendor accounts vs. what customers pay for
+
+One row per monitoring-vendor account (Security Central today), matched to
+Zoho Billing on house number + ZIP. Exists to find the leak: an account
+still **active at the central station** whose customer has **no live
+subscription** — a monthly vendor cost with no revenue behind it. The
+`finding` column separates `BILLED_NO_SUBSCRIPTION` (matched customer, no
+live sub — the real leak), `BILLED_NO_MATCH` (no billing customer matched;
+could be a leak or an address-key miss, check before acting), `OK`, and
+`DEACTIVATED`. Rebuilt whenever a fresh roster is loaded by
+[`scripts/08-vendor-roster.sh`](../../scripts/08-vendor-roster.sh).
+
 ## kpi_cash — cash position snapshot (QBO)
 
 Single row as of build time: AR total and aging buckets (current, 1–30,
