@@ -12,7 +12,7 @@ class TestClientConfig(unittest.TestCase):
         self.assertEqual(cfg.bq_location, "US")
         self.assertEqual(
             cfg.raw_datasets,
-            ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo"],
+            ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo", "raw_vendor"],
         )
 
     def test_source_enablement(self):
