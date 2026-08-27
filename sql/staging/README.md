@@ -37,6 +37,12 @@ The same posture applies to the **Zoho custom-field API names** in
 `Pick_Service_Plan`, `Marketing_Channel`): derived from the CRM display
 names, unverified against a live payload.
 
+**Zoho Billing paths are verified** (first live run 2026-08-27, 2,209
+subscriptions): plan fields sit at the top level of the LIST response, not
+under a nested `$.plan` object — that only appears on the per-subscription
+GET. Sparse date columns (`next_billing_at`, `cancelled_at`, `expires_at`)
+are correct: they exist only for subscriptions in the matching state.
+
 ## Access
 
 Staging tables are readable by `ingest-writer` only; agents never see them
