@@ -20,7 +20,10 @@ skipped, mirroring the pipelines' "source disabled" behavior. A model whose
 raw table does not exist yet is skipped too — a source can be enabled before
 its first successful pipeline run (new source, or one still waiting on
 credentials), and one missing table must not take the whole transform, marts
-included, down with it.
+included, down with it. A mart whose staging inputs were skipped for that
+reason is skipped in turn; the transform derives each mart's inputs from the
+`staging.*` references in its own SQL, so there is no dependency list to keep
+in step.
 
 ## Models
 
@@ -28,7 +31,7 @@ included, down with it.
 |--------|--------|
 | Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals` |
 | Zoho Billing | `stg_zohobilling__subscriptions`, `stg_zohobilling__customers` |
-| Monitoring vendors | `stg_vendor__securitycentral_accounts` (loaded by `scripts/08-vendor-roster.sh`, not a scheduled pipeline) |
+| Monitoring vendors | `stg_vendor__securitycentral_accounts` (address roster), `stg_vendor__securitycentral_status` (weekly status feed) — both from uploaded report files, see [docs/vendor-reports.md](../../docs/vendor-reports.md) |
 | Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline) |
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
@@ -42,6 +45,15 @@ The same posture applies to the **Zoho custom-field API names** in
 `stg_zoho__deals` (`Commercial`, `Alarm_Monitoring_Plan`,
 `Pick_Service_Plan`, `Marketing_Channel`): derived from the CRM display
 names, unverified against a live payload.
+
+**Security Central is two feeds, not one.** The central station can schedule
+its "Customer Count" report weekly but not the "All Accounts" export, and only
+All Accounts carries a street address. So `stg_vendor__securitycentral_status`
+holds the current status (refreshed weekly) and
+`stg_vendor__securitycentral_accounts` holds the addresses (refreshed on
+request); `kpi_subscription_audit` joins them on contract number. Verified
+against the 2026-08-27 files: 586/586 roster contracts present in the weekly
+feed, plus 2 accounts the weekly feed has and the roster doesn't.
 
 **Zoho Billing paths are verified** (first live run 2026-08-27, 2,209
 subscriptions): plan fields sit at the top level of the LIST response, not

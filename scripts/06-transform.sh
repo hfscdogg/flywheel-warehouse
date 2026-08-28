@@ -63,17 +63,36 @@ model_raw_table() {
   esac
 }
 
-# A source can be enabled in DATASETS_RAW before its pipeline has ever run
-# (a new source, or one still waiting on credentials). Its staging model would
-# then fail on a missing table and, under set -e, take the whole transform —
-# including every mart — down with it. Skip those models instead: the source
-# is configured, the data just is not there yet.
-raw_table_present() {
+# Does <dataset>.<table> exist in the client's project? Models are skipped
+# rather than run against a table that isn't there: under set -e one missing
+# table would otherwise take the whole transform, every later model included,
+# down with it.
+table_present() {
   local tbl="$1"
-  [ -n "$tbl" ] || return 0            # not a staging model; nothing to check
+  [ -n "$tbl" ] || return 0            # nothing to check
   is_dry_run && return 0               # dry-run never touches BigQuery
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
   $BQ show --format=none "$GCP_PROJECT_ID:$tbl" >/dev/null 2>&1
+}
+
+# The staging tables a mart reads, derived from the SQL itself rather than a
+# hand-kept manifest: marts write to marts.* and read staging.*, so every
+# staging reference in the file is an input. Keeps the list from drifting
+# out of step with the model.
+mart_staging_deps() {
+  grep -oE 'staging\.[a-z0-9_]+' "$1" | sort -u
+}
+
+# A mart whose staging inputs are not all built yet must be skipped, not run:
+# a staging model can be skipped for a source with no data landed (above), and
+# under set -e the mart reading it would otherwise take down every mart after
+# it. Reports the first missing table so the skip line says why.
+missing_dep() {
+  local dep
+  for dep in $(mart_staging_deps "$1"); do
+    table_present "$dep" || { printf '%s' "$dep"; return 0; }
+  done
+  return 1
 }
 
 if [ $# -ge 1 ]; then
@@ -91,8 +110,10 @@ else
       info "skip $(basename "$f") — client has no raw_$src (source disabled)"
       continue
     fi
+    # A source can be enabled in DATASETS_RAW before its pipeline has ever
+    # run — a new source, or one still waiting on credentials.
     raw_tbl="$(model_raw_table "$f")"
-    if ! raw_table_present "$raw_tbl"; then
+    if ! table_present "$raw_tbl"; then
       info "skip $(basename "$f") — $raw_tbl not found (source enabled, no data landed yet)"
       continue
     fi
@@ -101,6 +122,10 @@ else
   info "Transform: marts"
   for f in "$REPO_ROOT"/sql/marts/*.sql; do
     [ -f "$f" ] || die "no mart models found under sql/marts/"
+    if missing="$(missing_dep "$f")"; then
+      info "skip $(basename "$f") — $missing not built (upstream source has no data yet)"
+      continue
+    fi
     run_sql "$f"
   done
 fi

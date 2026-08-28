@@ -10,14 +10,19 @@ This repo does two jobs at once:
 ## Architecture
 
 ```
-Zoho CRM ─────┐
-Zoho Billing  ├──▶  raw_zoho / raw_zohobilling /       ──▶  staging  ──▶  marts
-D-Tools Cloud │     raw_dtools / raw_qbo
-QuickBooks ───┘          (ingest-writer SA)                             │
-                                                                        ▼
-                                                          Hermes agents (hermes-reader SA:
-                                                          read-only, marts only, revocable)
+Zoho CRM ──────┐
+Zoho Billing   │
+D-Tools Cloud  ├──▶  raw_zoho / raw_zohobilling / raw_dtools /  ──▶ staging ──▶ marts
+QuickBooks     │     raw_qbo / raw_alarmdotcom / raw_vendor                      │
+Alarm.com      │            (ingest-writer SA)                                   │
+vendor files ──┘                                                                 ▼
+ (drop bucket)                                              Hermes agents (hermes-reader SA:
+                                                            read-only, marts only, revocable)
 ```
+
+Most sources are scheduled API pulls. Monitoring vendors expose no account
+API, so their reports arrive as files someone drops in a Cloud Storage bucket
+— [docs/vendor-reports.md](docs/vendor-reports.md).
 
 One GCP project per client. The project is the namespace, so dataset names stay fixed.
 
