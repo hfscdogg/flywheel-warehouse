@@ -1,10 +1,11 @@
 # pipelines/ — Phase 2 (ingestion)
 
-Scheduled pulls from Zoho CRM, D-Tools Cloud, and QuickBooks Online into the
-`raw_*` datasets. One GitHub Actions workflow per source
-(`.github/workflows/ingest-*.yml`): cron-scheduled (06:00/06:20/06:40 UTC),
-manually triggerable via `workflow_dispatch`, one `concurrency` group per
-source+client so runs never overlap.
+Scheduled pulls from Zoho CRM, Zoho Billing, D-Tools Cloud, Alarm.com, and
+QuickBooks Online into the `raw_*` datasets, plus one file-based source
+(`vendordrop`). One GitHub Actions workflow per source
+(`.github/workflows/ingest-*.yml`): cron-scheduled (06:00–06:50 UTC, before
+the 07:00 transform), manually triggerable via `workflow_dispatch`, one
+`concurrency` group per source+client so runs never overlap.
 
 ## How a run works
 
@@ -34,6 +35,13 @@ source+client so runs never overlap.
 - **Zoho data centers.** The token endpoint depends on the tenant's region
   (`ZOHO_ACCOUNTS_HOST`, default `accounts.zoho.com`); record calls follow
   the `api_domain` the token response returns.
+- **Monitoring vendors have no account-list API.** Security Central exports
+  from a portal or emails a scheduled report, so `vendordrop/` reads files
+  someone dropped in a Cloud Storage bucket rather than calling anything.
+  Formats are declared in `lib/tabular.py`, not sniffed: these reports end
+  with a summary row shaped exactly like a record, and guessing wrong loads a
+  fake customer instead of failing. See
+  [docs/vendor-reports.md](../docs/vendor-reports.md).
 - **D-Tools endpoints are VERIFY-on-first-run.** Paths/pagination in
   `lib/sources.py` are best-effort; the fetcher is generic, so a wrong path
   is a one-line fix in `sources.py`.
@@ -48,7 +56,9 @@ lib/bq.py         landing tables, loads, watermark state   (imports google-cloud
 lib/secret_store.py  Secret Manager read/write             (imports google-cloud-secret-manager)
 lib/web.py        requests session with retry/backoff
 lib/runner.py     shared run scaffolding (args, logging, land+watermark)
-zoho/ dtools/ qbo/   one ingest.py per source
+lib/tabular.py    vendor report (.xlsx/.csv) parsing, by declared format — stdlib only
+zoho/ zohobilling/ dtools/ alarmdotcom/ qbo/   one ingest.py per API source
+vendordrop/       files uploaded to the drop bucket -> raw_vendor
 tests/            stdlib-only unit tests (run in CI without pip installs)
 ```
 

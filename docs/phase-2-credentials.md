@@ -164,6 +164,21 @@ both `/v1/` and `/v1.0/` forms — if the run 404s, set the
 > that one secret). Never paste the refresh token anywhere else — a stale
 > copy stops working.
 
+## 3b. Vendor report drop bucket (no credentials)
+
+Security Central and other monitoring vendors send report files, not API
+access, so there is nothing to put in Secret Manager. Create the bucket and
+(optionally) hand an employee the upload job:
+
+```sh
+./scripts/09-vendor-drop.sh livewire
+./scripts/09-vendor-drop.sh livewire grant amy@getlivewire.com
+```
+
+The grant is `objectCreator` + `objectViewer` on that bucket alone — no
+BigQuery, nothing else in the project. Full walkthrough:
+[docs/vendor-reports.md](vendor-reports.md).
+
 ## 4. GitHub repo variables (one-time, not sensitive)
 
 `05-ingestion-infra.sh` prints the exact commands; they identify which GCP
@@ -174,11 +189,16 @@ gh variable set WIF_PROVIDER --repo hfscdogg/flywheel-warehouse --body '<provide
 gh variable set WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse --body 'ingest-writer@livewire-dw.iam.gserviceaccount.com'
 ```
 
+`VENDOR_DROP_BUCKET` is optional — `ingest-vendordrop` defaults to
+`<project-id>-vendor-drops`, which is what `09-vendor-drop.sh` creates. Set it
+only if the bucket is named something else.
+
 ## 5. Smoke run
 
 Trigger each workflow manually (Actions tab → `ingest-zoho` /
 `ingest-zohobilling` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-qbo`
-→ **Run workflow**). Then confirm rows landed:
+/ `ingest-vendordrop` → **Run workflow**). `ingest-vendordrop` is a no-op
+until someone uploads a file, which is the correct result. Then confirm rows landed:
 
 ```sh
 bq query --use_legacy_sql=false \
