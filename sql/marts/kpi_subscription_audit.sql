@@ -15,7 +15,10 @@
 -- They join on contract number — a FULL OUTER JOIN, so an account that
 -- appears in only one feed is still audited rather than silently dropped.
 -- `status_source` says which feed the status came from, so a stale roster is
--- visible instead of quietly overriding this week's answer.
+-- visible instead of quietly overriding this week's answer. Before any weekly
+-- file has landed the status table is empty and every row reads 'roster' —
+-- the audit still answers, off the roster's own status, rather than waiting
+-- on a feed that arrives once a week.
 --
 -- A contract can cover more than one account (same subscriber, two panels —
 -- 2 of 586 in the 2026-08-27 files). The weekly feed reports status per

@@ -70,6 +70,17 @@ def main():
     bucket = gcs.bucket(bucket_name)
 
     bq = bq_mod.client_for(cfg)
+    # A landing table per known format, whether or not anyone uploaded
+    # anything. runner.land() does the same for the API sources and for the
+    # same reason: staging models read every entity's table, so existence
+    # cannot depend on data volume. It matters more here, because uploads are
+    # occasional by nature — without this, kpi_subscription_audit is skipped
+    # for want of a status table rather than falling back to the roster's own
+    # status, which is exactly what status_source exists to report.
+    for fmt_key in sorted(tabular.FORMATS):
+        bq_mod.ensure_table(bq, cfg, dataset, tabular.table_name(fmt_key),
+                            bq_mod.LANDING_SCHEMA)
+
     total, files = 0, 0
     for fmt_key in sorted(tabular.FORMATS):
         for blob in pending_blobs(bucket, fmt_key, cfg.slug):
