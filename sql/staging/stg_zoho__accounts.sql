@@ -25,7 +25,9 @@ SELECT
   JSON_VALUE(payload, '$.Owner.email')                       AS owner_email,
   SAFE_CAST(JSON_VALUE(payload, '$.Created_Time') AS TIMESTAMP)  AS created_at,
   SAFE_CAST(JSON_VALUE(payload, '$.Modified_Time') AS TIMESTAMP) AS modified_at,
-  -- Same house-number + ZIP key the monitoring-vendor models build. The CRM
+  -- Same key the monitoring-vendor models build: house number, street name
+  -- with the suffix stripped, ZIP5. Keyed on house number and ZIP alone it
+  -- collided across every street in a ZIP; see the vendor models for the note. The CRM
   -- is where Livewire's install addresses actually live: Zoho Billing's list
   -- endpoint returns no address at all, and its customer records carry no CRM
   -- reference (0 of 34,248), so kpi_subscription_audit reaches a subscription
@@ -33,8 +35,12 @@ SELECT
   -- third of accounts have a billing street — and an account without one
   -- simply does not participate in the match.
   CONCAT(
-    COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^(\d+)'), ''), '|',
+    COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^\s*(\d+)'), ''), '|',
+    COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
+      LOWER(COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^\s*\d+\s+(.*)$'), '')),
+      r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
+      r'[^a-z0-9]+', ''), ''), '|',
     COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Code'), r'(\d{5})'), '')
-  )                                                          AS address_key,
+  )  AS address_key,
   _loaded_at                                                 AS loaded_at
 FROM latest;
