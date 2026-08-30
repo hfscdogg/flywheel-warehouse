@@ -12,7 +12,6 @@ that stopped changing.
 """
 
 import logging
-import os
 
 from ..lib import runner, util
 from ..lib.sources import ZOHO, ZOHO_BILLING
@@ -23,7 +22,7 @@ log = logging.getLogger("flywheel.ingest.zohobilling")
 def get_access_token(http, project_id):
     from ..lib import secret_store
 
-    accounts_host = os.environ.get("ZOHO_ACCOUNTS_HOST", ZOHO["default_accounts_host"])
+    accounts_host = util.env_or("ZOHO_ACCOUNTS_HOST", ZOHO["default_accounts_host"])
     resp = http.post(f"https://{accounts_host}/oauth/v2/token", data={
         "grant_type": "refresh_token",
         "client_id": secret_store.get(project_id, "flywheel-zohobilling-client-id"),
@@ -70,7 +69,7 @@ def main():
     from ..lib import bq as bq_mod
     from ..lib import web
 
-    org_id = os.environ.get("ZOHO_BILLING_ORG_ID")
+    org_id = util.env_or("ZOHO_BILLING_ORG_ID")
     if not org_id:
         raise RuntimeError(
             "ZOHO_BILLING_ORG_ID is not set — every Billing API call needs the "

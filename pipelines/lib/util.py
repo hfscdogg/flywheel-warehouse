@@ -1,9 +1,29 @@
 """Pure helpers — no GCP or network imports, unit-testable with stdlib only."""
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def env_or(name, default=None):
+    """Environment value, treating set-but-empty as unset.
+
+    GitHub Actions renders an unset `vars.X` as the empty string rather than
+    omitting the variable, so os.environ.get(name, default) hands back "" and
+    the default silently never applies. That turned an unset
+    VENDOR_DROP_BUCKET into storage.bucket("") and an IndexError from inside
+    the client library, and would have pointed an unset ALARMDOTCOM_API_VERSION
+    at a URL with an empty path segment.
+
+    Whitespace is stripped for the same reason a secret is: a value pasted
+    with a trailing newline is not a different value.
+    """
+    value = os.environ.get(name)
+    value = value.strip() if value else ""
+    return value or default
+
 
 _ENV_LINE = re.compile(r'^([A-Z][A-Z0-9_]*)="([^"]*)"')
 _VAR_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")

@@ -33,6 +33,14 @@ log = logging.getLogger("flywheel.ingest.vendordrop")
 def pending_blobs(bucket, fmt_key, slug):
     """Unprocessed uploads under one format prefix, oldest first.
 
+    Returns None — not an error — when the bucket is missing or unreadable.
+    That is a setup state, not a failure: the landing tables are already
+    ensured by the time this runs, so the transform still builds off whatever
+    has been loaded by other means. Failing here would turn every scheduled
+    run red until someone created the bucket, training the operator to ignore
+    a red ingest, and the same posture ("source configured, no data yet")
+    is what the rest of the pipeline already takes.
+
     Zero-byte objects are skipped: 09-vendor-drop.sh writes an empty `.keep`
     per prefix so the folders are visible in the console, and an interrupted
     browser upload can leave one behind too.
@@ -47,13 +55,15 @@ def pending_blobs(bucket, fmt_key, slug):
     try:
         blobs = list(bucket.list_blobs(prefix=f"{fmt_key}/"))
     except gexc.NotFound:
-        raise RuntimeError(
-            f"drop bucket gs://{bucket.name} does not exist — "
-            f"run ./scripts/09-vendor-drop.sh {slug}") from None
+        log.warning("gs://%s does not exist — no uploads to read. Run "
+                    "./scripts/09-vendor-drop.sh %s to create it.",
+                    bucket.name, slug)
+        return None
     except gexc.Forbidden:
-        raise RuntimeError(
-            f"no access to gs://{bucket.name} — re-run "
-            f"./scripts/09-vendor-drop.sh {slug} to grant ingest-writer") from None
+        log.warning("no access to gs://%s — no uploads to read. Re-run "
+                    "./scripts/09-vendor-drop.sh %s to grant ingest-writer.",
+                    bucket.name, slug)
+        return None
     return sorted((b for b in blobs if not b.name.endswith("/") and b.size),
                   key=lambda b: b.time_created)
 
@@ -65,7 +75,7 @@ def main():
 
     from ..lib import bq as bq_mod
 
-    bucket_name = os.environ.get("VENDOR_DROP_BUCKET", f"{cfg.project_id}-vendor-drops")
+    bucket_name = util.env_or("VENDOR_DROP_BUCKET", f"{cfg.project_id}-vendor-drops")
     gcs = storage.Client(project=cfg.project_id)
     bucket = gcs.bucket(bucket_name)
 
@@ -81,9 +91,13 @@ def main():
         bq_mod.ensure_table(bq, cfg, dataset, tabular.table_name(fmt_key),
                             bq_mod.LANDING_SCHEMA)
 
-    total, files = 0, 0
+    total, files, reachable = 0, 0, True
     for fmt_key in sorted(tabular.FORMATS):
-        for blob in pending_blobs(bucket, fmt_key, cfg.slug):
+        pending = pending_blobs(bucket, fmt_key, cfg.slug)
+        if pending is None:          # bucket missing or unreadable; warned once
+            reachable = False
+            break
+        for blob in pending:
             log.info("%s: parsing %s (%d bytes)", fmt_key, blob.name, blob.size)
             records = tabular.parse(blob.download_as_bytes(),
                                     blob.name, fmt_key)
@@ -101,7 +115,7 @@ def main():
             blob.delete()
             log.info("%s: archived to gs://%s/%s", fmt_key, bucket_name, stamped)
 
-    if not files:
+    if not files and reachable:
         log.info("no new files in gs://%s — nothing to do", bucket_name)
     log.info("done: %d files, %d rows total", files, total)
 
