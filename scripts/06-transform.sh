@@ -53,15 +53,6 @@ source_enabled() {
   return 1
 }
 
-# stg_<source>__<entity>.sql -> raw_<source>.<entity>, the table it reads.
-model_raw_table() {
-  local b
-  b="$(basename "$1" .sql)"
-  case "$b" in
-    stg_*__*) b="${b#stg_}"; printf 'raw_%s.%s' "${b%%__*}" "${b#*__}" ;;
-    *) printf '' ;;
-  esac
-}
 
 # Does <dataset>.<table> exist in the client's project? Models are skipped
 # rather than run against a table that isn't there: under set -e one missing
@@ -75,21 +66,30 @@ table_present() {
   $BQ show --format=none "$GCP_PROJECT_ID:$tbl" >/dev/null 2>&1
 }
 
-# The staging tables a mart reads, derived from the SQL itself rather than a
-# hand-kept manifest: marts write to marts.* and read staging.*, so every
-# staging reference in the file is an input. Keeps the list from drifting
-# out of step with the model.
-mart_staging_deps() {
-  grep -oE 'staging\.[a-z0-9_]+' "$1" | sort -u
+# The tables a model reads, taken from the SQL itself rather than inferred
+# from its filename. A staging model reads raw_<source>.<entity> and writes
+# staging.*; a mart reads staging.* and writes marts.*. So within each
+# directory every reference of the other kind is an input, and the list can
+# never drift out of step with the model.
+#
+# The filename was the wrong source of truth: stg_qbo__customers.sql looks
+# like it reads raw_qbo.customers, but QBO landing tables carry the API's own
+# singular entity names (raw_qbo.customer, raw_qbo.purchaseorder), so every
+# QBO model was skipped as "no data landed yet" while its data sat there.
+model_inputs() {
+  case "$(basename "$1")" in
+    stg_*) grep -oE 'raw_[a-z0-9_]+\.[a-z0-9_]+' "$1" | sort -u ;;
+    *)     grep -oE 'staging\.[a-z0-9_]+' "$1" | sort -u ;;
+  esac
 }
 
-# A mart whose staging inputs are not all built yet must be skipped, not run:
-# a staging model can be skipped for a source with no data landed (above), and
-# under set -e the mart reading it would otherwise take down every mart after
-# it. Reports the first missing table so the skip line says why.
-missing_dep() {
+# A model whose inputs are not all there must be skipped, not run: under set -e
+# one missing table would take down every model after it. Reports the first
+# one missing so the skip line says which, and the operator can tell a source
+# still waiting on credentials from a bug like the one above.
+missing_input() {
   local dep
-  for dep in $(mart_staging_deps "$1"); do
+  for dep in $(model_inputs "$1"); do
     table_present "$dep" || { printf '%s' "$dep"; return 0; }
   done
   return 1
@@ -112,9 +112,8 @@ else
     fi
     # A source can be enabled in DATASETS_RAW before its pipeline has ever
     # run — a new source, or one still waiting on credentials.
-    raw_tbl="$(model_raw_table "$f")"
-    if ! table_present "$raw_tbl"; then
-      info "skip $(basename "$f") — $raw_tbl not found (source enabled, no data landed yet)"
+    if missing="$(missing_input "$f")"; then
+      info "skip $(basename "$f") — $missing not found (source enabled, no data landed yet)"
       continue
     fi
     run_sql "$f"
@@ -122,7 +121,7 @@ else
   info "Transform: marts"
   for f in "$REPO_ROOT"/sql/marts/*.sql; do
     [ -f "$f" ] || die "no mart models found under sql/marts/"
-    if missing="$(missing_dep "$f")"; then
+    if missing="$(missing_input "$f")"; then
       info "skip $(basename "$f") — $missing not built (upstream source has no data yet)"
       continue
     fi
