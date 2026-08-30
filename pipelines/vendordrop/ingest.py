@@ -75,7 +75,7 @@ def main():
 
     from ..lib import bq as bq_mod
 
-    bucket_name = os.environ.get("VENDOR_DROP_BUCKET", f"{cfg.project_id}-vendor-drops")
+    bucket_name = util.env_or("VENDOR_DROP_BUCKET", f"{cfg.project_id}-vendor-drops")
     gcs = storage.Client(project=cfg.project_id)
     bucket = gcs.bucket(bucket_name)
 

@@ -6,7 +6,6 @@ Credentials come from Secret Manager in the client's project.
 """
 
 import logging
-import os
 
 from ..lib import runner, util
 from ..lib.sources import ZOHO
@@ -17,7 +16,7 @@ log = logging.getLogger("flywheel.ingest.zoho")
 def get_access_token(http, project_id):
     from ..lib import secret_store
 
-    accounts_host = os.environ.get("ZOHO_ACCOUNTS_HOST", ZOHO["default_accounts_host"])
+    accounts_host = util.env_or("ZOHO_ACCOUNTS_HOST", ZOHO["default_accounts_host"])
     resp = http.post(f"https://{accounts_host}/oauth/v2/token", data={
         "grant_type": "refresh_token",
         "client_id": secret_store.get(project_id, "flywheel-zoho-client-id"),

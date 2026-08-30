@@ -14,7 +14,6 @@ Env:
 """
 
 import logging
-import os
 
 from ..lib import runner, util
 from ..lib.sources import ALARMDOTCOM
@@ -57,7 +56,7 @@ def records_from(body, entity_name):
 
 def fetch_entity(http, token, dealer_id, entity, limit):
     """All pages of one entity."""
-    version = os.environ.get("ALARMDOTCOM_API_VERSION", ALARMDOTCOM["api_version"])
+    version = util.env_or("ALARMDOTCOM_API_VERSION", ALARMDOTCOM["api_version"])
     path = entity["path"].format(dealer_id=dealer_id)
     url = f"{ALARMDOTCOM['base_url']}/{version}/{path}"
     headers = {"Authorization": f"Bearer {token}"}
@@ -92,7 +91,7 @@ def main():
     from ..lib import bq as bq_mod
     from ..lib import web
 
-    dealer_id = os.environ.get("ALARMDOTCOM_DEALER_ID")
+    dealer_id = util.env_or("ALARMDOTCOM_DEALER_ID")
     if not dealer_id:
         raise RuntimeError("ALARMDOTCOM_DEALER_ID is not set — the customer "
                            "list endpoint is scoped to a dealer")

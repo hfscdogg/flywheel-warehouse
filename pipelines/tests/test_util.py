@@ -1,5 +1,6 @@
 """Tests for the pure helpers — stdlib only, no GCP/network imports."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,3 +148,37 @@ class TestGetPathNoField(unittest.TestCase):
 
     def test_dotted_path_still_works(self):
         self.assertEqual(util.get_path({"a": {"b": 2}}, "a.b"), 2)
+
+
+class TestEnvOr(unittest.TestCase):
+    """A GitHub Actions `vars.X` that nobody set arrives as "", not absent."""
+
+    def setUp(self):
+        self._saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(),
+                                 os.environ.update(self._saved)))
+
+    def test_set_but_empty_falls_back_to_the_default(self):
+        # The bug: os.environ.get("X", default) returns "" here, and an empty
+        # bucket name reached storage.bucket() as an IndexError from inside
+        # the client library rather than a legible error.
+        os.environ["FLYWHEEL_TEST_VAR"] = ""
+        self.assertEqual(util.env_or("FLYWHEEL_TEST_VAR", "fallback"), "fallback")
+
+    def test_whitespace_only_is_also_unset(self):
+        os.environ["FLYWHEEL_TEST_VAR"] = "   "
+        self.assertEqual(util.env_or("FLYWHEEL_TEST_VAR", "fallback"), "fallback")
+
+    def test_value_is_stripped(self):
+        # A value pasted with a trailing newline is not a different value.
+        os.environ["FLYWHEEL_TEST_VAR"] = "  us-east4\n"
+        self.assertEqual(util.env_or("FLYWHEEL_TEST_VAR"), "us-east4")
+
+    def test_absent_returns_the_default(self):
+        os.environ.pop("FLYWHEEL_TEST_VAR", None)
+        self.assertEqual(util.env_or("FLYWHEEL_TEST_VAR", "fallback"), "fallback")
+
+    def test_absent_with_no_default_is_none(self):
+        # Callers that guard with `if not x: raise` rely on a falsy result.
+        os.environ.pop("FLYWHEEL_TEST_VAR", None)
+        self.assertIsNone(util.env_or("FLYWHEEL_TEST_VAR"))
