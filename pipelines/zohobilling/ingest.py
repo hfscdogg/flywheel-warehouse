@@ -145,7 +145,21 @@ def main():
     total = 0
     for entity in ZOHO_BILLING["entities"]:
         records = fetch_entity(http, token, api_domain, org_id, entity, args.limit)
-        if entity["name"] == "customers":
+        # Customer detail fetch is off by default. The first live attempt
+        # (2026-08-30) showed the approach does not survive contact: 6,853
+        # customers, not the ~2.2k the subscription count suggested, fetched
+        # at ~8/minute — roughly 14 hours — and Zoho access tokens expire
+        # after one, so the run died on HTTP 401 at minute 62 having landed
+        # nothing. Three defects compound: no mid-run token refresh, a volume
+        # no single run can cover, and an all-or-nothing land at the end that
+        # discarded the 250 records it did fetch.
+        #
+        # Left in place rather than reverted because the underlying finding
+        # stands — the list endpoint carries no address — but enabling it
+        # again needs all three fixed, plus a decision on whether Zoho CRM's
+        # account addresses make it unnecessary. Off, the pipeline behaves
+        # exactly as it did before #25 instead of failing nightly.
+        if entity["name"] == "customers" and util.env_or("ZOHOBILLING_CUSTOMER_DETAIL"):
             since = None if args.full_refresh else bq_mod.get_watermark(
                 bq, cfg, dataset, entity["name"])
             records = fetch_customer_details(http, token, api_domain, org_id,

@@ -32,7 +32,7 @@ in step.
 | Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals` |
 | Zoho Billing | `stg_zohobilling__subscriptions`, `stg_zohobilling__customers` |
 | Monitoring vendors | `stg_vendor__securitycentral_accounts` (address roster), `stg_vendor__securitycentral_status` (weekly status feed) — both from uploaded report files, see [docs/vendor-reports.md](../../docs/vendor-reports.md) |
-| Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline) |
+| Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline; feeds `kpi_subscription_audit` alongside Security Central) |
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
 
@@ -68,10 +68,19 @@ list endpoint returns no `billing_address` object at all — verified
 `stg_zohobilling__customers`' address columns were entirely NULL and
 `kpi_subscription_audit` reported all 522 active vendor accounts as
 `BILLED_NO_MATCH`. That reads like 522 unbilled customers and is really an
-empty join side. `pipelines/zohobilling/ingest.py` now uses the list only to
-enumerate ids and lands the per-customer GET, re-fetching only customers
-modified since the stored watermark. The address paths themselves are
-**VERIFY-on-first-run** against a detail payload.
+empty join side. `pipelines/zohobilling/ingest.py` can land the per-customer GET instead, but
+that is **off by default** (`ZOHOBILLING_CUSTOMER_DETAIL`) after the first
+live attempt failed: 6,853 customers at ~8 detail calls/minute is ~14 hours,
+and the Zoho access token expires after one, so the run died on HTTP 401 at
+minute 62 having landed nothing. Re-enabling it needs a mid-run token
+refresh, chunked landing, and a per-run budget.
+
+Billing's address columns therefore stay NULL, and `stg_zoho__accounts` now
+carries the addresses instead: CRM v2 returns full records, so
+`$.Billing_Street` and `$.Billing_Code` were there all along, just never
+extracted. `kpi_subscription_audit` reaches a subscription through them —
+address → CRM account → Billing customer by name — which measured 73% and
+94% on the two hops. That made the detail fetch unnecessary.
 
 ## Access
 

@@ -91,14 +91,31 @@ def main():
     from ..lib import bq as bq_mod
     from ..lib import web
 
+    bq = bq_mod.client_for(cfg)
+    # Landing tables exist before the credential check, not after it. A source
+    # can sit in DATASETS_RAW for a while before anyone finishes setting it up,
+    # and downstream models read tables, not intentions: without this,
+    # stg_alarmdotcom__customers is skipped for a missing table and any mart
+    # that reads it is skipped in turn — which would take the working Security
+    # Central audit down with it the moment Alarm.com joins that mart.
+    for entity in ALARMDOTCOM["entities"]:
+        bq_mod.ensure_table(bq, cfg, dataset, entity["name"].lower(),
+                            bq_mod.LANDING_SCHEMA)
+
+    # No dealer id means nobody has finished wiring this source up yet. That is
+    # a setup state, not a failure, and failing it nightly only teaches an
+    # operator to ignore a red ingest. Anything past this point — a bad
+    # credential, an API error — is a real failure and still raises.
     dealer_id = util.env_or("ALARMDOTCOM_DEALER_ID")
     if not dealer_id:
-        raise RuntimeError("ALARMDOTCOM_DEALER_ID is not set — the customer "
-                           "list endpoint is scoped to a dealer")
+        log.warning(
+            "ALARMDOTCOM_DEALER_ID is not set — Alarm.com is enabled but not "
+            "credentialed yet, so there is nothing to pull. Landing tables are "
+            "in place; see docs/phase-2-credentials.md section 2b.")
+        return
 
     http = web.session()
     token = get_access_token(http, cfg.project_id)
-    bq = bq_mod.client_for(cfg)
 
     total = 0
     for entity in ALARMDOTCOM["entities"]:
