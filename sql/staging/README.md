@@ -55,11 +55,23 @@ request); `kpi_subscription_audit` joins them on contract number. Verified
 against the 2026-08-27 files: 586/586 roster contracts present in the weekly
 feed, plus 2 accounts the weekly feed has and the roster doesn't.
 
-**Zoho Billing paths are verified** (first live run 2026-08-27, 2,209
-subscriptions): plan fields sit at the top level of the LIST response, not
-under a nested `$.plan` object — that only appears on the per-subscription
-GET. Sparse date columns (`next_billing_at`, `cancelled_at`, `expires_at`)
-are correct: they exist only for subscriptions in the matching state.
+**Zoho Billing subscription paths are verified** (first live run 2026-08-27,
+2,209 subscriptions): plan fields sit at the top level of the LIST response,
+not under a nested `$.plan` object — that only appears on the
+per-subscription GET. Sparse date columns (`next_billing_at`,
+`cancelled_at`, `expires_at`) are correct: they exist only for subscriptions
+in the matching state.
+
+**Zoho Billing customers come from the per-customer GET, not the list.** The
+list endpoint returns no `billing_address` object at all — verified
+2026-08-30, 0 of 34,248 landed rows had one — so
+`stg_zohobilling__customers`' address columns were entirely NULL and
+`kpi_subscription_audit` reported all 522 active vendor accounts as
+`BILLED_NO_MATCH`. That reads like 522 unbilled customers and is really an
+empty join side. `pipelines/zohobilling/ingest.py` now uses the list only to
+enumerate ids and lands the per-customer GET, re-fetching only customers
+modified since the stored watermark. The address paths themselves are
+**VERIFY-on-first-run** against a detail payload.
 
 ## Access
 

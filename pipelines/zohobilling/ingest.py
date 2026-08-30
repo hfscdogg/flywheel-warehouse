@@ -9,6 +9,10 @@ Why full pull, not incremental: the whole book is a couple of thousand rows,
 and cancelled/expired subscriptions are exactly what the subscription audit
 needs — a last_modified_time watermark would quietly stop refreshing rows
 that stopped changing.
+
+Customers are the exception, and they invert the pattern: the list endpoint
+carries no address at all, so the list only enumerates ids and the record
+landed is the per-customer GET. See fetch_customer_details.
 """
 
 import logging
@@ -63,6 +67,65 @@ def fetch_entity(http, token, api_domain, org_id, entity, limit):
     return records
 
 
+def customers_needing_detail(listed, since):
+    """Listed customers whose detail we have not already fetched.
+
+    `since` is the stored watermark — the newest last_modified_time we have
+    landed a detail record for. None (a first run, or --full-refresh) means
+    every customer. A listed customer with no last_modified_time at all is
+    always re-fetched: unknown is not the same as unchanged, and guessing
+    wrong here silently freezes an address.
+    """
+    if since is None:
+        return list(listed)
+    modified = ZOHO_BILLING["modified_field"]
+    return [c for c in listed if (c.get(modified) or "") > since or not c.get(modified)]
+
+
+def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit):
+    """Full customer records — the only place a billing address exists.
+
+    The Billing list endpoint returns no billing_address object whatsoever:
+    verified 2026-08-30 against the landed data, 0 of 34,248 rows had one.
+    Without an address there is nothing to match a monitoring-vendor account
+    against, and kpi_subscription_audit reported all 522 active accounts as
+    BILLED_NO_MATCH — a broken join that reads like 522 unbilled customers.
+
+    This is the LIST-vs-GET split that hid plan_code (#18) taken one step
+    further: there the field sat at the top level instead of the documented
+    nesting, here it is simply absent until you ask for the record itself.
+
+    Only customers whose list record is newer than the stored watermark are
+    re-fetched — every customer on a first run, a handful after that.
+    Addresses change rarely and the whole book is a couple of thousand rows,
+    so this stays cheap without going stale. --full-refresh refetches all.
+    """
+    headers = {
+        "Authorization": f"Zoho-oauthtoken {token}",
+        ZOHO_BILLING["org_header"]: org_id,
+    }
+    stale = customers_needing_detail(listed, since)
+    if limit:
+        stale = stale[:limit]
+    log.info("customers: %d listed, %d need detail%s", len(listed), len(stale),
+             "" if since is None else f" (modified since {since})")
+
+    records = []
+    for n, listed_customer in enumerate(stale, 1):
+        customer_id = listed_customer.get("customer_id")
+        if not customer_id:
+            continue
+        url = f"{api_domain}/{ZOHO_BILLING['api_path']}/customers/{customer_id}"
+        resp = http.get(url, headers=headers, timeout=60)
+        util.raise_for_status(resp, f"Zoho Billing customer {customer_id}")
+        record = resp.json().get("customer")
+        if record:
+            records.append(record)
+        if n % 250 == 0:
+            log.info("customers: %d/%d details fetched", n, len(stale))
+    return records
+
+
 def main():
     entity_names = [e["name"] for e in ZOHO_BILLING["entities"]]
     args, cfg, dataset, run_id = runner.setup("zohobilling", entity_names)
@@ -82,6 +145,11 @@ def main():
     total = 0
     for entity in ZOHO_BILLING["entities"]:
         records = fetch_entity(http, token, api_domain, org_id, entity, args.limit)
+        if entity["name"] == "customers":
+            since = None if args.full_refresh else bq_mod.get_watermark(
+                bq, cfg, dataset, entity["name"])
+            records = fetch_customer_details(http, token, api_domain, org_id,
+                                             records, since, args.limit)
         total += runner.land(bq_mod, bq, cfg, dataset, entity["name"], records,
                              entity["id_field"], ZOHO_BILLING["modified_field"], run_id)
     log.info("done: %d rows total", total)
