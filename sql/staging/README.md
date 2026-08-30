@@ -68,10 +68,18 @@ list endpoint returns no `billing_address` object at all — verified
 `stg_zohobilling__customers`' address columns were entirely NULL and
 `kpi_subscription_audit` reported all 522 active vendor accounts as
 `BILLED_NO_MATCH`. That reads like 522 unbilled customers and is really an
-empty join side. `pipelines/zohobilling/ingest.py` now uses the list only to
-enumerate ids and lands the per-customer GET, re-fetching only customers
-modified since the stored watermark. The address paths themselves are
-**VERIFY-on-first-run** against a detail payload.
+empty join side. `pipelines/zohobilling/ingest.py` can land the per-customer GET instead, but
+that is **off by default** (`ZOHOBILLING_CUSTOMER_DETAIL`) after the first
+live attempt failed: 6,853 customers at ~8 detail calls/minute is ~14 hours,
+and the Zoho access token expires after one, so the run died on HTTP 401 at
+minute 62 having landed nothing. Re-enabling it needs a mid-run token
+refresh, chunked landing, and a per-run budget.
+
+So the address columns are still NULL and `kpi_subscription_audit` still
+reports every active vendor account as `BILLED_NO_MATCH`. The open question
+is whether Zoho CRM's account addresses (`$.Billing_Street`,
+`$.Billing_Code` in `raw_zoho.accounts`, which v2 returns in full) cover
+enough of the book to make the detail fetch unnecessary.
 
 ## Access
 
