@@ -46,11 +46,24 @@ SELECT
   REGEXP_EXTRACT(city_state_zip, r',\s*([A-Z]{2})\s')     AS state,
   REGEXP_EXTRACT(city_state_zip, r'(\d{5})(?:-\d{4})?\s*$') AS zip,
   status = 'Active'                                       AS is_active_at_vendor,
-  -- Join key for matching billing records: house number + ZIP. Street names
-  -- are written inconsistently across systems ("Dr" vs "Drive"), but the
-  -- house number and ZIP rarely vary, and the pair is close to unique.
+  -- Address match key: house number | street name (suffix-stripped) | ZIP5.
+  --
+  -- The street name is NOT optional. An earlier version keyed on house number
+  -- and ZIP alone, to tolerate "Dr" vs "Drive"; a 5-digit ZIP covers thousands
+  -- of homes, so "1594|23113" collided across every street in that ZIP and the
+  -- audit matched four of six sampled accounts to a completely different
+  -- person. Stripping the suffix keeps the tolerance without the collisions:
+  -- "13413 Langford Dr" and "13413 Langford Drive" both key 13413|langford|.
+  --
+  -- Repeated verbatim in stg_vendor__securitycentral_accounts,
+  -- stg_alarmdotcom__customers, stg_zoho__accounts and kpi_subscription_audit
+  -- — this repo templates nothing, so the four must be edited together.
   CONCAT(
-    COALESCE(REGEXP_EXTRACT(street_address, r'^(\d+)'), ''), '|',
-    COALESCE(REGEXP_EXTRACT(city_state_zip, r'(\d{5})(?:-\d{4})?\s*$'), '')
-  )                                                       AS address_key
+    COALESCE(REGEXP_EXTRACT(street_address, r'^\s*(\d+)'), ''), '|',
+    COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
+      LOWER(COALESCE(REGEXP_EXTRACT(street_address, r'^\s*\d+\s+(.*)$'), '')),
+      r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
+      r'[^a-z0-9]+', ''), ''), '|',
+    COALESCE(REGEXP_EXTRACT(city_state_zip, r'(\d{5})'), '')
+  )  AS address_key
 FROM fields;

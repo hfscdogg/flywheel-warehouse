@@ -48,6 +48,10 @@
 --                          possible. Always TRUE for single-feed vendors.
 --   started_on             vendor account start date
 --   matched_customer_id    Zoho Billing customer, NULL when no address match
+--   name_overlaps          TRUE when a word of the vendor's subscriber name
+--                          appears in the matched customer's name. FALSE is
+--                          a strong signal the address matched the wrong
+--                          household — verify before acting on that row.
 --   match_via              how billing was reached: 'billing' (a Billing
 --                          address, currently none) or 'crm' (the CRM
 --                          account at that address, matched to Billing by
@@ -188,7 +192,11 @@ accounts AS (
 billing_direct AS (
   SELECT
     CONCAT(
-      COALESCE(REGEXP_EXTRACT(billing_address, r'^(\d+)'), ''), '|',
+      COALESCE(REGEXP_EXTRACT(billing_address, r'^\s*(\d+)'), ''), '|',
+      COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(REGEXP_EXTRACT(billing_address, r'^\s*\d+\s+(.*)$'), '')),
+        r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
+        r'[^a-z0-9]+', ''), ''), '|',
       COALESCE(REGEXP_EXTRACT(billing_zip, r'(\d{5})'), '')
     ) AS address_key,
     customer_id,
@@ -254,6 +262,15 @@ SELECT
   c.customer_id                         AS matched_customer_id,
   c.display_name                        AS matched_customer_name,
   c.match_via,
+  -- Does any word of the vendor's subscriber name appear in the matched
+  -- customer's? Agreement is weak evidence; DISAGREEMENT is strong evidence
+  -- of a bad match, and that is what this is for. Never act on a
+  -- BILLED_NO_SUBSCRIPTION row where this is FALSE without checking it by
+  -- hand — the key is an address heuristic, not an identifier.
+  (SELECT LOGICAL_OR(LENGTH(t) >= 3 AND STRPOS(LOWER(c.display_name), t) > 0)
+   FROM UNNEST(SPLIT(LOWER(REGEXP_REPLACE(
+     COALESCE(v.subscriber_name, ''), r'[^a-zA-Z ]', '')), ' ')) AS t)
+                                        AS name_overlaps,
   COALESCE(s.active_subscriptions, 0)   AS active_subscriptions,
   COALESCE(s.subscription_amount, 0)    AS subscription_amount,
   s.plan_names,

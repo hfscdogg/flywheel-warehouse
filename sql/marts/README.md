@@ -59,7 +59,16 @@ address (0 of 34,248 rows) and its customers carry no CRM reference, so the
 chain is address → CRM account → Billing customer, bridged on account name.
 `match_via` says which path answered. Measured 2026-08-30: 73% of unmatched
 vendor accounts reach a CRM account by address, 94% of those reach Billing by
-name — roughly 357 of 522 end to end. Exists to find the leak: an account
+name — roughly 357 of 522 end to end.
+
+**Check `name_overlaps` before acting on any row.** The address key is a
+heuristic, not an identifier. Its first version keyed on house number and ZIP
+alone and matched four of six sampled accounts to a completely different
+household — a 5-digit ZIP covers thousands of homes. The key now includes the
+street name with its suffix stripped, and `name_overlaps` reports whether the
+vendor's subscriber name shares a word with the matched customer's. FALSE
+there means verify by hand; it is the difference between finding a leak and
+cancelling a paying customer's alarm monitoring. Exists to find the leak: an account
 still **active at the central station** whose customer has **no live
 subscription** — a monthly vendor cost with no revenue behind it. The
 `finding` column separates `BILLED_NO_SUBSCRIPTION` (matched customer, no
