@@ -63,6 +63,12 @@ acting), `BILLED_NO_ROSTER` (active in this week's feed but absent from the
 roster, so there's no address to match — ask for a fresh roster before
 judging), `OK`, and `DEACTIVATED`.
 
+A high `BILLED_NO_MATCH` share is a broken join, not a finding: if nearly
+every active account lands there while `OK` is empty, the billing side has no
+addresses to match against and nobody should be cancelled on the strength of
+it. Sanity check before acting — Livewire's 1,402 live subscriptions should
+produce hundreds of `OK` rows.
+
 Status comes from the **weekly** Customer Count feed and addresses from the
 **occasional** All Accounts roster, joined on contract number, so the audit
 re-runs against current status every week without a fresh roster;
