@@ -75,11 +75,12 @@ and the Zoho access token expires after one, so the run died on HTTP 401 at
 minute 62 having landed nothing. Re-enabling it needs a mid-run token
 refresh, chunked landing, and a per-run budget.
 
-So the address columns are still NULL and `kpi_subscription_audit` still
-reports every active vendor account as `BILLED_NO_MATCH`. The open question
-is whether Zoho CRM's account addresses (`$.Billing_Street`,
-`$.Billing_Code` in `raw_zoho.accounts`, which v2 returns in full) cover
-enough of the book to make the detail fetch unnecessary.
+Billing's address columns therefore stay NULL, and `stg_zoho__accounts` now
+carries the addresses instead: CRM v2 returns full records, so
+`$.Billing_Street` and `$.Billing_Code` were there all along, just never
+extracted. `kpi_subscription_audit` reaches a subscription through them —
+address → CRM account → Billing customer by name — which measured 73% and
+94% on the two hops. That made the detail fetch unnecessary.
 
 ## Access
 

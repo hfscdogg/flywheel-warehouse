@@ -48,6 +48,10 @@
 --                          possible. Always TRUE for single-feed vendors.
 --   started_on             vendor account start date
 --   matched_customer_id    Zoho Billing customer, NULL when no address match
+--   match_via              how billing was reached: 'billing' (a Billing
+--                          address, currently none) or 'crm' (the CRM
+--                          account at that address, matched to Billing by
+--                          name). NULL when nothing matched.
 --   active_subscriptions   live subscriptions for that customer
 --   subscription_amount    their summed recurring amount
 --   plan_names             comma-separated plan names, for eyeballing fit
@@ -163,24 +167,64 @@ accounts AS (
     address_key
   FROM alarmdotcom
 ),
-billing_customers AS (
+-- REACHING A SUBSCRIPTION FROM AN ADDRESS
+-- Zoho Billing knows who is subscribed but not where they live: its list
+-- endpoint returns no billing_address at all (0 of 34,248 rows), and its
+-- customer records carry no CRM reference either (0 of 34,248), so there is
+-- no direct key from a monitoring account to a subscription.
+--
+-- Zoho CRM has the addresses. So the join goes address -> CRM account ->
+-- Billing customer, bridged on the account name, which the two systems write
+-- near-identically. Measured 2026-08-30: 380 of 522 unmatched vendor accounts
+-- reach a CRM account by address (73%), and 1,300 of 1,379 CRM accounts with
+-- an address reach a Billing customer by exact name (94%) — about 357 of the
+-- 522 end to end. The rest stay BILLED_NO_MATCH, which is the honest answer
+-- for them, not a leak.
+--
+-- The direct Billing-address path is kept and preferred where it exists, so
+-- enabling ZOHOBILLING_CUSTOMER_DETAIL later improves this without a rewrite.
+-- `match_via` reports which path answered, so a change in the mix is visible
+-- rather than silent.
+billing_direct AS (
   SELECT
-    customer_id,
-    display_name,
     CONCAT(
       COALESCE(REGEXP_EXTRACT(billing_address, r'^(\d+)'), ''), '|',
       COALESCE(REGEXP_EXTRACT(billing_zip, r'(\d{5})'), '')
-    ) AS address_key
+    ) AS address_key,
+    customer_id,
+    display_name,
+    'billing' AS match_via
   FROM staging.stg_zohobilling__customers
   WHERE billing_address IS NOT NULL AND billing_zip IS NOT NULL
 ),
--- One customer per address; duplicates keep the lowest id, as elsewhere.
-customer_by_address AS (
-  SELECT address_key, customer_id, display_name
-  FROM billing_customers
-  WHERE address_key != '|'
+-- One Billing customer per normalized name; duplicates keep the lowest id.
+billing_by_name AS (
+  SELECT LOWER(TRIM(display_name)) AS name_key, customer_id, display_name
+  FROM staging.stg_zohobilling__customers
+  WHERE display_name IS NOT NULL AND TRIM(display_name) != ''
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY address_key ORDER BY customer_id
+    PARTITION BY LOWER(TRIM(display_name)) ORDER BY customer_id
+  ) = 1
+),
+billing_via_crm AS (
+  SELECT a.address_key, b.customer_id, b.display_name, 'crm' AS match_via
+  FROM staging.stg_zoho__accounts a
+  JOIN billing_by_name b
+    ON LOWER(TRIM(a.account_name)) = b.name_key
+  WHERE a.address_key != '|' AND a.account_name IS NOT NULL
+),
+-- One customer per address, direct Billing address winning over the CRM
+-- bridge; duplicates within a path keep the lowest id, as elsewhere.
+customer_by_address AS (
+  SELECT address_key, customer_id, display_name, match_via
+  FROM (
+    SELECT * FROM billing_direct WHERE address_key != '|'
+    UNION ALL
+    SELECT * FROM billing_via_crm
+  )
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY address_key
+    ORDER BY IF(match_via = 'billing', 0, 1), customer_id
   ) = 1
 ),
 subs AS (
@@ -209,6 +253,7 @@ SELECT
   v.started_on,
   c.customer_id                         AS matched_customer_id,
   c.display_name                        AS matched_customer_name,
+  c.match_via,
   COALESCE(s.active_subscriptions, 0)   AS active_subscriptions,
   COALESCE(s.subscription_amount, 0)    AS subscription_amount,
   s.plan_names,
