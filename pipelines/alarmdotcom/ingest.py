@@ -11,6 +11,7 @@ stopped billing for, which is the entire point.
 Env:
   ALARMDOTCOM_DEALER_ID  required — the dealer whose customers to pull
   ALARMDOTCOM_API_VERSION  optional override (docs show both v1 and v1.0)
+  ALARMDOTCOM_FIELDS  optional override for the `fields` projection (default *)
 """
 
 import logging
@@ -61,10 +62,20 @@ def fetch_entity(http, token, dealer_id, entity, limit):
     url = f"{ALARMDOTCOM['base_url']}/{version}/{path}"
     headers = {"Authorization": f"Bearer {token}"}
     page_size = ALARMDOTCOM["page_size"]
+    # Ask for every field. The API documents a `fields` projection whose
+    # wildcard is `*` — and a wildcard is only worth documenting if the
+    # default is something narrower. Their own list example asks for
+    # `?fields=customerId,address/street1` rather than relying on a default.
+    # Omitting it risks a partial payload that reads exactly like a wrong
+    # JSON path: an all-NULL address column, and a day spent debugging the
+    # model instead of the request. Same shape as the NULL plan_code in #18
+    # and the absent Billing addresses in #25.
+    fields = util.env_or("ALARMDOTCOM_FIELDS", "*")
     records, page = [], 1
     while True:
         resp = http.get(url, headers=headers,
-                        params={"page": page, "pageSize": page_size}, timeout=60)
+                        params={"page": page, "pageSize": page_size,
+                                "fields": fields}, timeout=60)
         if resp.status_code == 204:
             break
         util.raise_for_status(resp, f"Alarm.com {entity['name']}")

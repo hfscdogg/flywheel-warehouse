@@ -115,6 +115,20 @@ envelope come from the public docs, not observed responses. The docs show
 both `/v1/` and `/v1.0/` forms — if the run 404s, set the
 `ALARMDOTCOM_API_VERSION` repo variable to `v1.0` rather than editing code.
 
+Requests send `fields=*`. The API documents a `fields` projection with `*` as
+"all fields", and their own list example asks for
+`?fields=customerId,address/street1` rather than relying on a default — so the
+unqualified response is probably narrower than everything, and a partial
+payload reads exactly like a wrong JSON path. If `*` is rejected, set the
+`ALARMDOTCOM_FIELDS` repo variable to an explicit list
+(`customerId,firstName,lastName,email,customerName,status,dealerId,address(street1,street2,city,state,postalCode)`)
+rather than editing code.
+
+A rep without permission for a property gets `null` rather than an error, so
+an all-NULL column has three possible causes worth telling apart: the wrong
+JSON path, a projection that did not include the field, or a rep who cannot
+see it.
+
 ## 3. QuickBooks Online (~15 min)
 
 > **Livewire status: live since 2026-08-21.** All four QBO secrets hold

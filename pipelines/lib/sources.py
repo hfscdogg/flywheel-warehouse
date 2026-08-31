@@ -82,8 +82,11 @@ ALARMDOTCOM = {
     # rather than a wrong path.
     # VERIFY on first run: the customer list path, its pagination, and the
     # response envelope are written from the public docs, not observed
-    # responses. The docs show both /v1/ and /v1.0/ forms; api_version is
-    # configurable so a 404 is a one-line fix.
+    # responses. The docs show both /v1/ and /v1.0/ forms; the help page
+    # header states "base url: /PartnerApi, api version: v1", so v1 is the
+    # default and api_version is configurable so a 404 is a one-line fix.
+    # Requests send fields=* because the documented projection has a wildcard,
+    # which implies the unqualified default is narrower than everything.
     "token_url": "https://alarmadmin.alarm.com/AdminApiAccess/token",
     "base_url": "https://alarmadmin.alarm.com/PartnerApi",
     "api_version": "v1",
