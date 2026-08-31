@@ -5,14 +5,27 @@ Security Central runs Manitou; its reports come out of the SCAN portal or
 arrive by email. So the data gets in as files, and this is how a file becomes
 a warehouse table without anyone opening a terminal.
 
-## The two Security Central reports
+## The vendor reports
 
 | Report | Carries | How often | Why we need it |
 |--------|---------|-----------|----------------|
 | **Customer Count** | contract, subscriber, status, start date | **weekly, scheduled** — Security Central emails it | the audit's live status: who is still active at the central station |
 | **All Accounts** | the above **plus street address** and account type | on request (SCAN export, not schedulable) | the address, which is the only way to match an account to a Zoho Billing customer |
 
-Neither is sufficient alone. The audit joins them on contract number and takes
+**Alarm.com — "Custom List"** (dealer site → export → .csv). Carries a full
+address on every row and, on most rows, Security Central's own account
+number (`CS Account Prefix` + `CS Account Number`, e.g. `A1651-1047`). That
+is an exact key between two vendors and is worth more than any address
+heuristic.
+
+**Parasol — the monthly invoice** (.pdf). Parasol provides no roster, but
+every invoice line item *is* an account: name, address, service tier, and
+the rate for that specific property. It is the only vendor that tells us
+what each account costs, so a Parasol leak carries its own dollar figure.
+Parsing an invoice is not elegant; ask Parasol for a CSV or portal export
+and retire this when one exists.
+
+Neither Security Central report is sufficient alone. The audit joins them on contract number and takes
 status from the weekly file and address from the roster, so a fresh weekly
 report re-audits everyone against addresses captured whenever the last roster
 was pulled. See [`sql/marts/kpi_subscription_audit.sql`](../sql/marts/kpi_subscription_audit.sql).
@@ -29,6 +42,8 @@ the 07:00 transform), lands it in `raw_vendor`, and moves the file to
 gs://livewire-dw-vendor-drops/
   securitycentral/allaccounts/      ← the SCAN "All Accounts" export (.xlsx)
   securitycentral/customercount/    ← the weekly emailed report (.CSV)
+  alarmdotcom/customerlist/         ← dealer-site "Custom List" export (.csv)
+  parasol/invoice/                  ← the monthly invoice (.pdf)
   processed/                        ← where the pipeline files them afterwards
 ```
 
@@ -63,11 +78,15 @@ project. Revoke by removing those two bindings on the bucket.
 
 ### What the employee does
 
-> Every Monday, Security Central emails the **Customer Count** report.
-> Save the attachment, open
+> **Weekly.** Security Central emails a **Customer Count** report. Save the
+> attachment, open
 > https://console.cloud.google.com/storage/browser/livewire-dw-vendor-drops,
 > click into `securitycentral/customercount/`, and drop the file in.
-> That's the whole job — the file disappears from that folder within a day
+>
+> **Monthly.** Parasol emails an invoice — drop the PDF into
+> `parasol/invoice/`. Same thing, different folder.
+>
+> That's the whole job. Each file disappears from its folder within a day
 > once the warehouse has read it.
 
 The file name doesn't matter; the folder does. Re-uploading the same file is
@@ -118,6 +137,13 @@ Report formats are declared, not sniffed, in
   fake customer.
 - `table` is the `raw_vendor` landing table, which is also what
   `sql/staging/stg_vendor__<table>.sql` reads.
+- `pdf_probe` marks a PDF format and names a string that must appear in the
+  extracted text; `pipelines/lib/pdftext.py` uses it to find the font's code
+  offset instead of hard-coding one, so a re-subsetted font self-corrects and
+  a genuinely different document fails loudly.
+- `clean` unwraps a column an exporter dressed up for Excel (`="1047"`, a
+  `=HYPERLINK()` formula); `derive` builds a column from two others, which is
+  how Alarm.com's cross-vendor `SC_ACCOUNT` key is assembled.
 
 Add the key to `DROP_PREFIXES` in `scripts/09-vendor-drop.sh`, re-run it to
 create the folder, add a case to `pipelines/tests/test_tabular.py`, and write

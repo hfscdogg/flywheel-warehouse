@@ -52,7 +52,7 @@ name fixed on one side.
 
 ## kpi_subscription_audit — vendor accounts vs. what customers pay for
 
-One row per (vendor, account) across Security Central and Alarm.com, matched
+One row per (vendor, account) across Security Central, Alarm.com and Parasol, matched
 to Zoho Billing on house number + ZIP — by way of Zoho CRM, because Billing
 knows who subscribes but not where they live. Its list endpoint returns no
 address (0 of 34,248 rows) and its customers carry no CRM reference, so the
@@ -84,10 +84,19 @@ addresses to match against and nobody should be cancelled on the strength of
 it. Sanity check before acting — Livewire's 1,402 live subscriptions should
 produce hundreds of `OK` rows.
 
-Alarm.com arrives as one API feed carrying status and address together, so
-it has no roster/status split; its rows read `status_source = 'api'` and
-`in_roster = TRUE`. Until Alarm.com is credentialed its arm of the union is
-simply empty and every row is Security Central's.
+Alarm.com comes from the dealer-site **Custom List export**
+(`status_source = 'export'`), not the Partner API — the export landed first
+and is the better feed: an address on every row, plus Security Central's own
+account number on 502 of 597 rows. That is an **exact cross-vendor key**,
+which the address match only approximates; it is also the value worth
+storing on the CRM record if this is ever made permanent.
+
+Parasol's monthly **invoice is the roster** (`status_source = 'invoice'`):
+every line item is a billed property, so every account is active by
+construction, and every row carries `vendor_monthly_cost` — the rate for
+that specific account. A Parasol finding therefore comes with its own price
+tag rather than an estimate. `vendor_monthly_cost` is NULL for the other
+vendors, which means they do not tell us, not that the account is free.
 
 Status comes from the **weekly** Customer Count feed and addresses from the
 **occasional** All Accounts roster, joined on contract number, so the audit

@@ -24,7 +24,8 @@ require_cmd gcloud gsutil
 
 BUCKET="${VENDOR_DROP_BUCKET:-${GCP_PROJECT_ID}-vendor-drops}"
 # Keep this list in step with pipelines/lib/tabular.FORMATS.
-DROP_PREFIXES="securitycentral/allaccounts securitycentral/customercount"
+DROP_PREFIXES="securitycentral/allaccounts securitycentral/customercount \
+alarmdotcom/customerlist parasol/invoice"
 
 case "$ACTION" in
   create)
@@ -58,6 +59,10 @@ case "$ACTION" in
     log "    -> $BUCKET/securitycentral/allaccounts/"
     log "  Security Central 'Customer Count' (weekly emailed CSV, status only)"
     log "    -> $BUCKET/securitycentral/customercount/"
+    log "  Alarm.com 'Custom List' (dealer site export, .csv)"
+    log "    -> $BUCKET/alarmdotcom/customerlist/"
+    log "  Parasol monthly invoice (.pdf — the invoice is the roster)"
+    log "    -> $BUCKET/parasol/invoice/"
     log ""
     log "The ingest-vendordrop workflow picks up new files daily and archives"
     log "them under processed/. To let an employee upload:"
