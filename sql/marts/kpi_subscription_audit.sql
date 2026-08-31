@@ -31,7 +31,11 @@
 -- without checking would manufacture false leaks.
 --
 -- Columns:
---   vendor                 'securitycentral' or 'alarmdotcom'
+--   vendor                 'securitycentral', 'alarmdotcom' or 'parasol'
+--   vendor_monthly_cost    what this vendor charges for THIS account.
+--                          Parasol only — its invoice is the roster, so the
+--                          rate sits on every line. NULL elsewhere means the
+--                          vendor does not tell us, not that it is free.
 --   account_no             vendor's account number
 --   contract_no            vendor's contract number (the join key between feeds)
 --   subscriber_name / street_address / city / state / zip
@@ -99,34 +103,65 @@ securitycentral AS (
     COALESCE(w.loaded_at, r.loaded_at)          AS status_as_of,
     r.contract_no IS NOT NULL                   AS in_roster,
     COALESCE(r.started_on, w.started_on)        AS started_on,
-    r.address_key
+    r.address_key,
+    -- Security Central's feeds carry no per-account price; only Parasol's
+    -- invoice does. NULL means "we do not know what this one costs", not
+    -- "it is free".
+    CAST(NULL AS NUMERIC)                       AS vendor_monthly_cost
   FROM roster r
   FULL OUTER JOIN weekly w ON r.contract_no = w.contract_no
 ),
--- Alarm.com arrives as one API feed carrying status and address together, so
--- there is no roster/status split to reconcile — the shape below just matches
--- the columns above. stg_alarmdotcom__customers builds the same address_key
--- (house number + ZIP) deliberately, so both vendors match billing the same
--- way. Until Alarm.com is credentialed this CTE is simply empty and every
--- row below is Security Central's.
+-- Alarm.com comes from the dealer-site "Custom List" export rather than the
+-- Partner API: the export landed first while the API waits on a working
+-- client_id, and it is the better feed anyway — an address on every row, and
+-- Security Central's own account number on 502 of 597, which is an exact
+-- cross-vendor key where the address match is only an approximation. When
+-- the API is credentialed its staging model joins in here; today it is empty
+-- and the export is the whole picture.
 alarmdotcom AS (
   SELECT
-    CAST(NULL AS STRING)                        AS contract_no,
+    sc_account_no                               AS contract_no,
     customer_id                                 AS account_no,
     subscriber_name,
     street_address,
     city,
     state,
     zip,
-    CAST(NULL AS STRING)                        AS account_type,
-    status                                      AS vendor_status,
+    service_package                             AS account_type,
+    IF(is_active_at_vendor, 'Active', 'Pending Termination')
+                                                AS vendor_status,
     is_active_at_vendor,
-    'api'                                       AS status_source,
+    'export'                                    AS status_source,
+    loaded_at                                   AS status_as_of,
+    TRUE                                        AS in_roster,
+    started_on,
+    address_key,
+    CAST(NULL AS NUMERIC)                       AS vendor_monthly_cost
+  FROM staging.stg_vendor__alarmdotcom_accounts
+),
+-- Parasol bills from an invoice that doubles as the roster, so every account
+-- is active by construction and every one carries its own rate. That rate is
+-- what makes a Parasol finding actionable without a lookup: the monthly cost
+-- of the leak is on the row.
+parasol AS (
+  SELECT
+    CAST(NULL AS STRING)                        AS contract_no,
+    account_no,
+    subscriber_name,
+    street_address,
+    city,
+    state,
+    zip,
+    service_tier                                AS account_type,
+    'Billed'                                    AS vendor_status,
+    is_active_at_vendor,
+    'invoice'                                   AS status_source,
     loaded_at                                   AS status_as_of,
     TRUE                                        AS in_roster,
     CAST(NULL AS DATE)                          AS started_on,
-    address_key
-  FROM staging.stg_alarmdotcom__customers
+    address_key,
+    monthly_rate                                AS vendor_monthly_cost
+  FROM staging.stg_vendor__parasol_accounts
 ),
 -- Columns are listed rather than SELECT *: a UNION matches by position, and
 -- most of these are STRING, so reordering one CTE would quietly swap city for
@@ -149,7 +184,8 @@ accounts AS (
     status_as_of,
     in_roster,
     started_on,
-    address_key
+    address_key,
+    vendor_monthly_cost
   FROM securitycentral
   UNION ALL
   SELECT
@@ -168,27 +204,30 @@ accounts AS (
     status_as_of,
     in_roster,
     started_on,
-    address_key
+    address_key,
+    vendor_monthly_cost
   FROM alarmdotcom
+  UNION ALL
+  SELECT
+    'parasol' AS vendor,
+    contract_no,
+    account_no,
+    subscriber_name,
+    street_address,
+    city,
+    state,
+    zip,
+    account_type,
+    vendor_status,
+    is_active_at_vendor,
+    status_source,
+    status_as_of,
+    in_roster,
+    started_on,
+    address_key,
+    vendor_monthly_cost
+  FROM parasol
 ),
--- REACHING A SUBSCRIPTION FROM AN ADDRESS
--- Zoho Billing knows who is subscribed but not where they live: its list
--- endpoint returns no billing_address at all (0 of 34,248 rows), and its
--- customer records carry no CRM reference either (0 of 34,248), so there is
--- no direct key from a monitoring account to a subscription.
---
--- Zoho CRM has the addresses. So the join goes address -> CRM account ->
--- Billing customer, bridged on the account name, which the two systems write
--- near-identically. Measured 2026-08-30: 380 of 522 unmatched vendor accounts
--- reach a CRM account by address (73%), and 1,300 of 1,379 CRM accounts with
--- an address reach a Billing customer by exact name (94%) — about 357 of the
--- 522 end to end. The rest stay BILLED_NO_MATCH, which is the honest answer
--- for them, not a leak.
---
--- The direct Billing-address path is kept and preferred where it exists, so
--- enabling ZOHOBILLING_CUSTOMER_DETAIL later improves this without a rewrite.
--- `match_via` reports which path answered, so a change in the mix is visible
--- rather than silent.
 billing_direct AS (
   SELECT
     CONCAT(
@@ -259,6 +298,7 @@ SELECT
   v.status_as_of,
   v.in_roster,
   v.started_on,
+  v.vendor_monthly_cost,
   c.customer_id                         AS matched_customer_id,
   c.display_name                        AS matched_customer_name,
   c.match_via,

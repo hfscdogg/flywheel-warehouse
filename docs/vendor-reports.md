@@ -5,14 +5,27 @@ Security Central runs Manitou; its reports come out of the SCAN portal or
 arrive by email. So the data gets in as files, and this is how a file becomes
 a warehouse table without anyone opening a terminal.
 
-## The two Security Central reports
+## The vendor reports
 
 | Report | Carries | How often | Why we need it |
 |--------|---------|-----------|----------------|
 | **Customer Count** | contract, subscriber, status, start date | **weekly, scheduled** — Security Central emails it | the audit's live status: who is still active at the central station |
 | **All Accounts** | the above **plus street address** and account type | on request (SCAN export, not schedulable) | the address, which is the only way to match an account to a Zoho Billing customer |
 
-Neither is sufficient alone. The audit joins them on contract number and takes
+**Alarm.com — "Custom List"** (dealer site → export → .csv). Carries a full
+address on every row and, on most rows, Security Central's own account
+number (`CS Account Prefix` + `CS Account Number`, e.g. `A1651-1047`). That
+is an exact key between two vendors and is worth more than any address
+heuristic.
+
+**Parasol — the monthly invoice** (.pdf). Parasol provides no roster, but
+every invoice line item *is* an account: name, address, service tier, and
+the rate for that specific property. It is the only vendor that tells us
+what each account costs, so a Parasol leak carries its own dollar figure.
+Parsing an invoice is not elegant; ask Parasol for a CSV or portal export
+and retire this when one exists.
+
+Neither Security Central report is sufficient alone. The audit joins them on contract number and takes
 status from the weekly file and address from the roster, so a fresh weekly
 report re-audits everyone against addresses captured whenever the last roster
 was pulled. See [`sql/marts/kpi_subscription_audit.sql`](../sql/marts/kpi_subscription_audit.sql).

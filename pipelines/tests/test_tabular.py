@@ -132,5 +132,74 @@ class TestFormatSpecs(unittest.TestCase):
         self.assertEqual(len(tables), len(set(tables)))
 
 
+class TestNormalizeStreet(unittest.TestCase):
+    """Parasol writes addresses three ways; two of them never match unkeyed."""
+
+    def test_leading_number_is_left_alone(self):
+        self.assertEqual(tabular.normalize_street("4830 Old Main St"),
+                         "4830 Old Main St")
+
+    def test_trailing_number_moves_to_the_front(self):
+        # Verified against a household that also appears in the Security
+        # Central roster as "629 Longfield Rd" — the reversal recovers the
+        # real address rather than inventing one.
+        self.assertEqual(tabular.normalize_street("Longfield Road 629"),
+                         "629 Longfield Road")
+
+    def test_wrapped_name_prefix_is_dropped(self):
+        # A long commercial name wraps onto the address run; the address
+        # starts at the LAST number followed by words, not the first.
+        self.assertEqual(tabular.normalize_street("and 351 6802 Paragon Pl"),
+                         "6802 Paragon Pl")
+
+    def test_no_number_anywhere_is_unchanged(self):
+        # Unmatchable, and that is the honest outcome — the account still
+        # lands and shows up in the audit as one we are billed for.
+        self.assertEqual(tabular.normalize_street("Maple Ave"), "Maple Ave")
+
+    def test_empty(self):
+        self.assertEqual(tabular.normalize_street(""), "")
+
+
+class TestAccountKey(unittest.TestCase):
+    """Parasol numbers no accounts, so the key is synthesised — and a
+    collision silently drops an account we are paying for."""
+
+    def test_distinguishes_households_sharing_a_zip_with_no_house_number(self):
+        # These three collapsed onto one key when it was built from house
+        # number and ZIP alone; two of the three would have vanished.
+        keys = {
+            tabular.account_key("Merchant, Barbara", "Maple Ave", "Richmond VA 23226", "Home"),
+            tabular.account_key("Koval, Patte", "5305 Kingsbury Road", "Richmond Virginia 23226", "Home"),
+            tabular.account_key("Nelson, Jack", "11 Mary View Drive", "Richmond Virginia 23226", "Home"),
+        }
+        self.assertEqual(len(keys), 3)
+
+    def test_stable_for_the_same_account(self):
+        args = ("Beale, Frank", "4830 Old Main St", "Richmond, VA 23231", "Home")
+        self.assertEqual(tabular.account_key(*args), tabular.account_key(*args))
+
+    def test_never_empty(self):
+        self.assertTrue(tabular.account_key("", "", "", ""))
+
+
+class TestNewFormats(unittest.TestCase):
+    def test_parasol_and_alarmdotcom_specs_are_registered(self):
+        self.assertEqual(tabular.table_name("parasol/invoice"), "parasol_accounts")
+        self.assertEqual(tabular.table_name("alarmdotcom/customerlist"),
+                         "alarmdotcom_accounts")
+
+    def test_preamble_rows_never_become_the_header(self):
+        # The Alarm.com export opens with several single-cell lines. If one
+        # is taken as the header, every record is dropped — which is exactly
+        # what happened before the check moved ahead of header assignment.
+        csv = (b'"Data as of 8/31/2026"\n\n"Monitoring Station = Any"\n\n'
+               b'Customer ID,First Name,Postal Code\n'
+               b'123,Ada,23230\n')
+        recs = tabular.parse(csv, "Custom_List.csv", "alarmdotcom/customerlist")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["Customer ID"], "123")
+
+
 if __name__ == "__main__":
     unittest.main()
