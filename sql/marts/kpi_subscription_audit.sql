@@ -34,7 +34,11 @@
 -- contract, so both accounts inherit it; the grain stays one row per account.
 --
 -- Matching to billing is on house number + street name + ZIP (address_key),
--- the street name suffix-stripped so "Dr" and "Drive" agree. Street names
+-- the street name suffix-stripped so "Dr" and "Drive" agree. Alarm.com has a
+-- second route: its export carries Security Central's account number, an
+-- exact key, so a row the address misses can borrow the match of the Security
+-- Central account it is the same property as (`match_via = 'sc_account'`).
+-- Street names
 -- are written inconsistently between systems ("Dr" vs "Drive"), but house
 -- number and ZIP rarely vary. Unmatched rows are reported, not hidden: a low
 -- match rate means the key needs work, and treating "unmatched" as "unbilled"
@@ -67,9 +71,13 @@
 --                          a strong signal the address matched the wrong
 --                          household — verify before acting on that row.
 --   match_via              how billing was reached: 'billing' (a Billing
---                          address, currently none) or 'crm' (the CRM
---                          account at that address, matched to Billing by
---                          name). NULL when nothing matched.
+--                          address, currently none), 'crm' (the CRM account
+--                          at that address, matched to Billing by name), or
+--                          'sc_account' (Alarm.com only — reached through
+--                          Security Central's account number rather than an
+--                          address; an exact key, so these are the Alarm.com
+--                          rows least likely to be a wrong household).
+--                          NULL when nothing matched.
 --   active_subscriptions   live subscriptions for that customer
 --   subscription_amount    their summed recurring amount
 --   plan_names             comma-separated plan names, for eyeballing fit
@@ -292,6 +300,52 @@ subs AS (
     STRING_AGG(DISTINCT IF(is_active, plan_name, NULL), ', ') AS plan_names
   FROM staging.stg_zohobilling__subscriptions
   GROUP BY customer_id
+),
+-- Alarm.com's export carries Security Central's own account number on 502 of
+-- 597 rows (CS Account Prefix + CS Account Number, e.g. A1651-1047), and the
+-- alarmdotcom CTE above puts it in contract_no. This maps that number to the
+-- Security Central account's address, so an Alarm.com row whose own address
+-- reaches no customer can borrow the address of the Security Central account
+-- it is provably the same property as.
+--
+-- One row per account number: two Security Central rows can share one (the
+-- same account with two contacts), and without this a single Alarm.com
+-- account would fan out into several audit rows.
+sc_account_address AS (
+  SELECT account_no, address_key
+  FROM securitycentral
+  WHERE account_no IS NOT NULL AND address_key != '|'
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY account_no ORDER BY address_key
+  ) = 1
+),
+-- Each account resolved to a Billing customer, by its own address first and
+-- by the Security Central bridge second. Order matters: the address match is
+-- a heuristic and the account number is an identifier, but an address that
+-- already found a customer found it for THIS property, whereas the bridge
+-- asserts two vendors' records are the same property. Direct-first keeps a
+-- vendor's own row authoritative and uses the bridge only where it adds
+-- something — measured at 15 accounts on the 2026-08-31 data, all of them
+-- previously BILLED_NO_MATCH.
+--
+-- `v.*` is safe here where the UNION above lists every column: this selects
+-- from one source, so there is no positional hazard to guard against.
+matched AS (
+  SELECT
+    v.*,
+    COALESCE(direct.customer_id, bridged.customer_id)     AS customer_id,
+    COALESCE(direct.display_name, bridged.display_name)   AS display_name,
+    CASE
+      WHEN direct.customer_id IS NOT NULL THEN direct.match_via
+      WHEN bridged.customer_id IS NOT NULL THEN 'sc_account'
+    END                                                   AS match_via
+  FROM accounts v
+  LEFT JOIN customer_by_address direct
+    ON v.address_key = direct.address_key AND v.address_key != '|'
+  LEFT JOIN sc_account_address bridge
+    ON v.vendor = 'alarmdotcom' AND v.contract_no = bridge.account_no
+  LEFT JOIN customer_by_address bridged
+    ON bridge.address_key = bridged.address_key
 )
 SELECT
   v.vendor,
@@ -309,15 +363,15 @@ SELECT
   v.in_roster,
   v.started_on,
   v.vendor_monthly_cost,
-  c.customer_id                         AS matched_customer_id,
-  c.display_name                        AS matched_customer_name,
-  c.match_via,
+  v.customer_id                         AS matched_customer_id,
+  v.display_name                        AS matched_customer_name,
+  v.match_via,
   -- Does any word of the vendor's subscriber name appear in the matched
   -- customer's? Agreement is weak evidence; DISAGREEMENT is strong evidence
   -- of a bad match, and that is what this is for. Never act on a
   -- BILLED_NO_SUBSCRIPTION row where this is FALSE without checking it by
   -- hand — the key is an address heuristic, not an identifier.
-  (SELECT LOGICAL_OR(LENGTH(t) >= 3 AND STRPOS(LOWER(c.display_name), t) > 0)
+  (SELECT LOGICAL_OR(LENGTH(t) >= 3 AND STRPOS(LOWER(v.display_name), t) > 0)
    FROM UNNEST(SPLIT(LOWER(REGEXP_REPLACE(
      COALESCE(v.subscriber_name, ''), r'[^a-zA-Z ]', '')), ' ')) AS t)
                                         AS name_overlaps,
@@ -327,12 +381,10 @@ SELECT
   CASE
     WHEN NOT COALESCE(v.is_active_at_vendor, FALSE) THEN 'DEACTIVATED'
     WHEN NOT v.in_roster THEN 'BILLED_NO_ROSTER'
-    WHEN c.customer_id IS NULL THEN 'BILLED_NO_MATCH'
+    WHEN v.customer_id IS NULL THEN 'BILLED_NO_MATCH'
     WHEN COALESCE(s.active_subscriptions, 0) = 0 THEN 'BILLED_NO_SUBSCRIPTION'
     ELSE 'OK'
   END                                   AS finding,
   CURRENT_TIMESTAMP()                   AS computed_at
-FROM accounts v
-LEFT JOIN customer_by_address c
-  ON v.address_key = c.address_key AND v.address_key != '|'
-LEFT JOIN subs s ON s.customer_id = c.customer_id;
+FROM matched v
+LEFT JOIN subs s ON s.customer_id = v.customer_id;

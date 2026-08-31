@@ -57,7 +57,13 @@ to Zoho Billing on house number + street name + ZIP — by way of Zoho CRM, beca
 knows who subscribes but not where they live. Its list endpoint returns no
 address (0 of 34,248 rows) and its customers carry no CRM reference, so the
 chain is address → CRM account → Billing customer, bridged on account name.
-`match_via` says which path answered. Measured 2026-08-30: 73% of unmatched
+`match_via` says which path answered. Alarm.com has a third: its export
+carries Security Central's account number on 502 of 597 rows, so a row whose
+own address reaches nobody can borrow the match of the Security Central
+account it is provably the same property as (`sc_account`). Measured at 15
+accounts — the exact key helps less than it sounds like it should, because
+most unmatched Alarm.com rows have a Security Central twin that is unmatched
+too. The address key is the shared bottleneck, not an Alarm.com weakness. Measured 2026-08-30: 73% of unmatched
 vendor accounts reach a CRM account by address, 94% of those reach Billing by
 name — roughly 357 of 522 end to end.
 
