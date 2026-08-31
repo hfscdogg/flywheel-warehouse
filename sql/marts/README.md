@@ -53,7 +53,7 @@ name fixed on one side.
 ## kpi_subscription_audit — vendor accounts vs. what customers pay for
 
 One row per (vendor, account) across Security Central, Alarm.com and Parasol, matched
-to Zoho Billing on house number + ZIP — by way of Zoho CRM, because Billing
+to Zoho Billing on house number + street name + ZIP — by way of Zoho CRM, because Billing
 knows who subscribes but not where they live. Its list endpoint returns no
 address (0 of 34,248 rows) and its customers carry no CRM reference, so the
 chain is address → CRM account → Billing customer, bridged on account name.
@@ -68,7 +68,12 @@ household — a 5-digit ZIP covers thousands of homes. The key now includes the
 street name with its suffix stripped, and `name_overlaps` reports whether the
 vendor's subscriber name shares a word with the matched customer's. FALSE
 there means verify by hand; it is the difference between finding a leak and
-cancelling a paying customer's alarm monitoring. Exists to find the leak: an account
+cancelling a paying customer's alarm monitoring.
+
+**Do not dedupe across vendors.** Monitoring, interactive smart-home services
+and remote support are three separate products from three separate companies;
+one property on all three is three real monthly costs, not one billed thrice.
+The grain is the (vendor, account) pair for that reason. Exists to find the leak: an account
 still **active at the central station** whose customer has **no live
 subscription** — a monthly vendor cost with no revenue behind it. The
 `finding` column separates `BILLED_NO_SUBSCRIPTION` (matched customer, no

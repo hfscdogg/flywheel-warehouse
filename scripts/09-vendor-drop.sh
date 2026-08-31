@@ -44,14 +44,36 @@ case "$ACTION" in
 
     info "Folder placeholders (a bucket has no real folders; these make the"
     info "upload targets visible in the console)"
+    # A placeholder is cosmetic and its failure is not fatal, but it is never
+    # silent: this loop used to discard the error and log the folder anyway,
+    # which printed four confident lines over an empty bucket. A file uploaded
+    # outside these prefixes is not scanned and never reaches the warehouse,
+    # so "the folder is missing" has to reach the operator.
+    placeholders_failed=0
     for p in $DROP_PREFIXES; do
       if is_dry_run; then
         log "[dry-run] create gs://$BUCKET/$p/ placeholder"
-      else
-        printf '' | gsutil cp - "gs://$BUCKET/$p/.keep" >/dev/null 2>&1 || true
+        continue
+      fi
+      if err=$(printf '\n' | gsutil cp - "gs://$BUCKET/$p/.keep" 2>&1); then
         log "  gs://$BUCKET/$p/"
+      else
+        placeholders_failed=1
+        warn "could not create gs://$BUCKET/$p/.keep"
+        printf '%s\n' "$err" | sed 's/^/    /' >&2
       fi
     done
+
+    if [ "$placeholders_failed" = 1 ]; then
+      log ""
+      warn "Some folders were not created. Make them by hand in the console"
+      warn "with 'Create folder' — the names above, exactly. An upload that"
+      warn "lands anywhere else is never read."
+    fi
+
+    log ""
+    info "What is actually in the bucket now"
+    gsutil ls "gs://$BUCKET/**" 2>/dev/null | sed 's/^/  /' || log "  (empty)"
 
     log ""
     info "Upload here (browser): https://console.cloud.google.com/storage/browser/$BUCKET"
