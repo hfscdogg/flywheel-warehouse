@@ -55,7 +55,12 @@ case "$ACTION" in
         log "[dry-run] create gs://$BUCKET/$p/ placeholder"
         continue
       fi
-      if err=$(printf '\n' | gsutil cp - "gs://$BUCKET/$p/.keep" 2>&1); then
+      # ZERO bytes, and it has to stay that way: pipelines/vendordrop/ingest.py
+      # skips empty objects, which is the only thing keeping these placeholders
+      # out of the parsers. A one-byte .keep is indistinguishable from an
+      # upload, and in parasol/invoice it reaches the PDF extractor and kills
+      # the run before the real invoice is read.
+      if err=$(printf '' | gsutil cp - "gs://$BUCKET/$p/.keep" 2>&1); then
         log "  gs://$BUCKET/$p/"
       else
         placeholders_failed=1

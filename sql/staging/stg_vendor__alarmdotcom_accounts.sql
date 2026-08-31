@@ -31,22 +31,23 @@ WITH latest AS (
 ),
 fields AS (
   SELECT
-    _source_id                                                AS customer_id,
-    JSON_VALUE(payload, '$.SC_ACCOUNT')                       AS sc_account_no,
-    JSON_VALUE(payload, '$["First Name"]')                    AS first_name,
-    JSON_VALUE(payload, '$["Last Name"]')                     AS last_name,
-    JSON_VALUE(payload, '$["Customer Company Name"]')         AS company_name,
-    JSON_VALUE(payload, '$["System Description"]')            AS property_label,
-    JSON_VALUE(payload, '$["Street 1"]')                      AS street_address,
-    JSON_VALUE(payload, '$["City"]')                          AS city,
-    JSON_VALUE(payload, '$["State"]')                         AS state,
-    JSON_VALUE(payload, '$["Postal Code"]')                   AS zip,
-    JSON_VALUE(payload, '$["Service Package"]')               AS service_package,
-    JSON_VALUE(payload, '$["Primary E-Mail"]')                AS email,
-    SAFE.PARSE_DATE('%m/%d/%Y', JSON_VALUE(payload, '$["Join Date (EDT)"]'))
-                                                              AS started_on,
-    JSON_VALUE(payload, '$["Pending Termination Date (EDT)"]') AS pending_termination,
-    _loaded_at                                                AS loaded_at
+    _source_id                                            AS customer_id,
+    JSON_VALUE(payload, '$.SC_ACCOUNT')                   AS sc_account_no,
+    JSON_VALUE(payload, '$."First Name"')                 AS first_name,
+    JSON_VALUE(payload, '$."Last Name"')                  AS last_name,
+    JSON_VALUE(payload, '$."Customer Company Name"')      AS company_name,
+    JSON_VALUE(payload, '$."System Description"')         AS property_label,
+    JSON_VALUE(payload, '$."Street 1"')                   AS street_address,
+    JSON_VALUE(payload, '$."City"')                       AS city,
+    JSON_VALUE(payload, '$."State"')                      AS state,
+    JSON_VALUE(payload, '$."Postal Code"')                AS zip,
+    JSON_VALUE(payload, '$."Service Package"')            AS service_package,
+    JSON_VALUE(payload, '$."Primary E-Mail"')             AS email,
+    SAFE.PARSE_DATE('%m/%d/%Y',
+      JSON_VALUE(payload, '$."Join Date (EDT)"'))         AS started_on,
+    JSON_VALUE(payload, '$."Pending Termination Date (EDT)"')
+                                                          AS pending_termination,
+    _loaded_at                                            AS loaded_at
   FROM latest
 )
 SELECT
