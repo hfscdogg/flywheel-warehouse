@@ -42,6 +42,8 @@ the 07:00 transform), lands it in `raw_vendor`, and moves the file to
 gs://livewire-dw-vendor-drops/
   securitycentral/allaccounts/      ← the SCAN "All Accounts" export (.xlsx)
   securitycentral/customercount/    ← the weekly emailed report (.CSV)
+  alarmdotcom/customerlist/         ← dealer-site "Custom List" export (.csv)
+  parasol/invoice/                  ← the monthly invoice (.pdf)
   processed/                        ← where the pipeline files them afterwards
 ```
 
@@ -76,11 +78,15 @@ project. Revoke by removing those two bindings on the bucket.
 
 ### What the employee does
 
-> Every Monday, Security Central emails the **Customer Count** report.
-> Save the attachment, open
+> **Weekly.** Security Central emails a **Customer Count** report. Save the
+> attachment, open
 > https://console.cloud.google.com/storage/browser/livewire-dw-vendor-drops,
 > click into `securitycentral/customercount/`, and drop the file in.
-> That's the whole job — the file disappears from that folder within a day
+>
+> **Monthly.** Parasol emails an invoice — drop the PDF into
+> `parasol/invoice/`. Same thing, different folder.
+>
+> That's the whole job. Each file disappears from its folder within a day
 > once the warehouse has read it.
 
 The file name doesn't matter; the folder does. Re-uploading the same file is
@@ -131,6 +137,13 @@ Report formats are declared, not sniffed, in
   fake customer.
 - `table` is the `raw_vendor` landing table, which is also what
   `sql/staging/stg_vendor__<table>.sql` reads.
+- `pdf_probe` marks a PDF format and names a string that must appear in the
+  extracted text; `pipelines/lib/pdftext.py` uses it to find the font's code
+  offset instead of hard-coding one, so a re-subsetted font self-corrects and
+  a genuinely different document fails loudly.
+- `clean` unwraps a column an exporter dressed up for Excel (`="1047"`, a
+  `=HYPERLINK()` formula); `derive` builds a column from two others, which is
+  how Alarm.com's cross-vendor `SC_ACCOUNT` key is assembled.
 
 Add the key to `DROP_PREFIXES` in `scripts/09-vendor-drop.sh`, re-run it to
 create the folder, add a case to `pipelines/tests/test_tabular.py`, and write
