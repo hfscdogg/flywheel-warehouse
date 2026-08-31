@@ -45,10 +45,10 @@ case "$ACTION" in
     info "Folder placeholders (a bucket has no real folders; these make the"
     info "upload targets visible in the console)"
     # A placeholder is cosmetic and its failure is not fatal, but it is never
-    # silent: this loop used to discard the error and log the folder anyway,
-    # which printed four confident lines over an empty bucket. A file uploaded
-    # outside these prefixes is not scanned and never reaches the warehouse,
-    # so "the folder is missing" has to reach the operator.
+    # silent: this loop used to discard the error and log the folder name
+    # anyway, so its output was the same whether or not anything was written.
+    # A file uploaded outside these prefixes is not scanned and never reaches
+    # the warehouse, so "the folder is missing" has to reach the operator.
     placeholders_failed=0
     for p in $DROP_PREFIXES; do
       if is_dry_run; then
