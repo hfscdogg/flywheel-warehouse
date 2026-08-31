@@ -1,7 +1,16 @@
 -- kpi_subscription_audit — monitoring accounts a vendor bills us for, matched
 -- against what the customer is actually subscribed to.
--- Grain: one row per (vendor, account). Security Central and Alarm.com today;
--- another vendor joins by adding a CTE that produces the same columns.
+-- Grain: one row per (vendor, account). Security Central, Alarm.com and
+-- Parasol today; another vendor joins by adding a CTE producing the same
+-- columns.
+--
+-- THREE VENDORS, THREE SERVICES — OVERLAP IS NOT A FINDING
+-- Security Central is security monitoring, Alarm.com is interactive smart-home
+-- services, Parasol is 24/7 remote support. They are wholly separate products,
+-- so one property legitimately appears under all three and we legitimately pay
+-- all three for it. Do not dedupe across vendors: an address showing up three
+-- times is three real costs, and collapsing them would hide two of them. The
+-- unit of the audit is the (vendor, account) pair, never the address.
 --
 -- The leak this exists to find: an account still active at the central
 -- station whose customer has no live Zoho Billing subscription. We pay the
@@ -24,7 +33,8 @@
 -- 2 of 586 in the 2026-08-27 files). The weekly feed reports status per
 -- contract, so both accounts inherit it; the grain stays one row per account.
 --
--- Matching to billing is on house number + ZIP (address_key). Street names
+-- Matching to billing is on house number + street name + ZIP (address_key),
+-- the street name suffix-stripped so "Dr" and "Drive" agree. Street names
 -- are written inconsistently between systems ("Dr" vs "Drive"), but house
 -- number and ZIP rarely vary. Unmatched rows are reported, not hidden: a low
 -- match rate means the key needs work, and treating "unmatched" as "unbilled"

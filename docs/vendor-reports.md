@@ -5,6 +5,22 @@ Security Central runs Manitou; its reports come out of the SCAN portal or
 arrive by email. So the data gets in as files, and this is how a file becomes
 a warehouse table without anyone opening a terminal.
 
+## Three vendors, three different services
+
+Worth stating plainly, because the audit output invites the wrong conclusion:
+
+| Vendor | Sells | Bills per |
+|--------|-------|-----------|
+| **Security Central** | security monitoring (central station) | account |
+| **Alarm.com** | interactive services for smart home | account |
+| **Parasol** | 24/7 remote support | account |
+
+They are wholly separate products. One property can be on all three, and we
+pay all three for it — that is normal, not a double-bill. So the audit never
+dedupes across vendors: the same address appearing three times is three real
+monthly costs, and each is audited against billing on its own. A leak is a
+(vendor, account) pair with no live subscription, never an address.
+
 ## The vendor reports
 
 | Report | Carries | How often | Why we need it |
