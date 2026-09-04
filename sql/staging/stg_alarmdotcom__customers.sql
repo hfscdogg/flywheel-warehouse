@@ -10,7 +10,11 @@
 --
 -- Shaped to line up with stg_vendor__securitycentral_accounts so both
 -- vendors can feed one audit: same address_key, same is_active_at_vendor.
-CREATE OR REPLACE TABLE staging.stg_alarmdotcom__customers AS
+CREATE OR REPLACE TABLE staging.stg_alarmdotcom__customers
+OPTIONS (description = """
+Alarm.com customers as returned by the Partner API, one row per customer id. EMPTY until the Partner API is credentialed; the dealer-site export in stg_vendor__alarmdotcom_accounts is the live Alarm.com feed and is what the audit uses. Prefer that table.
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_alarmdotcom.customers
@@ -37,7 +41,18 @@ fields AS (
   FROM latest
 )
 SELECT
-  *,
+  customer_id,
+  first_name,
+  last_name,
+  email,
+  customer_name,
+  status,
+  street_address,
+  city,
+  state,
+  zip,
+  dealer_id,
+  loaded_at,
   COALESCE(
     NULLIF(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, ''))), ''),
     customer_name
@@ -69,3 +84,34 @@ SELECT
     COALESCE(REGEXP_EXTRACT(zip, r'(\d{5})'), '')
   )  AS address_key
 FROM fields;
+
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN customer_id
+  SET OPTIONS (description = "Alarm.com customer id.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN first_name
+  SET OPTIONS (description = "Customer first name.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN last_name
+  SET OPTIONS (description = "Customer last name.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN email
+  SET OPTIONS (description = "Customer email.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN customer_name
+  SET OPTIONS (description = "Full name as the API returns it.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN status
+  SET OPTIONS (description = "Account status word from the API.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN street_address
+  SET OPTIONS (description = "Service address street line.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN city
+  SET OPTIONS (description = "Service city.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN state
+  SET OPTIONS (description = "Service state.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN zip
+  SET OPTIONS (description = "Service ZIP.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN dealer_id
+  SET OPTIONS (description = "Alarm.com dealer id the customer belongs to.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN subscriber_name
+  SET OPTIONS (description = "Display name used for matching: full name, or the parts joined.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN is_active_at_vendor
+  SET OPTIONS (description = "TRUE when the status counts as active.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN address_key
+  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");

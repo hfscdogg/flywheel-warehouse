@@ -37,11 +37,12 @@ project, a one-row snapshot with no history), and say which sibling table
 answers the neighbouring question. The table description is what the agent
 reads first, so it carries the most weight.
 
-Two guards keep this honest. `pipelines/tests/test_sql_marts_described.py`
-extracts every output column of every mart's final `SELECT` and fails CI if
+Two guards keep this honest, and both cover `staging` as well as `marts`
+since a wide-scope agent reads both. `pipelines/tests/test_sql_marts_described.py`
+extracts every output column of every model's final `SELECT` and fails CI if
 one has no `ALTER COLUMN` description; `06-transform.sh` runs
-`sql/checks/marts_described.sql` after the build and fails the run if
-BigQuery reports any mart table or column without one. Renaming a column
+`sql/checks/described.sql` after the build and fails the run if BigQuery
+reports any table or column in either dataset without one. Renaming a column
 without updating its `ALTER` fails in both places, loudly. Descriptions must
 not mention `staging.<table>` — the transform reads a mart's inputs by
 grepping for that, and prose would turn into a dependency.

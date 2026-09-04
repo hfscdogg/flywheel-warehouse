@@ -20,7 +20,11 @@
 -- treated as active unless it carries one: Alarm.com does not publish a
 -- status column in this export, and presence on the dealer's list is what
 -- we are billed for.
-CREATE OR REPLACE TABLE staging.stg_vendor__alarmdotcom_accounts AS
+CREATE OR REPLACE TABLE staging.stg_vendor__alarmdotcom_accounts
+OPTIONS (description = """
+Alarm.com accounts from the dealer-site Custom List export, one row per Alarm.com customer id. Alarm.com sells interactive smart-home services; we pay them per account. sc_account_no is Security Central's account number for the same property, present on most rows: an exact cross-vendor key. kpi_subscription_audit uses this table.
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_vendor.alarmdotcom_accounts
@@ -51,7 +55,21 @@ fields AS (
   FROM latest
 )
 SELECT
-  *,
+  customer_id,
+  sc_account_no,
+  first_name,
+  last_name,
+  company_name,
+  property_label,
+  street_address,
+  city,
+  state,
+  zip,
+  service_package,
+  email,
+  started_on,
+  pending_termination,
+  loaded_at,
   COALESCE(
     NULLIF(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, ''))), ''),
     company_name
@@ -67,3 +85,40 @@ SELECT
     COALESCE(REGEXP_EXTRACT(zip, r'^(\d{5})'), '')
   )                                                           AS address_key
 FROM fields;
+
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN customer_id
+  SET OPTIONS (description = "Alarm.com customer id; the key.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN sc_account_no
+  SET OPTIONS (description = "Security Central's account number for this property, e.g. A1651-1047, when the export carried one. Exact key to stg_vendor__securitycentral_accounts.account_no.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN first_name
+  SET OPTIONS (description = "Customer first name.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN last_name
+  SET OPTIONS (description = "Customer last name.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN company_name
+  SET OPTIONS (description = "Company name, for commercial accounts.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN property_label
+  SET OPTIONS (description = "System description as entered on the dealer site.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN street_address
+  SET OPTIONS (description = "Service address street line.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN city
+  SET OPTIONS (description = "Service city.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN state
+  SET OPTIONS (description = "Service state.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN zip
+  SET OPTIONS (description = "Service ZIP; may be ZIP+4 without a hyphen.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN service_package
+  SET OPTIONS (description = "Alarm.com service package on the account.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN email
+  SET OPTIONS (description = "Customer email.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN started_on
+  SET OPTIONS (description = "Join date on the account.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN pending_termination
+  SET OPTIONS (description = "Pending termination date when the account is being cancelled; NULL otherwise.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN subscriber_name
+  SET OPTIONS (description = "Name used for matching: first and last name, or the company name.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN is_active_at_vendor
+  SET OPTIONS (description = "TRUE unless a termination is pending.");
+ALTER TABLE staging.stg_vendor__alarmdotcom_accounts ALTER COLUMN address_key
+  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");

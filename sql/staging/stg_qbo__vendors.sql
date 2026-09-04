@@ -1,7 +1,11 @@
 -- stg_qbo__vendors — latest record per QuickBooks Online vendor.
 -- Grain: one row per vendor_id.
 -- Source: raw_qbo.vendor (append-only; payload = full QBO v3 record).
-CREATE OR REPLACE TABLE staging.stg_qbo__vendors AS
+CREATE OR REPLACE TABLE staging.stg_qbo__vendors
+OPTIONS (description = """
+QuickBooks vendors, one row per vendor. balance is what we currently owe them across open bills.
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_qbo.vendor
@@ -23,3 +27,24 @@ SELECT
   SAFE_CAST(JSON_VALUE(payload, '$.MetaData.LastUpdatedTime') AS TIMESTAMP) AS modified_at,
   _loaded_at                                                    AS loaded_at
 FROM latest;
+
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN vendor_id
+  SET OPTIONS (description = "QuickBooks vendor id; the key.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN display_name
+  SET OPTIONS (description = "Vendor display name; the name bills show.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN company_name
+  SET OPTIONS (description = "Vendor company name.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN email
+  SET OPTIONS (description = "Vendor email.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN phone
+  SET OPTIONS (description = "Vendor phone.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN balance
+  SET OPTIONS (description = "What we owe this vendor now across open bills, USD.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN is_active
+  SET OPTIONS (description = "FALSE for vendors made inactive in QuickBooks.");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN created_at
+  SET OPTIONS (description = "When the record was created in the source system (UTC).");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN modified_at
+  SET OPTIONS (description = "When the record was last changed in the source system (UTC).");
+ALTER TABLE staging.stg_qbo__vendors ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
