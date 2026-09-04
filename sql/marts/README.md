@@ -9,6 +9,43 @@ here, created by `scripts/01-datasets.sh`.)
 Built by [`scripts/06-transform.sh`](../../scripts/06-transform.sh) after
 staging; the `transform` workflow runs daily at 07:00 UTC.
 
+## Descriptions are the agent's documentation
+
+`hermes-mcp` serves BigQuery's table and column descriptions to the agent —
+`list_kpi_tables` returns the table description, `get_table_schema` the
+column ones — and nothing else. Whatever is not in a description, Hermes does
+not know. The `--` comments in the SQL are for people; the agent never sees
+them.
+
+So every mart carries both, **in its own SQL file**:
+
+```sql
+CREATE OR REPLACE TABLE marts.kpi_x
+OPTIONS (description = """
+What the table is, its grain, and what NOT to do with it.
+""")
+AS
+WITH ...;
+
+ALTER TABLE marts.kpi_x ALTER COLUMN finding
+  SET OPTIONS (description = "OK: ... BILLED_NO_SUBSCRIPTION: the leak. ...");
+```
+
+Write them for the agent, not the engineer: state the grain, name the traps
+(a Parasol-only cost column, a customer-level figure that double-counts per
+project, a one-row snapshot with no history), and say which sibling table
+answers the neighbouring question. The table description is what the agent
+reads first, so it carries the most weight.
+
+Two guards keep this honest. `pipelines/tests/test_sql_marts_described.py`
+extracts every output column of every mart's final `SELECT` and fails CI if
+one has no `ALTER COLUMN` description; `06-transform.sh` runs
+`sql/checks/marts_described.sql` after the build and fails the run if
+BigQuery reports any mart table or column without one. Renaming a column
+without updating its `ALTER` fails in both places, loudly. Descriptions must
+not mention `staging.<table>` — the transform reads a mart's inputs by
+grepping for that, and prose would turn into a dependency.
+
 ## kpi_sales_pipeline — monthly sales funnel (Zoho CRM)
 
 One row per calendar month, first CRM activity through three months ahead.

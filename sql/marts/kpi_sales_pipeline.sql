@@ -3,26 +3,16 @@
 -- through three months ahead (future months carry the open pipeline expected
 -- to close then). Shaped for direct agent consumption: no joins needed.
 --
--- Columns:
---   month                 first day of the calendar month
---   leads_created         leads created in the month
---   deals_created         deals created in the month
---   new_pipeline_amount   sum of amounts on deals created in the month
---   deals_won/won_amount  deals closed-won in the month (by closing date;
---                         won/lost per Zoho's Forecast Type stage lists —
---                         see stg_zoho__deals; test records excluded)
---   deals_lost/lost_amount  deals closed-lost in the month
---   win_rate_pct          won / (won + lost) among deals closed that month
---   median_days_to_win    median days from deal creation to won-close
---   open_deals_closing / open_amount_closing / open_expected_closing
---                         still-open deals whose expected close falls in the
---                         month (a forecast view; empty for past months that
---                         have no overdue open deals). open_amount_closing is
---                         raw deal amount; open_expected_closing is Zoho's
---                         probability-weighted Expected Revenue — the measure
---                         the Operating Metrics dashboard plots as pipeline.
---   computed_at           build timestamp
-CREATE OR REPLACE TABLE marts.kpi_sales_pipeline AS
+-- Column meanings are declared at the end of this file (ALTER COLUMN ...
+-- SET OPTIONS). BigQuery serves them to agents through hermes-mcp, so that
+-- is the one copy — do not restate them here.
+CREATE OR REPLACE TABLE marts.kpi_sales_pipeline
+OPTIONS (description = """
+Monthly sales funnel from Zoho CRM, one row per calendar month from the first month with CRM activity through three months ahead.
+Past months carry actuals: leads and deals created, won and lost counts and amounts, win rate, days to win. The current and future months also carry the open pipeline expected to close in that month; open_expected_closing is the probability-weighted figure the Zoho dashboard plots as pipeline.
+For week-level questions use kpi_sales_weekly. Amounts USD; CRM test records excluded.
+""")
+AS
 WITH deals AS (
   SELECT *, COALESCE(closing_date, DATE(modified_at)) AS closed_date
   FROM staging.stg_zoho__deals
@@ -107,3 +97,36 @@ LEFT JOIN lead_activity l USING (month)
 LEFT JOIN deal_created dc USING (month)
 LEFT JOIN deal_closed cl USING (month)
 LEFT JOIN open_pipeline op USING (month);
+
+-- What agents read. hermes-mcp serves these descriptions verbatim through
+-- get_table_schema, and a column without one is a column Hermes will guess
+-- at. 06-transform.sh fails the run if any mart column has no description.
+-- Renaming a column above without updating it here fails here, loudly.
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN month
+  SET OPTIONS (description = "First day of the calendar month.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN leads_created
+  SET OPTIONS (description = "Leads created in the month.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN deals_created
+  SET OPTIONS (description = "Deals created in the month.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN new_pipeline_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals created in the month, USD.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN deals_won
+  SET OPTIONS (description = "Deals closed-won in the month, by closing date. Install stages count as won.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN won_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals won in the month, USD.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN deals_lost
+  SET OPTIONS (description = "Deals closed-lost in the month, by closing date.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN lost_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals lost in the month, USD.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN win_rate_pct
+  SET OPTIONS (description = "deals_won / (deals_won + deals_lost) among deals closed in the month, as a percentage 0 to 100. NULL when nothing closed.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN median_days_to_win
+  SET OPTIONS (description = "Median days from deal creation to won close, over deals won in the month.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN open_deals_closing
+  SET OPTIONS (description = "Still-open deals whose expected close date falls in this month. A forecast; meaningful for the current and future months.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN open_amount_closing
+  SET OPTIONS (description = "Raw deal amount on those open deals, USD.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN open_expected_closing
+  SET OPTIONS (description = "Zoho probability-weighted Expected Revenue on those open deals, USD. This is the pipeline measure the Zoho dashboard plots.");
+ALTER TABLE marts.kpi_sales_pipeline ALTER COLUMN computed_at
+  SET OPTIONS (description = "When this row was built (UTC).");

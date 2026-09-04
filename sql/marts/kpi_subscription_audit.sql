@@ -44,57 +44,19 @@
 -- match rate means the key needs work, and treating "unmatched" as "unbilled"
 -- without checking would manufacture false leaks.
 --
--- Columns:
---   vendor                 'securitycentral', 'alarmdotcom' or 'parasol'
---   vendor_monthly_cost    what this vendor charges for THIS account.
---                          Parasol only — its invoice is the roster, so the
---                          rate sits on every line. NULL elsewhere means the
---                          vendor does not tell us, not that it is free.
---   account_no             vendor's account number
---   contract_no            vendor's contract number (the join key between feeds)
---   subscriber_name / street_address / city / state / zip
---   account_type           Residential / Commercial / Commercial Fire
---                          (Security Central only; NULL for Alarm.com)
---   vendor_status          the vendor's own word: Active, Deactivated, or
---                          (rarely) Inactive. Only 'Active' counts as active.
---   status_source          how status was learned: 'weekly' (Customer Count
---                          feed), 'roster' (All Accounts export), or 'api'
---                          (Alarm.com Partner API, which has one live feed)
---   status_as_of           when that status was loaded
---   in_roster              FALSE when the account is known only from a feed
---                          that carries no address, so no billing match is
---                          possible. Always TRUE for single-feed vendors.
---   started_on             vendor account start date
---   matched_customer_id    Zoho Billing customer, NULL when no address match
---   name_overlaps          TRUE when a word of the vendor's subscriber name
---                          appears in the matched customer's name. FALSE is
---                          a strong signal the address matched the wrong
---                          household — verify before acting on that row.
---   match_via              how billing was reached: 'billing' (a Billing
---                          address, currently none), 'crm' (the CRM account
---                          at that address, matched to Billing by name), or
---                          'sc_account' (Alarm.com only — reached through
---                          Security Central's account number rather than an
---                          address; an exact key, so these are the Alarm.com
---                          rows least likely to be a wrong household).
---                          NULL when nothing matched.
---   active_subscriptions   live subscriptions for that customer
---   subscription_amount    their summed recurring amount
---   plan_names             comma-separated plan names, for eyeballing fit
---   finding                see below
---   computed_at            build timestamp
---
--- finding values:
---   BILLED_NO_SUBSCRIPTION  active at vendor, customer matched, no live sub
---                           → the leak: investigate and cancel or re-bill
---   BILLED_NO_MATCH         active at vendor, in the roster, no billing
---                           customer matched → a leak or an address-key miss
---   BILLED_NO_ROSTER        active at vendor but absent from the roster
---                           → request a fresh All Accounts export before
---                             judging; not evidence of a leak on its own
---   OK                      active at vendor with a live subscription
---   DEACTIVATED             not active at the vendor (informational)
-CREATE OR REPLACE TABLE marts.kpi_subscription_audit AS
+-- Column meanings are declared at the end of this file (ALTER COLUMN ...
+-- SET OPTIONS). BigQuery serves them to agents through hermes-mcp, so that
+-- is the one copy — do not restate them here.
+CREATE OR REPLACE TABLE marts.kpi_subscription_audit
+OPTIONS (description = """
+Monitoring accounts that three vendors bill Livewire for, matched to Zoho Billing to find accounts we pay for with no live customer subscription.
+ONE ROW PER (vendor, account). The same property legitimately appears under several vendors because they sell different services: Security Central is security monitoring, Alarm.com is interactive smart-home, Parasol is 24/7 remote support. Never dedupe across vendors; a property on all three is three real costs.
+The leak is finding = BILLED_NO_SUBSCRIPTION. BILLED_NO_MATCH means no billing customer could be found, which is unknown, not a proven leak.
+Before acting on any row check name_overlaps: FALSE means the address probably matched the wrong household.
+vendor_monthly_cost is populated for Parasol ONLY. Security Central and Alarm.com publish no per-account rate, so a SUM across vendors understates the true cost by roughly two thirds and must be labelled as Parasol-only.
+No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
+""")
+AS
 WITH roster AS (
   SELECT * FROM staging.stg_vendor__securitycentral_accounts
 ),
@@ -388,3 +350,56 @@ SELECT
   CURRENT_TIMESTAMP()                   AS computed_at
 FROM matched v
 LEFT JOIN subs s ON s.customer_id = v.customer_id;
+
+-- What agents read. hermes-mcp serves these descriptions verbatim through
+-- get_table_schema, and a column without one is a column Hermes will guess
+-- at. 06-transform.sh fails the run if any mart column has no description.
+-- Renaming a column above without updating it here fails here, loudly.
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor
+  SET OPTIONS (description = "Which vendor bills us for this account: securitycentral (security monitoring), alarmdotcom (interactive smart-home) or parasol (24/7 remote support). Different services, so one property on all three is normal.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_no
+  SET OPTIONS (description = "The vendor's own account number for this account.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN contract_no
+  SET OPTIONS (description = "Security Central: the contract number. Alarm.com: Security Central's account number for the same property, an exact cross-vendor key. Parasol: NULL.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscriber_name
+  SET OPTIONS (description = "Name on the vendor's record for this account.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN street_address
+  SET OPTIONS (description = "Service address per the vendor.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN city
+  SET OPTIONS (description = "Service city per the vendor.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN state
+  SET OPTIONS (description = "Service state per the vendor.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN zip
+  SET OPTIONS (description = "Service ZIP per the vendor; may carry ZIP+4 for Alarm.com.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_type
+  SET OPTIONS (description = "Security Central: Residential, Commercial or Commercial Fire. Alarm.com: the service package. Parasol: the service tier, Essential or Enhanced.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_status
+  SET OPTIONS (description = "The vendor's own status word. Only Active counts as active; Deactivated and Inactive do not.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_source
+  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_as_of
+  SET OPTIONS (description = "When that status was loaded into the warehouse (UTC).");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN in_roster
+  SET OPTIONS (description = "FALSE when the account is known only from a feed that carries no address, so no billing match was possible. TRUE for every Alarm.com and Parasol row.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN started_on
+  SET OPTIONS (description = "Account start date per the vendor. NULL for Parasol, whose invoice does not carry one.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_monthly_cost
+  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD. Parasol ONLY. NULL for Security Central and Alarm.com means the vendor does not tell us the rate, not that the account is free.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
+  SET OPTIONS (description = "Zoho Billing customer matched to this account. NULL when no match was found.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
+  SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
+  SET OPTIONS (description = "How the billing customer was reached: crm (vendor address to a Zoho CRM account, then to Billing by customer name), billing (a Billing address directly), sc_account (Alarm.com only: through Security Central's account number, an exact key rather than an address guess). NULL when unmatched.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
+  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions
+  SET OPTIONS (description = "Number of live Zoho Billing subscriptions for the matched customer. 0 when unmatched.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
+  SET OPTIONS (description = "Summed recurring amount of those live subscriptions, USD.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN plan_names
+  SET OPTIONS (description = "Comma-separated names of the live plans, for judging fit.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
+  SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at
+  SET OPTIONS (description = "When this row was built (UTC).");
