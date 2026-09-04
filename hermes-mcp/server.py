@@ -86,7 +86,10 @@ def _clean_select(sql: str) -> str:
 @mcp.tool()
 def list_kpi_tables() -> list:
     """List the KPI tables in the marts dataset with row counts and
-    descriptions. These tables are the agent-facing source of truth."""
+    descriptions. Start here for any question about the business: the
+    description says what each table is, its grain, and which sibling table
+    answers a neighbouring question. These tables are the only source of
+    truth an agent has; there is nothing else to query."""
     client = bq()
     dataset = f"{client.project}.{DATASET}"
     out = []
@@ -104,7 +107,14 @@ def list_kpi_tables() -> list:
 
 @mcp.tool()
 def get_table_schema(table: str) -> dict:
-    """Get the column names, types, and descriptions of one marts table."""
+    """Get the column names, types, and descriptions of one marts table.
+
+    Call this before writing SQL against a table, every time. The
+    descriptions are rules, not hints: they say what a column means, which
+    values matter (e.g. which `finding` is the leak), what NOT to do (sum a
+    column that is populated for one vendor only, dedupe a table whose grain
+    is per vendor), and what a person must confirm before acting. An answer
+    that contradicts a description is wrong even if the SQL ran."""
     if not re.fullmatch(r"[A-Za-z0-9_]+", table):
         raise ValueError("invalid table name")
     client = bq()
@@ -124,7 +134,13 @@ def get_table_schema(table: str) -> dict:
 def query(sql: str) -> dict:
     """Run a read-only SQL query against the marts dataset (BigQuery
     Standard SQL). Unqualified table names resolve to marts, e.g.
-    SELECT * FROM kpi_sales_pipeline ORDER BY month DESC LIMIT 12."""
+    SELECT * FROM kpi_sales_pipeline ORDER BY month DESC LIMIT 12.
+
+    Read get_table_schema for the table first and follow its descriptions
+    when writing the SQL and when explaining the result. State the caveats
+    the descriptions name (a cost that covers one vendor only, a figure that
+    is customer-level rather than per project, a match that must be verified
+    by a person) as part of the answer, not as an afterthought."""
     client = bq()
     stmt = _clean_select(sql)
     job = client.query(stmt, job_config=bigquery.QueryJobConfig(
