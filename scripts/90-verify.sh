@@ -4,7 +4,8 @@
 # Checks, in order:
 #   1. All datasets exist in the configured location
 #   2. Both service accounts exist
-#   3. IAM policy assertions (reader on marts; reader ABSENT from raw/staging)
+#   3. IAM policy assertions (reader on DATASETS_AGENT; reader ABSENT from
+#      raw, and from staging unless AGENT_SCOPE=wide)
 #   4. Impersonated smoke test via the BigQuery REST API:
 #        - positive: query marts._flywheel_canary as hermes-reader → HTTP 200
 #        - negative: query raw._flywheel_canary the same way → HTTP 403
@@ -27,7 +28,7 @@ if is_dry_run; then
   info "[dry-run] verify is read-only; a real run asserts:"
   log "  - datasets ($ALL_DATASETS) exist in $BQ_LOCATION"
   log "  - SAs $SA_HERMES_READER_EMAIL and $SA_INGEST_WRITER_EMAIL exist"
-  log "  - $SA_HERMES_READER has dataViewer on $DATASET_MARTS and nothing on raw/staging"
+  log "  - $SA_HERMES_READER has dataViewer on $DATASETS_AGENT and nothing else (AGENT_SCOPE=$AGENT_SCOPE)"
   log "  - impersonated query on $DATASET_MARTS._flywheel_canary → HTTP 200"
   log "  - impersonated query on $FIRST_RAW._flywheel_canary → HTTP 403"
   exit 0
@@ -78,7 +79,20 @@ else
   record FAIL "policy: hermes-reader NOT bound on $DATASET_MARTS"
 fi
 
-for ds in $DATASETS_RAW $DATASET_STAGING; do
+# Staging is asserted present or absent according to the client's choice;
+# raw is asserted absent unconditionally.
+STAGING_EXPECTED_ABSENT="$DATASET_STAGING"
+[ "$AGENT_SCOPE" = "wide" ] && STAGING_EXPECTED_ABSENT=""
+if [ "$AGENT_SCOPE" = "wide" ]; then
+  ST_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$DATASET_STAGING" 2>/dev/null || true)"
+  if printf '%s' "$ST_ACCESS" | grep -q "$SA_HERMES_READER_EMAIL"; then
+    record PASS "policy: hermes-reader bound on $DATASET_STAGING (AGENT_SCOPE=wide)"
+  else
+    record FAIL "policy: hermes-reader NOT bound on $DATASET_STAGING but AGENT_SCOPE=wide"
+  fi
+fi
+# shellcheck disable=SC2086  # intentional word-split of the dataset lists
+for ds in $DATASETS_RAW $STAGING_EXPECTED_ABSENT; do
   DS_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null || true)"
   if [ -z "$DS_ACCESS" ]; then
     record FAIL "policy: could not read access on $ds"

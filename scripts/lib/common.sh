@@ -119,6 +119,15 @@ load_client() {
   SA_INGEST_WRITER_EMAIL="${SA_INGEST_WRITER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   ALL_DATASETS="$DATASETS_RAW $DATASET_STAGING $DATASET_MARTS"
 
+  # What hermes-reader may read (docs/access-tiers.md). Optional in
+  # client.env; absent means narrow, the Tier 2a default.
+  AGENT_SCOPE="${AGENT_SCOPE:-narrow}"
+  case "$AGENT_SCOPE" in
+    narrow) DATASETS_AGENT="$DATASET_MARTS" ;;
+    wide)   DATASETS_AGENT="$DATASET_MARTS $DATASET_STAGING" ;;
+    *) die "client.env for '$slug': AGENT_SCOPE must be narrow or wide (got '$AGENT_SCOPE')" ;;
+  esac
+
   # Always-explicit project, never interactive first-run init. Intentionally
   # word-split at call sites: run $BQ show ...
   BQ="bq --headless=true --project_id=$GCP_PROJECT_ID"
