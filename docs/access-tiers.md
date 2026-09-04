@@ -9,8 +9,8 @@ down before anyone has to ask.
 | Tier | Who | Scope | Credential | Status |
 |------|-----|-------|-----------|--------|
 | 1 | The client's humans | Everything — raw, staging, marts, IAM, billing | `ADMIN_USER` as project owner (console / gcloud) | ✅ live |
-| 2a | The client's own agents (narrow) | **`marts` only**, read-only | `hermes-reader` via the hermes-mcp endpoint + bearer token | ✅ live for Livewire (Hermes Agent, 2026-08-25) |
-| 2b | The client's own agents (wide) | All datasets (raw + staging + marts), still read-only | A second SA (e.g. `client-agent-reader`) via a second endpoint or scope flag | 📐 design only — built per client on request |
+| 2a | The client's own agents (narrow) | **`marts` only**, read-only | `hermes-reader` via the hermes-mcp endpoint + bearer token; `AGENT_SCOPE="narrow"` (the default) | ✅ built; Livewire ran this 2026-08-25 → 2026-09-04 |
+| 2b | The client's own agents (wide) | **`marts` + `staging`**, read-only; `raw_*` stays locked | Same SA and endpoint, `AGENT_SCOPE="wide"` in `client.env` — the scope-flag form | ✅ live for Livewire (Hermes Agent, 2026-09-04) |
 | 3 | Flywheel mothership | A dedicated aggregates dataset only — no row-level data, no PII | A separate per-client SA + token **held by Flywheel**, opt-in | 📐 design only — does not exist |
 
 ## Tier 1 — the client's humans
@@ -28,13 +28,24 @@ Hermes Agent, Claude, ChatGPT). Two widths, chosen by the client:
   deploys. The endpoint runs as `hermes-reader`, so the agent reads the
   KPI marts and nothing else — verified from the agent's seat by the two
   scope queries (marts returns rows, raw returns Access Denied).
-- **2b (wide)**: for clients who want their agents to drill into raw and
-  staging data. Same shape — keyless Cloud Run endpoint, bearer token in
-  the client's Secret Manager, one-command revocation — but the runtime SA
-  holds dataset-level read on every dataset. Deliberately a *separate*
-  service account and endpoint from 2a, so widening one agent never widens
-  them all, and `99-teardown.sh` semantics stay clean. Not built until a
-  client asks; when one does, it's a variant of `scripts/07-hermes-endpoint.sh`.
+- **2b (wide)**: for clients who want their agent to answer questions
+  nobody pre-aggregated — "what did we spend on freight last year" — which
+  needs every cleaned entity at row grain, not six KPI summaries. Same
+  shape as 2a; the difference is one line in `client.env`,
+  `AGENT_SCOPE="wide"`, which makes `03-iam.sh` grant `hermes-reader` read
+  on `staging` too, `07-hermes-endpoint.sh` tell the server to list it, and
+  `90-verify.sh` assert the grant is present rather than absent. **`raw_*`
+  stays locked in both widths** — it is append-only JSON, every version of
+  every record, nothing an agent wants, and it is where the strongest
+  promise in [trust.md](trust.md) lives. Staging carries customer names,
+  emails and phone numbers; the client chooses wide knowingly, and the
+  choice is recorded in their `client.env` with a date and a reason.
+
+  The original design called for a separate SA and endpoint per width so
+  widening one agent never widens them all. A client with one agent gains
+  nothing from that, so the scope flag is what got built; a second endpoint
+  remains the right shape if a client ever runs a narrow agent and a wide
+  one side by side.
 
 Either way, Tier 2 credentials live entirely inside the client's project:
 the token in their Secret Manager, the queries in their Cloud Run logs,

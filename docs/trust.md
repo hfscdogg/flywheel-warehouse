@@ -29,8 +29,12 @@ list — same permission, older label.)
 
 ## What they cannot see
 
-- Your raw CRM, project, or accounting data (`raw_*` datasets)
-- Intermediate transformations (`staging`)
+- Your raw CRM, project, or accounting data (`raw_*` datasets) — never,
+  in any configuration
+- Intermediate transformations (`staging`) — unless *you* choose the wide
+  agent scope in your `client.env` (`AGENT_SCOPE="wide"`, see
+  [access-tiers.md](access-tiers.md)), in which case your own agent can read
+  the cleaned, row-level tables too
 - Anything else in your GCP project — storage, compute, logs, billing
 - Anything outside GCP entirely
 

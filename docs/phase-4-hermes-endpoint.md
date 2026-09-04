@@ -17,7 +17,7 @@ agent (Hermes Agent / Claude / ChatGPT — anything MCP-capable)
 Cloud Run: hermes-mcp            ← runtime identity = hermes-reader
   │  BigQuery client, ADC
   ▼
-marts dataset ONLY               ← enforced by IAM (03-iam.sh), not by code
+marts (+ staging if AGENT_SCOPE=wide)   ← enforced by IAM (03-iam.sh), not by code
 ```
 
 Why this shape (vs. handing the agent a key): no key to leak, hand off, or
@@ -68,7 +68,9 @@ For Hermes Agent specifically, add it as a remote MCP server in the agent's
 MCP configuration (see the Hermes Agent MCP docs); it will discover the
 three tools automatically: `list_kpi_tables`, `get_table_schema`, and
 `query` (read-only Standard SQL; unqualified table names resolve to
-`marts`).
+`marts`, staging tables are written `staging.<name>`). Under
+`AGENT_SCOPE="wide"` the listing covers both datasets; the tool name kept
+its `kpi_` for stability with agents that already know it.
 
 What the agent knows about each table is exactly its BigQuery description
 and column descriptions — those come from the mart SQL and are enforced by

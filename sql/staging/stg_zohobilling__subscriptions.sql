@@ -7,7 +7,11 @@
 -- all populate. The date fields are sparse by design — next_billing_at only
 -- on active subscriptions, cancelled_at only on cancelled ones — so a low
 -- non-zero count there is correct, not a wrong path.
-CREATE OR REPLACE TABLE staging.stg_zohobilling__subscriptions AS
+CREATE OR REPLACE TABLE staging.stg_zohobilling__subscriptions
+OPTIONS (description = """
+Zoho Billing subscriptions, one row per subscription: what each customer is being charged for on a recurring basis. is_active is the test for a live subscription. Amounts USD per interval.
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_zohobilling.subscriptions
@@ -43,8 +47,64 @@ fields AS (
   FROM latest
 )
 SELECT
-  *,
+  subscription_id,
+  subscription_name,
+  status,
+  customer_id,
+  customer_name,
+  email,
+  plan_code,
+  plan_name,
+  amount,
+  interval_unit,
+  interval_count,
+  activated_at,
+  next_billing_at,
+  expires_at,
+  cancelled_at,
+  created_at,
+  modified_at,
+  loaded_at,
   -- 'live' is Zoho's active state; the dashboard's Next Billing Revenue
   -- widget filters on exactly that (zoho-reference/00-widget-inventory.md).
   status = 'live' AS is_active
 FROM fields;
+
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN subscription_id
+  SET OPTIONS (description = "Zoho Billing subscription id; the key.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN subscription_name
+  SET OPTIONS (description = "Subscription name.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN status
+  SET OPTIONS (description = "live, cancelled, expired, trial, and so on; is_active reduces it to a boolean.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN customer_id
+  SET OPTIONS (description = "Subscribing customer; joins to stg_zohobilling__customers.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN customer_name
+  SET OPTIONS (description = "That customer's display name.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN email
+  SET OPTIONS (description = "Customer email on the subscription.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN plan_code
+  SET OPTIONS (description = "Plan code.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN plan_name
+  SET OPTIONS (description = "Plan name, e.g. the monitoring or support tier.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN amount
+  SET OPTIONS (description = "Recurring amount per interval, USD.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN interval_unit
+  SET OPTIONS (description = "months or years.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN interval_count
+  SET OPTIONS (description = "How many interval units between charges; 1 with months is monthly.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN activated_at
+  SET OPTIONS (description = "When the subscription went live.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN next_billing_at
+  SET OPTIONS (description = "Next charge date for a live subscription.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN expires_at
+  SET OPTIONS (description = "Expiry date, when set.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN cancelled_at
+  SET OPTIONS (description = "When it was cancelled; NULL when it was not.");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN created_at
+  SET OPTIONS (description = "When the record was created in the source system (UTC).");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN modified_at
+  SET OPTIONS (description = "When the record was last changed in the source system (UTC).");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
+ALTER TABLE staging.stg_zohobilling__subscriptions ALTER COLUMN is_active
+  SET OPTIONS (description = "TRUE when status is live. Use this, not status, for the has-a-subscription test.");

@@ -2,11 +2,13 @@
 # 03-iam.sh <client-slug> — every IAM binding, in one auditable place.
 #
 # The trust surface (docs/trust.md) is defined here:
-#   hermes-reader : jobUser (project) + dataViewer (marts dataset ONLY)
+#   hermes-reader : jobUser (project) + dataViewer on marts — and on staging
+#                   too when the client's AGENT_SCOPE is "wide" (Tier 2b)
 #   ingest-writer : jobUser (project) + dataEditor (each dataset, dataset-level)
 #   ADMIN_USER    : serviceAccountTokenCreator on the hermes-reader SA
 #
-# hermes-reader deliberately gets NOTHING on raw_* or staging.
+# hermes-reader deliberately gets NOTHING on raw_*, ever. Staging is the
+# client's call (AGENT_SCOPE); raw is not.
 #
 # Bindings run serially: concurrent policy writes hit etag conflicts. Both
 # 'gcloud ... add-iam-policy-binding' and 'bq add-iam-policy-binding' are
@@ -75,8 +77,10 @@ run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
   --member="serviceAccount:$SA_HERMES_READER_EMAIL" \
   --role=roles/bigquery.jobUser --condition=None --format=none --quiet
 
-info "hermes-reader: read access on $DATASET_MARTS ONLY"
-grant_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
+info "hermes-reader: read access on $DATASETS_AGENT (AGENT_SCOPE=$AGENT_SCOPE)"
+for ds in $DATASETS_AGENT; do
+  grant_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$ds"
+done
 
 info "ingest-writer: query jobs at project level"
 run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \

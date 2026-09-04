@@ -115,12 +115,14 @@ case "$ACTION" in
       --service-account "$SA_HERMES_READER_EMAIL" \
       --allow-unauthenticated \
       --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \
-      --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},DATASET_MARTS=${DATASET_MARTS}" \
+      --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},DATASET_MARTS=${DATASET_MARTS},DATASETS_AGENT=${DATASETS_AGENT// /,}" \
       --memory 512Mi --cpu 1 --max-instances 2 --timeout 120 \
       --labels "managed-by=${LABEL_MANAGED_BY},env=${LABEL_ENV}"
     # --allow-unauthenticated is the transport layer only: the app itself
     # rejects every request without the bearer token (401), and the runtime
-    # identity can read marts and nothing else regardless.
+    # identity can read DATASETS_AGENT and nothing else regardless.
+    # DATASETS_AGENT is what the server LISTS; IAM (03-iam.sh) is what it can
+    # actually read. They agree because both derive from AGENT_SCOPE.
 
     print_connection_info
     ;;
