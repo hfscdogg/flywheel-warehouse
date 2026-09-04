@@ -76,6 +76,21 @@ the transform (see [`sql/marts/README.md`](../sql/marts/README.md)). A
 question Hermes answers wrong is usually a description that does not say
 enough; fix it there, not in the agent's prompt.
 
+The tool docstrings in `hermes-mcp/server.py` are the other half: they tell
+the agent to read `get_table_schema` before writing SQL and to treat the
+descriptions as rules. After changing anything under `hermes-mcp/`, re-run
+`./scripts/07-hermes-endpoint.sh <client>` — it rebuilds from source and
+keeps the existing token, so the agent needs no reconfiguration. The agent
+sees the new docstrings on its next tool discovery.
+
+Worth one standing instruction on the agent's side as well, so it reaches
+for the warehouse at all:
+
+> For any question about the business's numbers, use the flywheel-marts
+> tools. Call `list_kpi_tables` and `get_table_schema` before `query`, and
+> follow the descriptions — they say what each column means and what not to
+> do. Say the caveats they name as part of the answer.
+
 ## Verify the scope (from the agent's seat)
 
 Mirrors `90-verify.sh`, but through the endpoint:
