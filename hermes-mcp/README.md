@@ -12,6 +12,11 @@ Tools exposed:
 |------|------|
 | `list_kpi_tables` | KPI tables in `marts` with row counts + descriptions |
 | `get_table_schema` | columns/types/descriptions of one table |
+
+The descriptions are the agent's only documentation: they are set in each
+mart's SQL (`OPTIONS(description)` on the `CREATE`, `ALTER COLUMN ... SET
+OPTIONS` after it) and the transform fails if any mart lacks one — see
+[`sql/marts/README.md`](../sql/marts/README.md).
 | `query` | read-only Standard SQL, unqualified names resolve to `marts` |
 
 Deploy, token rotation, and teardown: [`scripts/07-hermes-endpoint.sh`](../scripts/07-hermes-endpoint.sh).

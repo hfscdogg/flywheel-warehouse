@@ -11,17 +11,16 @@
 -- Weeks are Sunday→Saturday keyed by the Saturday, matching
 -- kpi_sales_weekly. Deals with no channel set appear as '(unset)'.
 --
--- Columns:
---   week_ending           Saturday that closes the week
---   marketing_channel     CRM value, uppercased/trimmed; '(unset)' if blank
---   is_marketing_sourced  TRUE for the dashboard's marketing channel list
---   deals_created         deals created in the week on this channel
---   new_pipeline_amount   their summed amount
---   deals_won/won_amount  deals closed-won in the week (by closing date)
---   deals_lost            deals closed-lost in the week
---   close_rate_pct        won / (won + lost) closed that week on this channel
---   computed_at           build timestamp
-CREATE OR REPLACE TABLE marts.kpi_marketing_attribution AS
+-- Column meanings are declared at the end of this file (ALTER COLUMN ...
+-- SET OPTIONS). BigQuery serves them to agents through hermes-mcp, so that
+-- is the one copy — do not restate them here.
+CREATE OR REPLACE TABLE marts.kpi_marketing_attribution
+OPTIONS (description = """
+Deal outcomes by marketing channel, one row per (week_ending, marketing_channel). Weeks are Sunday to Saturday keyed by the Saturday, the same weeks as kpi_sales_weekly and the Zoho dashboard.
+Channel is the CRM field the sales team fills in on each deal; no web analytics are involved. To answer what marketing brought in the way the Zoho dashboard does, filter is_marketing_sourced = TRUE.
+A large (unset) share means CRM data entry gaps, not a data bug. Amounts USD; CRM test records excluded.
+""")
+AS
 WITH deals AS (
   SELECT
     COALESCE(closing_date, DATE(modified_at)) AS closed_date,
@@ -72,3 +71,28 @@ SELECT
   CURRENT_TIMESTAMP()                AS computed_at
 FROM created c
 FULL OUTER JOIN closed x USING (week_ending, channel);
+
+-- What agents read. hermes-mcp serves these descriptions verbatim through
+-- get_table_schema, and a column without one is a column Hermes will guess
+-- at. 06-transform.sh fails the run if any mart column has no description.
+-- Renaming a column above without updating it here fails here, loudly.
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN week_ending
+  SET OPTIONS (description = "Saturday that closes the week. Weeks run Sunday to Saturday, matching kpi_sales_weekly and the Zoho dashboard.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN marketing_channel
+  SET OPTIONS (description = "The CRM Marketing Channel value on the deal, uppercased and trimmed; (unset) when blank. Sales-team attribution, not web analytics.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN is_marketing_sourced
+  SET OPTIONS (description = "TRUE for the channels the Zoho dashboard counts as marketing-sourced: Google Ads, Google LSA, Google/Bing organic, Google Business Profile, Houzz, email/newsletter, website inquiry, direct.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN deals_created
+  SET OPTIONS (description = "Deals created in the week on this channel.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN new_pipeline_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals created in the week on this channel, USD.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN deals_won
+  SET OPTIONS (description = "Deals closed-won in the week on this channel, by closing date.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN won_amount
+  SET OPTIONS (description = "Sum of deal amounts on those won deals, USD.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN deals_lost
+  SET OPTIONS (description = "Deals closed-lost in the week on this channel.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN close_rate_pct
+  SET OPTIONS (description = "deals_won / (deals_won + deals_lost) among deals closed in the week, as a percentage 0 to 100. NULL when nothing closed.");
+ALTER TABLE marts.kpi_marketing_attribution ALTER COLUMN computed_at
+  SET OPTIONS (description = "When this row was built (UTC).");

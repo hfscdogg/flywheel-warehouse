@@ -70,6 +70,12 @@ three tools automatically: `list_kpi_tables`, `get_table_schema`, and
 `query` (read-only Standard SQL; unqualified table names resolve to
 `marts`).
 
+What the agent knows about each table is exactly its BigQuery description
+and column descriptions — those come from the mart SQL and are enforced by
+the transform (see [`sql/marts/README.md`](../sql/marts/README.md)). A
+question Hermes answers wrong is usually a description that does not say
+enough; fix it there, not in the agent's prompt.
+
 ## Verify the scope (from the agent's seat)
 
 Mirrors `90-verify.sh`, but through the endpoint:

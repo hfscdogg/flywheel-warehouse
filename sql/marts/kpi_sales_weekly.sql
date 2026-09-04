@@ -12,18 +12,16 @@
 -- stages count as Won); CRM test records are excluded. Won revenue is deal
 -- Amount at close, the dashboard's measure.
 --
--- Columns:
---   week_ending           Saturday that closes the week (the key)
---   week_start            Sunday that opens it
---   leads_created         leads created in the week
---   deals_created         deals created in the week
---   new_pipeline_amount   sum of amounts on deals created in the week
---   deals_won/won_amount  deals closed-won in the week (by closing date)
---   deals_lost/lost_amount  deals closed-lost in the week
---   close_rate_pct        won / (won + lost) among deals closed that week
---   won_amount_trailing_4w  won_amount summed over this week + prior 3
---   computed_at           build timestamp
-CREATE OR REPLACE TABLE marts.kpi_sales_weekly AS
+-- Column meanings are declared at the end of this file (ALTER COLUMN ...
+-- SET OPTIONS). BigQuery serves them to agents through hermes-mcp, so that
+-- is the one copy — do not restate them here.
+CREATE OR REPLACE TABLE marts.kpi_sales_weekly
+OPTIONS (description = """
+Weekly sales scoreboard from Zoho CRM, one row per week from the first week with CRM activity through the current week.
+Weeks run Sunday to Saturday and are keyed by their Saturday (week_ending), matching the Zoho dashboard, so last week is the most recent week_ending before today. Won revenue is deal Amount at close.
+For monthly or forecast questions use kpi_sales_pipeline. Amounts USD; CRM test records excluded.
+""")
+AS
 WITH deals AS (
   SELECT *, COALESCE(closing_date, DATE(modified_at)) AS closed_date
   FROM staging.stg_zoho__deals
@@ -93,3 +91,32 @@ FROM weeks w
 LEFT JOIN lead_activity l USING (week_ending)
 LEFT JOIN deal_created dc USING (week_ending)
 LEFT JOIN deal_closed cl USING (week_ending);
+
+-- What agents read. hermes-mcp serves these descriptions verbatim through
+-- get_table_schema, and a column without one is a column Hermes will guess
+-- at. 06-transform.sh fails the run if any mart column has no description.
+-- Renaming a column above without updating it here fails here, loudly.
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN week_ending
+  SET OPTIONS (description = "Saturday that closes the week; the key. Weeks run Sunday to Saturday, matching the Zoho dashboard.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN week_start
+  SET OPTIONS (description = "Sunday that opens the week.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN leads_created
+  SET OPTIONS (description = "Leads created in the week.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN deals_created
+  SET OPTIONS (description = "Deals created in the week.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN new_pipeline_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals created in the week, USD.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN deals_won
+  SET OPTIONS (description = "Deals closed-won in the week, by closing date. Install stages count as won.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN won_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals won in the week, USD.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN deals_lost
+  SET OPTIONS (description = "Deals closed-lost in the week, by closing date.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN lost_amount
+  SET OPTIONS (description = "Sum of deal amounts on deals lost in the week, USD.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN close_rate_pct
+  SET OPTIONS (description = "deals_won / (deals_won + deals_lost) among deals closed in the week, as a percentage 0 to 100. NULL when nothing closed.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN won_amount_trailing_4w
+  SET OPTIONS (description = "won_amount summed over this week and the three before it, USD.");
+ALTER TABLE marts.kpi_sales_weekly ALTER COLUMN computed_at
+  SET OPTIONS (description = "When this row was built (UTC).");

@@ -95,6 +95,27 @@ missing_input() {
   return 1
 }
 
+# Agents learn what a mart means from BigQuery's table and column descriptions
+# — hermes-mcp serves exactly those, nothing else — so a mart or column without
+# one is not undocumented, it is a table Hermes will query confidently and
+# explain wrong. Runs AFTER the marts are built: the data is never left stale,
+# the run just goes red until the description is added (in the mart's SQL, as
+# OPTIONS on the CREATE and ALTER COLUMN ... SET OPTIONS after it).
+check_marts_described() {
+  local check="$REPO_ROOT/sql/checks/marts_described.sql" missing
+  if is_dry_run; then
+    log "[dry-run] $BQ query --format=csv < ${check#"$REPO_ROOT"/}   # expect no rows"
+    return 0
+  fi
+  log "  \$ bq query < ${check#"$REPO_ROOT"/}"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  missing="$($BQ query --use_legacy_sql=false --format=csv < "$check" | tail -n +2)"
+  [ -z "$missing" ] && { log "  every mart table and column is described"; return 0; }
+  warn "marts with no description (what Hermes would see as blank):"
+  printf '%s\n' "$missing" | sed 's/^/    /' >&2
+  die "add OPTIONS(description) / ALTER COLUMN ... SET OPTIONS in the mart SQL"
+}
+
 if [ $# -ge 1 ]; then
   info "Transform (selected models) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
   for f in "$@"; do
@@ -127,6 +148,8 @@ else
     fi
     run_sql "$f"
   done
+  info "Transform: marts described (what agents see)"
+  check_marts_described
 fi
 
 info "Transform done."
