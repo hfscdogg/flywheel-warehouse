@@ -16,6 +16,25 @@
 -- station whose customer has no live Zoho Billing subscription. We pay the
 -- vendor every month and collect nothing.
 --
+-- RUN ORDER
+-- This mart now reads two billing tables that did not exist before, and
+-- 06-transform.sh skips a mart whose inputs have never been built. The
+-- vendordrop ingest creates a landing table per known report on every run
+-- whether or not anyone uploaded anything, so running it once ahead of the
+-- transform is enough — which is the order the scheduled workflows already
+-- run in (06:50, then 07:00). Run the transform first on a fresh clone and
+-- the audit is skipped with a message naming the missing table, not built
+-- wrong.
+--
+-- WHAT EACH ACCOUNT COSTS
+-- All three vendors now price their own accounts, each from a separate
+-- billing feed, and each bills one account as several lines: Security
+-- Central as monitoring plus scheduled tests, Alarm.com as a base fee plus a
+-- row per add-on, Parasol as one line item. Those are summed to the account
+-- before they reach this table, so vendor_monthly_cost is per account and
+-- summing it across vendors is a real total rather than the Parasol-only
+-- figure this mart used to report.
+--
 -- TWO FEEDS, ONE ROW PER ACCOUNT
 -- Security Central can schedule the "Customer Count" report weekly but not
 -- the "All Accounts" export, and only All Accounts carries an address. So:
@@ -53,7 +72,7 @@ Monitoring accounts that three vendors bill Livewire for, matched to Zoho Billin
 ONE ROW PER (vendor, account). The same property legitimately appears under several vendors because they sell different services: Security Central is security monitoring, Alarm.com is interactive smart-home, Parasol is 24/7 remote support. Never dedupe across vendors; a property on all three is three real costs.
 The leak is finding = BILLED_NO_SUBSCRIPTION. BILLED_NO_MATCH means no billing customer could be found, which is unknown, not a proven leak.
 Before acting on any row check name_overlaps: FALSE means the address probably matched the wrong household.
-vendor_monthly_cost is populated for Parasol ONLY. Security Central and Alarm.com publish no per-account rate, so a SUM across vendors understates the true cost by roughly two thirds and must be labelled as Parasol-only.
+vendor_monthly_cost is populated for all three vendors, each from that vendor's own billing feed, so summing it across vendors gives a real total. It is NULL where a vendor's billing feed has not been uploaded or carries no row for the account, which means the cost is unknown, never that the account is free.
 No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
 """)
 AS
@@ -67,7 +86,7 @@ weekly AS (
 -- feeds carry it. Contract number is the only field both reports share, so
 -- it is the join key; where two accounts share one contract the weekly
 -- status applies to both, which is what the vendor means by it.
-securitycentral AS (
+sc_identity AS (
   SELECT
     COALESCE(r.contract_no, w.contract_no)      AS contract_no,
     COALESCE(r.account_no, w.account_no)        AS account_no,
@@ -83,13 +102,65 @@ securitycentral AS (
     COALESCE(w.loaded_at, r.loaded_at)          AS status_as_of,
     r.contract_no IS NOT NULL                   AS in_roster,
     COALESCE(r.started_on, w.started_on)        AS started_on,
-    r.address_key,
-    -- Security Central's feeds carry no per-account price; only Parasol's
-    -- invoice does. NULL means "we do not know what this one costs", not
-    -- "it is free".
-    CAST(NULL AS NUMERIC)                       AS vendor_monthly_cost
+    r.address_key
   FROM roster r
   FULL OUTER JOIN weekly w ON r.contract_no = w.contract_no
+),
+-- What Security Central charges for each account, from the monthly recurring
+-- report — the only feed of theirs that carries a price at all. An account is
+-- billed as several resource lines (monitoring, plus any scheduled tests), so
+-- the account's cost is their sum. monthly_amount is already monthly on every
+-- line including the quarterly and yearly ones; see the staging model.
+sc_billing AS (
+  SELECT
+    account_no,
+    SUM(monthly_amount)     AS monthly_cost,
+    MAX(loaded_at)          AS loaded_at,
+    -- Carried so a billing-only account arrives with a name on it. Those are
+    -- the rows the audit most wants a human to look at, and an unnamed one
+    -- cannot be checked against anything.
+    ANY_VALUE(subscriber_name) AS subscriber_name
+  FROM staging.stg_vendor__securitycentral_recurring
+  WHERE account_no IS NOT NULL AND account_no != ''
+  GROUP BY account_no
+),
+-- FULL OUTER, like the join above and for the same reason: an account
+-- Security Central bills us for that reaches neither the roster nor the
+-- weekly feed is the most expensive kind of leak there is, and an inner join
+-- would drop exactly those rows. They arrive with in_roster FALSE, which is
+-- what BILLED_NO_ROSTER exists to report.
+--
+-- A billing-only row is active by construction — we are being invoiced for it
+-- this month — which is the same reading the Parasol CTE below takes of its
+-- invoice.
+--
+-- The QUALIFY guards the sum: where two identity rows share one account
+-- number, both would otherwise carry the account's full cost and a SUM across
+-- the mart would count it twice. The cost lands on one row; the other reads
+-- NULL, meaning "not known here", exactly as it did before this feed existed.
+securitycentral AS (
+  SELECT
+    i.contract_no,
+    COALESCE(i.account_no, b.account_no)        AS account_no,
+    COALESCE(i.subscriber_name, b.subscriber_name) AS subscriber_name,
+    i.street_address,
+    i.city,
+    i.state,
+    i.zip,
+    i.account_type,
+    COALESCE(i.vendor_status, 'Billed')         AS vendor_status,
+    COALESCE(i.is_active_at_vendor, TRUE)       AS is_active_at_vendor,
+    COALESCE(i.status_source, 'recurring')      AS status_source,
+    COALESCE(i.status_as_of, b.loaded_at)       AS status_as_of,
+    COALESCE(i.in_roster, FALSE)                AS in_roster,
+    i.started_on,
+    COALESCE(i.address_key, '|')                AS address_key,
+    IF(ROW_NUMBER() OVER (
+         PARTITION BY COALESCE(i.account_no, b.account_no)
+         ORDER BY i.contract_no NULLS LAST
+       ) = 1, b.monthly_cost, NULL)             AS vendor_monthly_cost
+  FROM sc_identity i
+  FULL OUTER JOIN sc_billing b ON i.account_no = b.account_no
 ),
 -- Alarm.com comes from the dealer-site "Custom List" export rather than the
 -- Partner API: the export landed first while the API waits on a working
@@ -98,26 +169,39 @@ securitycentral AS (
 -- cross-vendor key where the address match is only an approximation. When
 -- the API is credentialed its staging model joins in here; today it is empty
 -- and the export is the whole picture.
+-- Alarm.com bills an account as a base fee plus a row per add-on switched on
+-- for it, between 1 and 31 rows, so the account's cost is their sum. Only the
+-- recurring rows count: the same export carries prorations and activation
+-- fees, which are real money but not a monthly rate.
+adc_billing AS (
+  SELECT customer_id, SUM(charge_amount) AS monthly_cost
+  FROM staging.stg_vendor__alarmdotcom_billing
+  WHERE is_recurring
+  GROUP BY customer_id
+),
 alarmdotcom AS (
   SELECT
-    sc_account_no                               AS contract_no,
-    customer_id                                 AS account_no,
-    subscriber_name,
-    street_address,
-    city,
-    state,
-    zip,
-    service_package                             AS account_type,
-    IF(is_active_at_vendor, 'Active', 'Pending Termination')
+    a.sc_account_no                             AS contract_no,
+    a.customer_id                               AS account_no,
+    a.subscriber_name,
+    a.street_address,
+    a.city,
+    a.state,
+    a.zip,
+    a.service_package                           AS account_type,
+    IF(a.is_active_at_vendor, 'Active', 'Pending Termination')
                                                 AS vendor_status,
-    is_active_at_vendor,
+    a.is_active_at_vendor,
     'export'                                    AS status_source,
-    loaded_at                                   AS status_as_of,
+    a.loaded_at                                 AS status_as_of,
     TRUE                                        AS in_roster,
-    started_on,
-    address_key,
-    CAST(NULL AS NUMERIC)                       AS vendor_monthly_cost
-  FROM staging.stg_vendor__alarmdotcom_accounts
+    a.started_on,
+    a.address_key,
+    -- LEFT, not inner: an account on the dealer list with no charge row is
+    -- still an account, and reads NULL rather than disappearing.
+    b.monthly_cost                              AS vendor_monthly_cost
+  FROM staging.stg_vendor__alarmdotcom_accounts a
+  LEFT JOIN adc_billing b ON a.customer_id = b.customer_id
 ),
 -- Parasol bills from an invoice that doubles as the roster, so every account
 -- is active by construction and every one carries its own rate. That rate is
@@ -376,15 +460,15 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_type
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_status
   SET OPTIONS (description = "The vendor's own status word. Only Active counts as active; Deactivated and Inactive do not.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_source
-  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
+  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), recurring (Security Central billing report, for an account that reaches neither of those but is still being invoiced), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_as_of
   SET OPTIONS (description = "When that status was loaded into the warehouse (UTC).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN in_roster
-  SET OPTIONS (description = "FALSE when the account is known only from a feed that carries no address, so no billing match was possible. TRUE for every Alarm.com and Parasol row.");
+  SET OPTIONS (description = "FALSE when the account is known only from a feed that carries no address, so no billing match was possible — including a Security Central account that appears in the recurring billing report but in neither the roster nor the weekly feed. TRUE for every Alarm.com and Parasol row.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN started_on
   SET OPTIONS (description = "Account start date per the vendor. NULL for Parasol, whose invoice does not carry one.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_monthly_cost
-  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD. Parasol ONLY. NULL for Security Central and Alarm.com means the vendor does not tell us the rate, not that the account is free.");
+  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD, from that vendor's own billing feed: Security Central's recurring report, Alarm.com's billing export, Parasol's invoice. Already summed over the several lines a vendor bills one account as. NULL means the cost is not known for that account — its vendor's billing feed has not been uploaded, or carries no row for it — and never that the account is free.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
   SET OPTIONS (description = "Zoho Billing customer matched to this account. NULL when no match was found.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name

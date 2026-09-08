@@ -41,6 +41,23 @@ what each account costs, so a Parasol leak carries its own dollar figure.
 Parsing an invoice is not elegant; ask Parasol for a CSV or portal export
 and retire this when one exists.
 
+### What each account costs
+
+All three vendors bill per account, and each publishes its prices in a
+separate report from the roster — so a leak is priced only once its vendor's
+billing file has been dropped in. Each vendor bills one account as several
+lines and the audit sums them: Security Central as monitoring plus any
+scheduled tests, Alarm.com as a base fee plus a row per add-on switched on
+(1 to 31 rows, median 7), Parasol as a single invoice line.
+
+Two of those numbers are easy to get wrong and are worth stating plainly:
+
+- **An Alarm.com row is a charge, not an account.** Reading one row as the
+  account's price understates the bill by roughly eight times.
+- **Security Central's "Monthly Amount" is already monthly** on quarterly and
+  yearly resources too — a yearly one prints `4.58333`, being $55 a year over
+  12. Dividing by the frequency again prices the account at 38 cents.
+
 Neither Security Central report is sufficient alone. The audit joins them on contract number and takes
 status from the weekly file and address from the roster, so a fresh weekly
 report re-audits everyone against addresses captured whenever the last roster
@@ -58,7 +75,9 @@ the 07:00 transform), lands it in `raw_vendor`, and moves the file to
 gs://livewire-dw-vendor-drops/
   securitycentral/allaccounts/      ← the SCAN "All Accounts" export (.xlsx)
   securitycentral/customercount/    ← the weekly emailed report (.CSV)
+  securitycentral/recurring/        ← "Customer System Recurring" (.pdf)
   alarmdotcom/customerlist/         ← dealer-site "Custom List" export (.csv)
+  alarmdotcom/billing/              ← dealer-site billing export (.csv)
   parasol/invoice/                  ← the monthly invoice (.pdf)
   processed/                        ← where the pipeline files them afterwards
 ```
@@ -101,6 +120,11 @@ project. Revoke by removing those two bindings on the bucket.
 >
 > **Monthly.** Parasol emails an invoice — drop the PDF into
 > `parasol/invoice/`. Same thing, different folder.
+>
+> **Monthly.** Two billing files, so the warehouse knows what each account
+> costs. Security Central's **Customer System Recurring** report goes in
+> `securitycentral/recurring/`, and the Alarm.com dealer-site billing export
+> goes in `alarmdotcom/billing/`.
 >
 > That's the whole job. Each file disappears from its folder within a day
 > once the warehouse has read it.

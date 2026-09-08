@@ -85,6 +85,50 @@ FORMATS = {
         "derive": {"SC_ACCOUNT": ("CS Account Prefix", "CS Account Number")},
         "require": {"Customer ID": r"^\d+$"},
     },
+    # Alarm.com dealer-site billing export ("Service Excel"). ONE ROW PER
+    # CHARGE, not per account: every account has a "Monthly Fee" row plus a
+    # row for each add-on it carries, so an account's real monthly cost is
+    # the SUM of its rows. Reading one row as the account's cost understates
+    # the bill by about eight times, which is the whole reason this is
+    # written down here.
+    #
+    # Charge Type separates the recurring bill from one-offs: FutureService
+    # is next month's charge, while Service and Activation are prorations
+    # and setup fees already incurred. Both are landed — they are real money
+    # and dropping them here would hide it — and staging is where the
+    # recurring figure is taken, so the distinction stays visible.
+    #
+    # The file is UTF-16 and tab-separated, which csv_rows detects.
+    "alarmdotcom/billing": {
+        "columns": None,
+        "id_column": "CHARGE_KEY",
+        "table": "alarmdotcom_billing",
+        # No natural key: the export numbers nothing. Account, charge and
+        # date together are unique across the file (4,848 of 4,848 rows) and
+        # stable month to month, which is what the landing _source_id needs.
+        "derive_key": ("CHARGE_KEY",
+                       ("Customer ID", "Charge Description", "Charge Date")),
+        "require": {"Charge Amount": r"^-?\d+(\.\d+)?$"},
+    },
+    # Security Central "Customer System Recurring": what the central station
+    # bills us, per account, per month. The roster and weekly feeds carry no
+    # price at all, so this is the only place a Security Central account's
+    # cost comes from.
+    #
+    # ONE ROW PER RESOURCE, not per account: an account's Monitoring line
+    # plus any test lines it carries.
+    #
+    # The Monthly Amount column is ALREADY normalized to a month by the
+    # vendor — a yearly resource prints 4.58333, being $55 a year over 12 —
+    # so quarterly and yearly rows need no conversion here and must not be
+    # given one. Frq is landed so that stays checkable.
+    "securitycentral/recurring": {
+        "columns": None,
+        "id_column": "LINE_KEY",
+        "table": "securitycentral_recurring",
+        "pdf_probe": "Security Central",
+        "require": {"MONTHLY_AMOUNT": r"^\d+(\.\d+)?$"},
+    },
     "parasol/invoice": {
         "columns": None,
         "id_column": "ACCOUNT",
@@ -150,6 +194,133 @@ def parse_parasol_invoice(data, spec):
             "ACCOUNT": account_key(_NAME_ICONS.sub("", name), street, csz,
                                    _NAME_ICONS.sub("", label)),
         })
+    return records
+
+
+
+# Security Central's recurring report is a real table, so it is read from
+# pdftext.rows (coordinates) rather than pdftext.lines (draw order) — this
+# document draws whole header blocks backwards, and reading it in draw order
+# undercounted the roster by 38 customers and lost every yearly rate.
+#
+# Within a row, cells are still identified by what they hold. The report
+# omits empty cells rather than spacing them, so a line missing its Manitou
+# CommNo has ten cells where its neighbour has eleven; indexing would read
+# the sub-account out of the wrong slot on exactly those rows.
+_SC_DATE = re.compile(r"^\d\d/\d\d/\d\d$")
+_SC_FRQ = re.compile(r"^\d+[A-Z]$")
+_SC_MONEY = re.compile(r"^\d[\d,]*\.\d+$")
+_SC_SUB = re.compile(r"^(A\d+)\s+(\d+)$")
+_SC_CUSTOMER = re.compile(r"^(\S+)\s\s+(.+)$")
+_SC_LABELS = {"Customer No.:", "Monitoring No.:", "Dealer:", "Pmt Mthd:",
+              "Bill Price:"}
+# Header cells, so a wrapped customer name sharing their baseline can be told
+# apart from them.
+_SC_HEADING = {
+    "Resource", "No.", "Description", "Activatio", "n Date", "Next",
+    "Invoice", "Date", "Period", "Start", "Frq", "Monthly", "Amount",
+    "Activation", "Pending /", "Req''d", "Disconnect", "Manitou", "CommNo",
+    "R/L Trx ID", "Sub Account", "Security Central", "Page",
+}
+
+
+def parse_sc_recurring(data, spec):
+    """Recurring resource lines from a Security Central "Customer System
+    Recurring" report.
+
+    Grain is one row per resource, not per account: a customer's Monitoring
+    line plus any test lines it carries. LINE_KEY is synthesised because the
+    report numbers nothing — customer, resource code and sub-account together
+    are unique across the document.
+
+    MONTHLY_AMOUNT is taken exactly as printed. The column is the vendor's
+    own monthly figure, already divided down for quarterly and yearly
+    resources, so converting it again here would divide twice.
+    """
+    customer = {}
+    records = []
+    wrapped = False
+    for row in pdftext.rows(data, spec["pdf_probe"]):
+        if "Customer No.:" in row:
+            # Labels and their values alternate, so a value is normally the
+            # cell after its label — but only normally. Where the name is long
+            # enough to wrap, the report draws the packed customer cell to the
+            # LEFT of its own label, and "the cell after Customer No.:" is then
+            # the next label along: 11 commercial accounts read their customer
+            # number as the string "Monitoring No.:". So the one field with a
+            # shape of its own is found by that shape, anywhere in the row.
+            at = {c: i for i, c in enumerate(row)}
+
+            def after(label, at=at, row=row):
+                i = at.get(label)
+                return row[i + 1].strip() if i is not None and i + 1 < len(row) else ""
+
+            packed = next((m for m in (_SC_CUSTOMER.match(c) for c in row) if m), None)
+            # Bill Price is the only money on a customer line, so it is found
+            # by shape too. The payment method has no shape of its own: it is
+            # taken from after its label, and where that lands on the next
+            # label instead it is the orphan cell at the far left — the same
+            # wrap, the same displacement.
+            price = next((c for c in row if _SC_MONEY.match(c)), "")
+            method = after("Pmt Mthd:")
+            if method in _SC_LABELS or _SC_MONEY.match(method or ""):
+                method = next((c for c in row if c not in _SC_LABELS
+                               and c is not (packed and packed.group(0))
+                               and not _SC_MONEY.match(c)
+                               and not _SC_CUSTOMER.match(c)), "")
+            customer = {
+                "CUSTOMER_NO": packed.group(1) if packed else after("Customer No.:"),
+                "SUBSCRIBER": packed.group(2).strip() if packed else "",
+                "MONITORING_NO": after("Monitoring No.:"),
+                "PMT_METHOD": method if "Pmt Mthd:" in row else "",
+                "BILL_PRICE": price,
+            }
+            wrapped = True
+            continue
+
+        # The tail of a wrapped name is drawn on its own line directly after
+        # the customer line ("CARTER'S GROVE MAINTENANCE" / "BUILDING").
+        # Rejoined so the subscriber name is whole, which is what the audit
+        # matches customers on.
+        if wrapped:
+            wrapped = False
+            if customer and len(row) == 1 and row[0] not in _SC_HEADING:
+                # The payment method wraps the same way ("BANK-" / "DRAFT"),
+                # and it is drawn on the same following line as a wrapped
+                # name would be. The hyphen it breaks on is what tells them
+                # apart; without this, three customers are named "... DRAFT".
+                if customer["PMT_METHOD"].endswith("-"):
+                    customer["PMT_METHOD"] += row[0]
+                else:
+                    customer["SUBSCRIBER"] = f"{customer['SUBSCRIBER']} {row[0]}".strip()
+                continue
+
+        dates = [c for c in row if _SC_DATE.match(c)]
+        frq = next((c for c in row if _SC_FRQ.match(c)), None)
+        if len(dates) < 3 or frq is None or not customer:
+            continue
+        # The amount is the money cell after the frequency; a customer's Bill
+        # Price is money too, but it sits on the customer line, not here.
+        money = [c for c in row[row.index(frq) + 1:] if _SC_MONEY.match(c)]
+        sub = next((_SC_SUB.match(c) for c in row if _SC_SUB.match(c)), None)
+        if not money:
+            continue
+        record = dict(customer)
+        record.update({
+            "RESOURCE": row[0],
+            "DESCRIPTION": row[1] if len(row) > 1 else "",
+            "ACTIVATED": dates[0],
+            "NEXT_INVOICE": dates[1],
+            "NEXT_PERIOD_START": dates[2],
+            "FRQ": frq,
+            "MONTHLY_AMOUNT": money[0].replace(",", ""),
+            # Hyphenated to match the account number the roster and the weekly
+            # feed both key on (A1651-1523); the report prints it with a space.
+            "ACCOUNT": f"{sub.group(1)}-{sub.group(2)}" if sub else "",
+        })
+        record["LINE_KEY"] = "-".join(filter(None, [
+            record["CUSTOMER_NO"], record["RESOURCE"], record["ACCOUNT"]]))
+        records.append(record)
     return records
 
 
@@ -253,9 +424,26 @@ def xlsx_rows(data):
 
 
 def csv_rows(data):
-    """Rows of a CSV, skipping the `sep=,` preamble some exporters emit."""
-    text = data.decode("utf-8-sig", errors="replace")
-    for row in csv.reader(io.StringIO(text)):
+    """Rows of a CSV, skipping the `sep=,` preamble some exporters emit.
+
+    Encoding and delimiter are detected rather than assumed. Alarm.com's
+    billing export calls itself Excel and is UTF-16 with tab separators,
+    while its customer list is plain UTF-8 with commas — same vendor, same
+    dealer site. Assuming either one silently produces a single column of
+    mojibake per row, which parses without error and lands nothing.
+    """
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16", errors="replace")
+    else:
+        text = data.decode("utf-8-sig", errors="replace")
+    # The first line that has any separator in it decides, so a preamble
+    # ("Data as of 8/31/2026") does not get a vote.
+    delimiter = ","
+    for line in text.split("\n", 50)[:50]:
+        if "\t" in line or "," in line:
+            delimiter = "\t" if line.count("\t") > line.count(",") else ","
+            break
+    for row in csv.reader(io.StringIO(text), delimiter=delimiter):
         if len(row) == 1 and row[0].lower().startswith("sep="):
             continue
         yield row
@@ -272,7 +460,12 @@ def parse(data, filename, fmt_key):
         raise ValueError(f"unknown vendor report format '{fmt_key}' "
                          f"(known: {', '.join(sorted(FORMATS))})")
     if spec.get("pdf_probe"):
-        records = parse_parasol_invoice(data, spec)
+        # Two PDF reports with nothing in common but the file type: Parasol's
+        # invoice is a list of line items read in draw order, Security
+        # Central's is a table read from coordinates.
+        pdf_parser = (parse_sc_recurring if fmt_key == "securitycentral/recurring"
+                      else parse_parasol_invoice)
+        records = pdf_parser(data, spec)
         return [r for r in records
                 if all(re.search(pat, r.get(col, ""))
                        for col, pat in spec.get("require", {}).items())]
@@ -304,6 +497,9 @@ def parse(data, filename, fmt_key):
             found = re.search(pat, record.get(col, ""))
             if found:
                 record[col] = found.group(1).strip()
+        name, parts = spec.get("derive_key", (None, ()))
+        if name:
+            record[name] = "-".join(record.get(c, "").strip() for c in parts)
         for name, (a, b) in spec.get("derive", {}).items():
             left, right = record.get(a, "").strip(), record.get(b, "").strip()
             if left and right:

@@ -25,7 +25,8 @@ require_cmd gcloud gsutil
 BUCKET="${VENDOR_DROP_BUCKET:-${GCP_PROJECT_ID}-vendor-drops}"
 # Keep this list in step with pipelines/lib/tabular.FORMATS.
 DROP_PREFIXES="securitycentral/allaccounts securitycentral/customercount \
-alarmdotcom/customerlist parasol/invoice"
+securitycentral/recurring alarmdotcom/customerlist alarmdotcom/billing \
+parasol/invoice"
 
 case "$ACTION" in
   create)
@@ -86,8 +87,13 @@ case "$ACTION" in
     log "    -> $BUCKET/securitycentral/allaccounts/"
     log "  Security Central 'Customer Count' (weekly emailed CSV, status only)"
     log "    -> $BUCKET/securitycentral/customercount/"
+    log "  Security Central 'Customer System Recurring' (.pdf — what they"
+    log "    charge us per account; no other feed carries a price)"
+    log "    -> $BUCKET/securitycentral/recurring/"
     log "  Alarm.com 'Custom List' (dealer site export, .csv)"
     log "    -> $BUCKET/alarmdotcom/customerlist/"
+    log "  Alarm.com billing export (dealer site, one row per charge)"
+    log "    -> $BUCKET/alarmdotcom/billing/"
     log "  Parasol monthly invoice (.pdf — the invoice is the roster)"
     log "    -> $BUCKET/parasol/invoice/"
     log ""
