@@ -24,15 +24,77 @@ load_client "$1"
 shift
 require_cmd bq
 
+# BigQuery caps table metadata updates at 5 per 10 seconds PER TABLE, and the
+# models here carry 7 to 26 ALTER COLUMN statements apiece. Sent as one script
+# they go over the cap, and the failure lands AFTER the CREATE has run: the
+# table is rebuilt and correct, its descriptions are half applied, and the run
+# is red. Re-running does not reliably fix it either — a model with more than
+# five descriptions can never apply them all in one submission no matter how
+# long you wait first, which is what made this look like a quota that needed
+# waiting out rather than a batch that needed splitting.
+#
+# So the build and the descriptions are submitted separately, and the
+# descriptions go five at a time with a pause between batches. Deterministic
+# instead of lucky, for about two seconds per five columns.
+DESCRIBE_BATCH=5
+DESCRIBE_PAUSE=11
+
+bq_query() {
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  $BQ query --use_legacy_sql=false --format=none
+}
+
+# Everything before the first ALTER builds the table; everything from there on
+# describes it. Splitting on the first `ALTER TABLE` at the start of a line
+# relies on the same layout pipelines/tests/test_sql_marts_described.py enforces:
+# the descriptions are one contiguous block at the end of every model.
 run_sql() {
   local f="$1"
   if is_dry_run; then
-    log "[dry-run] $BQ query --use_legacy_sql=false --format=none < ${f#"$REPO_ROOT"/}"
+    log "[dry-run] $BQ query < ${f#"$REPO_ROOT"/}   # build, then descriptions"
     return 0
   fi
   log "  \$ bq query < ${f#"$REPO_ROOT"/}"
-  # shellcheck disable=SC2086  # $BQ is intentionally word-split
-  $BQ query --use_legacy_sql=false --format=none < "$f"
+  awk '/^ALTER TABLE/{exit} {print}' "$f" | bq_query
+  describe_columns "$f"
+}
+
+DESCRIBE_LAST=0
+
+# One batch of descriptions. The cap is measured over a window, so what has to
+# be spaced is the START of one batch from the start of the last — and a
+# submission already takes several seconds of that window by itself. Sleeping
+# only the shortfall rather than the whole window costs nothing in
+# correctness and takes about a third off the run.
+describe_batch() {
+  local chunk="$1" batches="$2" elapsed
+  if [ "$batches" -gt 0 ]; then
+    elapsed=$(( $(date +%s) - DESCRIBE_LAST ))
+    if [ "$elapsed" -lt "$DESCRIBE_PAUSE" ]; then
+      sleep "$(( DESCRIBE_PAUSE - elapsed ))"
+    fi
+  fi
+  DESCRIBE_LAST=$(date +%s)
+  printf '%s' "$chunk" | bq_query
+}
+
+describe_columns() {
+  local f="$1" chunk="" stmts=0 batches=0
+  while IFS= read -r line; do
+    chunk="$chunk$line"$'\n'
+    case "$line" in *\;) stmts=$((stmts + 1)) ;; esac
+    [ "$stmts" -lt "$DESCRIBE_BATCH" ] && continue
+    describe_batch "$chunk" "$batches"
+    batches=$((batches + 1))
+    chunk=""
+    stmts=0
+  done < <(awk '/^ALTER TABLE/,0' "$f")
+  # A trailing partial batch, and the whole job for a model with fewer than
+  # DESCRIBE_BATCH columns.
+  [ "$stmts" -gt 0 ] && describe_batch "$chunk" "$batches"
+  # Explicit: the test above is the last command, and a model whose
+  # descriptions divided evenly would otherwise return its false.
+  return 0
 }
 
 # stg_<source>__<entity>.sql -> <source>; empty for anything else.

@@ -128,3 +128,77 @@ class TestMartsDescribed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDescriptionsAreOneTrailingBlock(unittest.TestCase):
+    """The descriptions must be one contiguous block at the end of a model.
+
+    scripts/06-transform.sh submits a model in two pieces, splitting at the
+    first line that starts with `ALTER TABLE`: everything before it builds the
+    table, everything after describes it, five statements at a time so the run
+    stays inside BigQuery's cap of 5 metadata updates per table per 10
+    seconds. It counts those five by counting lines that END in a semicolon.
+
+    Two things have to hold for that to be right, and neither fails loudly on
+    its own: nothing but descriptions may follow the first ALTER, and each
+    description must be one statement over two lines. A wrapped description
+    whose first line happened to end in a semicolon would be miscounted, and
+    an ALTER placed mid-file would truncate the build.
+    """
+
+    def models(self):
+        files = [f for d in MODEL_DIRS.values() for f in sorted(d.glob("*.sql"))]
+        self.assertGreater(len(files), 20, "glob matched nothing")
+        return files
+
+    def test_nothing_but_descriptions_follows_the_first_alter(self):
+        for f in self.models():
+            with self.subTest(model=f.name):
+                _, sep, tail = f.read_text().partition("\nALTER TABLE ")
+                if not sep:
+                    continue                    # no descriptions to split off
+                # Whole lines, so prose inside a description cannot be mistaken
+                # for SQL: every line of the block belongs to an ALTER.
+                for line in _strip_comments(tail).splitlines():
+                    if not line.strip():
+                        continue
+                    self.assertRegex(
+                        line,
+                        r"^(?:(?:ALTER TABLE )?(?:marts|staging)\.\w+ ALTER COLUMN \w+"
+                        r"|  SET OPTIONS \(description = \".*\"\);)$",
+                        "a line after the first ALTER is not part of a column "
+                        "description; 06-transform.sh would pace it as one")
+
+    def test_each_description_is_two_lines_ending_in_a_semicolon(self):
+        # What the transform counts to size a batch. A description that wrapped
+        # onto a third line would put more than five statements in a
+        # submission, which is the cap it exists to stay under.
+        for f in self.models():
+            with self.subTest(model=f.name):
+                _, sep, tail = f.read_text().partition("\nALTER TABLE ")
+                if not sep:
+                    continue
+                lines = [x for x in _strip_comments(tail).splitlines() if x.strip()]
+                self.assertEqual(len(lines) % 2, 0, "odd number of lines")
+                for head, opts in zip(lines[::2], lines[1::2]):
+                    self.assertNotRegex(head, r";\s*$", "ALTER line ends a statement early")
+                    self.assertRegex(opts, r"\);\s*$", "SET OPTIONS line does not end the statement")
+
+    def test_the_build_half_holds_exactly_one_create(self):
+        # More than one statement in the build half means something other than
+        # the CREATE rides along on every run. Split on the statement-ending
+        # ");" of the CREATE rather than on any semicolon: a table description
+        # is prose and contains them.
+        for f in self.models():
+            with self.subTest(model=f.name):
+                build = _strip_comments(f.read_text().partition("\nALTER TABLE ")[0])
+                self.assertTrue(build.lstrip().startswith("CREATE OR REPLACE TABLE"))
+                self.assertEqual(build.rstrip()[-1], ";", "build does not end a statement")
+                # Exactly one CREATE, and nothing else that starts a
+                # statement of its own.
+                self.assertEqual(
+                    len(re.findall(r"(?m)^CREATE OR REPLACE TABLE ", build)), 1,
+                    "more than one CREATE in the build half")
+                self.assertNotRegex(
+                    build, r"(?m)^(INSERT|MERGE|DROP|ALTER|TRUNCATE|GRANT)\b",
+                    "a second statement in the build half")
