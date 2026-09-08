@@ -41,7 +41,11 @@ SELECT
   CONCAT(
     COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^\s*(\d+)'), ''), '|',
     COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
-      LOWER(COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^\s*\d+\s+(.*)$'), '')),
+      REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Street'), r'^\s*\d+\s+(.*)$'), '')),
+        r'\b(n|s)(?:orth|outh)(e|w)(?:ast|est)\b', r'\1\2'),
+        r'\b(n|s)(?:orth|outh)\b', r'\1'),
+        r'\b(e|w)(?:ast|est)\b', r'\1'),
       r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
       r'[^a-z0-9]+', ''), ''), '|',
     COALESCE(REGEXP_EXTRACT(JSON_VALUE(payload, '$.Billing_Code'), r'(\d{5})'), '')
@@ -76,6 +80,6 @@ ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN created_at
 ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN modified_at
   SET OPTIONS (description = "When the record was last changed in the source system (UTC).");
 ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN address_key
-  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");
+  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped and any compass direction reduced to a letter (North to n) | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");
 ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN loaded_at
   SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");

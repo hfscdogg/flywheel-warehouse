@@ -292,12 +292,23 @@ accounts AS (
     vendor_monthly_cost
   FROM parasol
 ),
+-- '||' is the empty key: it is house|street|zip, so a record that yielded
+-- none of the three still carries two separators. Guarding on '|' — as this
+-- file did until pipelines/tests/test_sql_address_key.py existed — excludes
+-- nothing, so every addressless record kept its empty key, the QUALIFY below
+-- collapsed them all onto one row, and a record with no parseable address
+-- could be matched to whichever customer happened to win that collapse. No
+-- vendor row has an empty key today, which is the only reason it never fired.
 billing_direct AS (
   SELECT
     CONCAT(
       COALESCE(REGEXP_EXTRACT(billing_address, r'^\s*(\d+)'), ''), '|',
       COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
-        LOWER(COALESCE(REGEXP_EXTRACT(billing_address, r'^\s*\d+\s+(.*)$'), '')),
+        REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+          LOWER(COALESCE(REGEXP_EXTRACT(billing_address, r'^\s*\d+\s+(.*)$'), '')),
+          r'\b(n|s)(?:orth|outh)(e|w)(?:ast|est)\b', r'\1\2'),
+          r'\b(n|s)(?:orth|outh)\b', r'\1'),
+          r'\b(e|w)(?:ast|est)\b', r'\1'),
         r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
         r'[^a-z0-9]+', ''), ''), '|',
       COALESCE(REGEXP_EXTRACT(billing_zip, r'(\d{5})'), '')
@@ -322,14 +333,14 @@ billing_via_crm AS (
   FROM staging.stg_zoho__accounts a
   JOIN billing_by_name b
     ON LOWER(TRIM(a.account_name)) = b.name_key
-  WHERE a.address_key != '|' AND a.account_name IS NOT NULL
+  WHERE a.address_key != '||' AND a.account_name IS NOT NULL
 ),
 -- One customer per address, direct Billing address winning over the CRM
 -- bridge; duplicates within a path keep the lowest id, as elsewhere.
 customer_by_address AS (
   SELECT address_key, customer_id, display_name, match_via
   FROM (
-    SELECT * FROM billing_direct WHERE address_key != '|'
+    SELECT * FROM billing_direct WHERE address_key != '||'
     UNION ALL
     SELECT * FROM billing_via_crm
   )
@@ -360,7 +371,7 @@ subs AS (
 sc_account_address AS (
   SELECT account_no, address_key
   FROM securitycentral
-  WHERE account_no IS NOT NULL AND address_key != '|'
+  WHERE account_no IS NOT NULL AND address_key != '||'
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY account_no ORDER BY address_key
   ) = 1
@@ -387,7 +398,7 @@ matched AS (
     END                                                   AS match_via
   FROM accounts v
   LEFT JOIN customer_by_address direct
-    ON v.address_key = direct.address_key AND v.address_key != '|'
+    ON v.address_key = direct.address_key AND v.address_key != '||'
   LEFT JOIN sc_account_address bridge
     ON v.vendor = 'alarmdotcom' AND v.contract_no = bridge.account_no
   LEFT JOIN customer_by_address bridged

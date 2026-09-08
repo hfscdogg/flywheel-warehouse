@@ -72,13 +72,22 @@ SELECT
   -- person. Stripping the suffix keeps the tolerance without the collisions:
   -- "13413 Langford Dr" and "13413 Langford Drive" both key 13413|langford|.
   --
+  -- Kept identical across all six models by
+  -- pipelines/tests/test_sql_address_key.py: two sides of this join must
+  -- turn the same address into the same string or the match silently
+  -- misses. Compass directions are reduced to a letter because
+  -- "322 N 25th St" and "322 North 25th Street" are one address.
   -- Repeated verbatim in stg_vendor__securitycentral_accounts,
   -- stg_alarmdotcom__customers, stg_zoho__accounts and kpi_subscription_audit
   -- — this repo templates nothing, so the four must be edited together.
   CONCAT(
     COALESCE(REGEXP_EXTRACT(street_address, r'^\s*(\d+)'), ''), '|',
     COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
-      LOWER(COALESCE(REGEXP_EXTRACT(street_address, r'^\s*\d+\s+(.*)$'), '')),
+      REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(REGEXP_EXTRACT(street_address, r'^\s*\d+\s+(.*)$'), '')),
+        r'\b(n|s)(?:orth|outh)(e|w)(?:ast|est)\b', r'\1\2'),
+        r'\b(n|s)(?:orth|outh)\b', r'\1'),
+        r'\b(e|w)(?:ast|est)\b', r'\1'),
       r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
       r'[^a-z0-9]+', ''), ''), '|',
     COALESCE(REGEXP_EXTRACT(zip, r'(\d{5})'), '')
@@ -114,4 +123,4 @@ ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN subscriber_name
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN is_active_at_vendor
   SET OPTIONS (description = "TRUE when the status counts as active.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN address_key
-  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");
+  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped and any compass direction reduced to a letter (North to n) | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");
