@@ -12,6 +12,7 @@ import unittest
 import zipfile
 
 from pipelines.lib import tabular
+from pipelines.tests.test_pdftext_rows import pdf
 
 # The "Customer Count" report as Manitou emits it: a `sep=,` preamble, no
 # header row, and a trailing counts row whose four values are a red herring
@@ -203,3 +204,171 @@ class TestNewFormats(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# One customer of Security Central's "Customer System Recurring" report, laid
+# out as the real thing lays it out — including the three things that broke a
+# first pass at reading it:
+#   * a customer name long enough to wrap, whose packed cell is drawn to the
+#     LEFT of its own "Customer No.:" label and whose tail lands on the next
+#     line;
+#   * a payment method that wraps the same way ("BANK-" / "DRAFT");
+#   * a yearly resource, whose amount prints to five decimals because the
+#     column is already reduced to a month, and a row with no Manitou CommNo.
+def _sc_recurring_pdf():
+    runs = [
+        (250, 700, "Security Central"),
+        # Wrapped name: value left of its label, tail on the line below.
+        (30, 660, "000312-10616  EVAN SHERWOOD - INDOOR SPORTS"),
+        (180, 660, "Customer No.:"),
+        (330, 660, "Monitoring No.:"),
+        (420, 660, "2155528"),
+        (470, 660, "Dealer:"),
+        (520, 660, "10191"),
+        (30, 650, "FACILITY"),
+        (30, 630, "MON"), (67, 630, "Monitoring"), (181, 630, "01/21/22"),
+        (220, 630, "09/25/26"), (258, 630, "10/01/26"), (300, 630, "1M"),
+        (330, 630, "5.00"), (380, 630, "No"), (420, 630, "No"),
+        (460, 630, "1"), (500, 630, "A1651 1687"),
+        # No CommNo on this line: ten cells where the last one has eleven.
+        (30, 620, "TMO"), (67, 620, "Test Monthly"), (181, 620, "01/21/22"),
+        (220, 620, "09/25/26"), (258, 620, "10/01/26"), (300, 620, "1M"),
+        (330, 620, "0.00"), (380, 620, "No"), (420, 620, "No"),
+        (500, 620, "A1651 1687"),
+        # Direct-billed customer: wrapped payment method, and a Bill Price
+        # that is money on a customer line and must not be read as a rate.
+        (30, 580, "BANK-"),
+        (180, 580, "Customer No.:"),
+        (200, 580, "C0138248  ANDREW HICKSON"),
+        (330, 580, "Monitoring No.:"), (420, 580, "2132059"),
+        (470, 580, "Dealer:"), (520, 580, "10191"),
+        (560, 580, "Pmt Mthd:"), (600, 580, "Bill Price:"), (640, 580, "30.00"),
+        (30, 570, "DRAFT"),
+        (30, 550, "MON"), (67, 550, "Monitoring"), (181, 550, "05/20/19"),
+        (220, 550, "10/25/26"), (258, 550, "11/01/26"), (300, 550, "1Y"),
+        (330, 550, "4.58333"), (380, 550, "No"), (420, 550, "No"),
+        (460, 550, "1"), (500, 550, "A2293 1006"),
+    ]
+    return pdf(runs)
+
+
+class SecurityCentralRecurring(unittest.TestCase):
+    def setUp(self):
+        self.records = tabular.parse(_sc_recurring_pdf(), "Recurring.pdf",
+                                     "securitycentral/recurring")
+
+    def test_one_row_per_resource_not_per_account(self):
+        # The account with two resources contributes two rows. Reading one row
+        # as the account's cost is the mistake this grain exists to prevent.
+        self.assertEqual(len(self.records), 3)
+        self.assertEqual([r["RESOURCE"] for r in self.records],
+                         ["MON", "TMO", "MON"])
+
+    def test_wrapped_customer_name_is_rejoined(self):
+        # Drawn as three pieces across two lines, one of them to the left of
+        # its own label. The audit matches customers by name, so a name that
+        # stops at "INDOOR SPORTS" matches nothing.
+        self.assertEqual(self.records[0]["SUBSCRIBER"],
+                         "EVAN SHERWOOD - INDOOR SPORTS FACILITY")
+        self.assertEqual(self.records[0]["CUSTOMER_NO"], "000312-10616")
+
+    def test_wrapped_payment_method_is_not_taken_for_the_name(self):
+        # "DRAFT" lands exactly where a wrapped name would; the hyphen the
+        # method breaks on is what separates them.
+        self.assertEqual(self.records[2]["SUBSCRIBER"], "ANDREW HICKSON")
+        self.assertEqual(self.records[2]["PMT_METHOD"], "BANK-DRAFT")
+
+    def test_bill_price_is_the_customers_price_not_our_rate(self):
+        self.assertEqual(self.records[2]["BILL_PRICE"], "30.00")
+        self.assertEqual(self.records[2]["MONTHLY_AMOUNT"], "4.58333")
+
+    def test_yearly_amount_is_kept_as_the_monthly_figure_it_already_is(self):
+        # 4.58333 is $55 a year over 12. The vendor did the division; doing it
+        # again here would price the account at 38 cents.
+        yearly = self.records[2]
+        self.assertEqual(yearly["FRQ"], "1Y")
+        self.assertEqual(yearly["MONTHLY_AMOUNT"], "4.58333")
+
+    def test_account_number_is_normalized_to_join_the_roster(self):
+        # Printed "A1651 1687"; the roster and the weekly feed both use a
+        # hyphen, and the audit joins on it.
+        self.assertEqual(self.records[0]["ACCOUNT"], "A1651-1687")
+
+    def test_missing_commno_does_not_shift_the_account_number(self):
+        # The row with no CommNo has one fewer cell. Read by position, the
+        # sub-account would come out of the wrong slot.
+        self.assertEqual(self.records[1]["ACCOUNT"], "A1651-1687")
+
+    def test_line_keys_are_unique(self):
+        keys = [r["LINE_KEY"] for r in self.records]
+        self.assertEqual(len(set(keys)), len(keys))
+
+    def test_id_and_table(self):
+        self.assertEqual(tabular.id_column("securitycentral/recurring"), "LINE_KEY")
+        self.assertEqual(tabular.table_name("securitycentral/recurring"),
+                         "securitycentral_recurring")
+
+
+# Alarm.com's billing export: UTF-16, tab-separated, one row per charge. The
+# account here carries a base fee and two add-ons, one of them free, plus a
+# one-off activation fee that is not part of a monthly rate.
+ADC_BILLING = (
+    "Charge Amount\tCharge Description\tCharge Type\tCharge Date\t"
+    "Customer ID\tFirst Name\tLast Name\r\n"
+    "8.27\tMonthly Fee\tFutureService\t2026-09-01\t8345792\tDaniil\tKleyman\r\n"
+    "7.60\tAdd-on: Doorbell Cameras\tFutureService\t2026-09-01\t8345792\tDaniil\tKleyman\r\n"
+    "0.00\tAdd-on: Locks\tFutureService\t2026-09-01\t8345792\tDaniil\tKleyman\r\n"
+    "25.00\tActivation Fee\tActivation\t2026-08-13\t8345792\tDaniil\tKleyman\r\n"
+    "5.00\tMonthly Fee\tFutureService\t2026-09-01\t6616436\tMort\tMumma\r\n"
+).encode("utf-16")
+
+
+class AlarmDotComBilling(unittest.TestCase):
+    def setUp(self):
+        self.records = tabular.parse(ADC_BILLING, "ServiceExcel1.csv",
+                                     "alarmdotcom/billing")
+
+    def test_utf16_and_tabs_are_detected(self):
+        # Decoded as UTF-8 or split on commas, every row is one unusable cell
+        # and the parse yields nothing while raising nothing.
+        self.assertEqual(len(self.records), 5)
+        self.assertEqual(self.records[0]["Charge Description"], "Monthly Fee")
+
+    def test_one_row_per_charge_not_per_account(self):
+        # The point of the grain: this account's monthly cost is 15.87, and
+        # no single row says so.
+        account = [r for r in self.records if r["Customer ID"] == "8345792"]
+        self.assertEqual(len(account), 4)
+        recurring = sum(float(r["Charge Amount"]) for r in account
+                        if r["Charge Type"] == "FutureService")
+        self.assertEqual(recurring, 15.87)
+
+    def test_free_add_on_rows_are_kept(self):
+        # A 0.00 add-on is a real line: it says the account has the feature,
+        # which is what makes two accounts on one package cost differently.
+        self.assertIn("0.00", [r["Charge Amount"] for r in self.records])
+
+    def test_charge_keys_are_unique(self):
+        keys = [r["CHARGE_KEY"] for r in self.records]
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual(self.records[0]["CHARGE_KEY"],
+                         "8345792-Monthly Fee-2026-09-01")
+
+    def test_id_and_table(self):
+        self.assertEqual(tabular.id_column("alarmdotcom/billing"), "CHARGE_KEY")
+        self.assertEqual(tabular.table_name("alarmdotcom/billing"),
+                         "alarmdotcom_billing")
+
+
+class CsvDialect(unittest.TestCase):
+    def test_comma_files_still_parse_as_commas(self):
+        # The tab detection must not change how the existing reports read.
+        # (The `sep=,` line survives csv_rows as a two-cell row and is dropped
+        # by parse() as a single-populated-cell row, which is unchanged here.)
+        rows = list(tabular.csv_rows(CUSTOMERCOUNT))
+        self.assertEqual(rows[1][0], "2311636")
+        self.assertEqual(len(rows[1]), 4)
+
+    def test_a_preamble_does_not_pick_the_delimiter(self):
+        data = b"Data as of 8/31/2026\r\na\tb\tc\r\n1\t2\t3\r\n"
+        self.assertEqual(list(tabular.csv_rows(data))[-1], ["1", "2", "3"])
