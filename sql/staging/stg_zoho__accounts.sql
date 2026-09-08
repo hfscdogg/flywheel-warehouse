@@ -1,7 +1,11 @@
 -- stg_zoho__accounts — latest record per Zoho CRM account (company).
 -- Grain: one row per account_id.
 -- Source: raw_zoho.accounts (append-only; payload = full Zoho v2 record).
-CREATE OR REPLACE TABLE staging.stg_zoho__accounts AS
+CREATE OR REPLACE TABLE staging.stg_zoho__accounts
+OPTIONS (description = """
+Zoho CRM accounts, one row per account: the customer record the sales team keeps. Has the billing address that Zoho Billing lacks, so this is the bridge from a vendor's service address to a Billing customer (matched on by name).
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_zoho.accounts
@@ -44,3 +48,34 @@ SELECT
   )  AS address_key,
   _loaded_at                                                 AS loaded_at
 FROM latest;
+
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN account_id
+  SET OPTIONS (description = "Zoho CRM account id; the key.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN account_name
+  SET OPTIONS (description = "Account name. Matched by name to Zoho Billing customer display names.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN industry
+  SET OPTIONS (description = "Industry picklist value.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN phone
+  SET OPTIONS (description = "Account phone.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN website
+  SET OPTIONS (description = "Account website.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN billing_street
+  SET OPTIONS (description = "Billing street address.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN billing_city
+  SET OPTIONS (description = "Billing city.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN billing_state
+  SET OPTIONS (description = "Billing state.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN billing_zip
+  SET OPTIONS (description = "Billing ZIP.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN owner_name
+  SET OPTIONS (description = "CRM user who owns the account.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN owner_email
+  SET OPTIONS (description = "That owner's email.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN created_at
+  SET OPTIONS (description = "When the record was created in the source system (UTC).");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN modified_at
+  SET OPTIONS (description = "When the record was last changed in the source system (UTC).");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN address_key
+  SET OPTIONS (description = "Address match key used to line this record up with the same property in other systems: house number | street name with its suffix stripped | 5-digit ZIP. A heuristic, not an identifier; two different households can share one. Equal keys across tables mean the same address, not proof of the same customer.");
+ALTER TABLE staging.stg_zoho__accounts ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");

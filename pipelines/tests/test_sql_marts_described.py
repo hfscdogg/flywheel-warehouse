@@ -17,13 +17,17 @@ import pathlib
 import re
 import unittest
 
-MARTS = pathlib.Path(__file__).resolve().parents[2] / "sql" / "marts"
+SQL = pathlib.Path(__file__).resolve().parents[2] / "sql"
+# Both datasets a Tier 2b agent can read. Staging is not optional: an agent
+# that can query it will, and an undescribed staging column is the same
+# confidently-wrong answer as an undescribed mart column.
+MODEL_DIRS = {"marts": SQL / "marts", "staging": SQL / "staging"}
 
 _TABLE_DESC = re.compile(
-    r'^CREATE OR REPLACE TABLE marts\.(\w+)\nOPTIONS \(description = """\n(.+?)\n"""\)\nAS\n',
+    r'^CREATE OR REPLACE TABLE (marts|staging)\.(\w+)\nOPTIONS \(description = """\n(.+?)\n"""\)\nAS\n',
     re.S | re.M)
 _ALTER = re.compile(
-    r'^ALTER TABLE marts\.(\w+) ALTER COLUMN (\w+)\n  SET OPTIONS \(description = "([^"]+)"\);$',
+    r'^ALTER TABLE (marts|staging)\.(\w+) ALTER COLUMN (\w+)\n  SET OPTIONS \(description = "([^"]+)"\);$',
     re.M)
 
 
@@ -73,47 +77,53 @@ def final_select_columns(sql):
 
 
 class TestMartsDescribed(unittest.TestCase):
-    def marts(self):
-        files = sorted(MARTS.glob("kpi_*.sql"))
-        self.assertGreater(len(files), 3, "glob matched nothing — the tests below would be vacuous")
+    def models(self):
+        files = [(ds, f) for ds, d in MODEL_DIRS.items() for f in sorted(d.glob("*.sql"))
+                 if f.name != "README.md"]
+        self.assertGreater(len(files), 20, "glob matched nothing — the tests below would be vacuous")
         return files
 
-    def test_every_mart_has_a_table_description(self):
-        for f in self.marts():
-            with self.subTest(mart=f.name):
+    def test_every_model_has_a_table_description(self):
+        for ds, f in self.models():
+            with self.subTest(model=f.name):
                 m = _TABLE_DESC.search(f.read_text())
                 self.assertIsNotNone(m, "no OPTIONS (description = \"\"\"...\"\"\") on the CREATE")
-                self.assertEqual(m.group(1), f.stem, "description is on a different table")
-                self.assertGreater(len(m.group(2)), 80, "description too short to guide an agent")
+                self.assertEqual((m.group(1), m.group(2)), (ds, f.stem), "description is on a different table")
+                # Floors catch placeholders ("TODO", "tbd", "x"), not brevity:
+                # "Customer email." is a complete description of a column
+                # named email.
+                self.assertGreater(len(m.group(3)), 60, "description too short to guide an agent")
 
     def test_every_output_column_is_described(self):
-        for f in self.marts():
-            with self.subTest(mart=f.name):
+        for ds, f in self.models():
+            with self.subTest(model=f.name):
                 sql = f.read_text()
                 cols = final_select_columns(sql)
-                described = {c: d for t, c, d in _ALTER.findall(sql) if t == f.stem}
+                described = {c: d for s, t, c, d in _ALTER.findall(sql) if (s, t) == (ds, f.stem)}
                 self.assertEqual(sorted(cols), sorted(described),
                                  "output columns and ALTER COLUMN descriptions differ")
                 for c, d in described.items():
-                    self.assertGreater(len(d), 15, f"{c}: description too short")
+                    self.assertGreater(len(d), 8, f"{c}: description too short")
 
-    def test_alters_name_this_mart_only(self):
-        # A copy-paste from another mart would silently describe the wrong table.
-        for f in self.marts():
-            with self.subTest(mart=f.name):
-                tables = {t for t, _, _ in _ALTER.findall(f.read_text())}
-                self.assertEqual(tables, {f.stem})
+    def test_alters_name_this_model_only(self):
+        # A copy-paste from another model would silently describe the wrong table.
+        for ds, f in self.models():
+            with self.subTest(model=f.name):
+                tables = {(s, t) for s, t, _, _ in _ALTER.findall(f.read_text())}
+                self.assertEqual(tables, {(ds, f.stem)})
 
     def test_descriptions_do_not_create_false_dependencies(self):
-        # 06-transform.sh reads a mart's inputs by grepping for `staging.<x>`,
-        # so prose that mentions a staging table would make the mart wait on it.
-        for f in self.marts():
-            with self.subTest(mart=f.name):
+        # 06-transform.sh reads a model's inputs by grepping its SQL: a mart
+        # waits on every `staging.<x>` it mentions, a staging model on every
+        # `raw_<src>.<x>`. Prose that names one becomes a dependency.
+        for ds, f in self.models():
+            with self.subTest(model=f.name):
                 sql = f.read_text()
-                for t, c, d in _ALTER.findall(sql):
-                    self.assertNotIn("staging.", d, f"{c}: names a staging table")
+                pat = r"staging\." if ds == "marts" else r"raw_[a-z0-9_]+\."
+                for _, _, c, d in _ALTER.findall(sql):
+                    self.assertIsNone(re.search(pat, d), f"{c}: names an input table")
                 m = _TABLE_DESC.search(sql)
-                self.assertNotIn("staging.", m.group(2))
+                self.assertIsNone(re.search(pat, m.group(3)))
 
 
 if __name__ == "__main__":

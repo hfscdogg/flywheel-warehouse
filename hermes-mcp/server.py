@@ -14,7 +14,11 @@ Env (set by the deploy script):
   HERMES_TOKEN      required — shared secret the agent presents as
                     "Authorization: Bearer <token>"
   GCP_PROJECT_ID    client project (falls back to ADC's default project)
-  DATASET_MARTS     marts dataset name (default "marts")
+  DATASET_MARTS     marts dataset name (default "marts"); the default
+                    dataset for unqualified names in `query`
+  DATASETS_AGENT    comma-separated datasets the agent may read (default
+                    DATASET_MARTS). "marts,staging" for a Tier 2b client.
+                    Listing only — IAM decides what is actually readable.
   MAX_BYTES_BILLED  per-query byte cap (default 1 GiB)
   MAX_ROWS          per-query returned-row cap (default 1000)
 """
@@ -31,6 +35,8 @@ from starlette.responses import JSONResponse
 
 PROJECT = os.environ.get("GCP_PROJECT_ID") or None
 DATASET = os.environ.get("DATASET_MARTS", "marts")
+DATASETS = [d.strip() for d in os.environ.get("DATASETS_AGENT", DATASET).split(",")
+            if d.strip()] or [DATASET]
 # .strip(): a token minted through a pipe can carry a trailing newline into
 # the secret and thus into this env var, while the client's $(...) strips it
 # — the mismatch 401s every request (hit on livewire-dw's first deploy).
@@ -85,23 +91,31 @@ def _clean_select(sql: str) -> str:
 
 @mcp.tool()
 def list_kpi_tables() -> list:
-    """List the KPI tables in the marts dataset with row counts and
-    descriptions. Start here for any question about the business: the
-    description says what each table is, its grain, and which sibling table
-    answers a neighbouring question. These tables are the only source of
-    truth an agent has; there is nothing else to query."""
+    """List every table the agent can read, with row counts and descriptions.
+    Start here for any question about the business: the description says
+    what each table is, its grain, and which sibling table answers a
+    neighbouring question. These tables are the only source of truth an
+    agent has; there is nothing else to query.
+
+    Two kinds of table. `marts` holds KPI summaries, pre-aggregated for the
+    common questions — prefer one when it fits. `staging` (when listed)
+    holds every source entity at row grain, one clean row per customer,
+    invoice, bill line, deal, lead, vendor account: the place to answer a
+    question nobody pre-aggregated. Refer to staging tables with their
+    dataset prefix in SQL, e.g. staging.stg_qbo__bill_lines."""
     client = bq()
-    dataset = f"{client.project}.{DATASET}"
     out = []
-    for item in client.list_tables(dataset):
-        if item.table_id.startswith("_"):  # infra (canary), not a KPI
-            continue
-        table = client.get_table(item.reference)
-        out.append({
-            "table": item.table_id,
-            "rows": table.num_rows,
-            "description": table.description or "",
-        })
+    for ds in DATASETS:
+        for item in client.list_tables(f"{client.project}.{ds}"):
+            if item.table_id.startswith("_"):  # infra (canary), not data
+                continue
+            table = client.get_table(item.reference)
+            out.append({
+                "dataset": ds,
+                "table": item.table_id if ds == DATASET else f"{ds}.{item.table_id}",
+                "rows": table.num_rows,
+                "description": table.description or "",
+            })
     return out
 
 
@@ -115,10 +129,14 @@ def get_table_schema(table: str) -> dict:
     column that is populated for one vendor only, dedupe a table whose grain
     is per vendor), and what a person must confirm before acting. An answer
     that contradicts a description is wrong even if the SQL ran."""
-    if not re.fullmatch(r"[A-Za-z0-9_]+", table):
+    if not re.fullmatch(r"(?:[A-Za-z0-9_]+\.)?[A-Za-z0-9_]+", table):
         raise ValueError("invalid table name")
+    ds, _, name = table.rpartition(".")
+    ds = ds or DATASET
+    if ds not in DATASETS:
+        raise ValueError(f"dataset {ds!r} is not readable here; use one of {DATASETS}")
     client = bq()
-    ref = client.get_table(f"{client.project}.{DATASET}.{table}")
+    ref = client.get_table(f"{client.project}.{ds}.{name}")
     return {
         "table": table,
         "rows": ref.num_rows,
@@ -132,9 +150,11 @@ def get_table_schema(table: str) -> dict:
 
 @mcp.tool()
 def query(sql: str) -> dict:
-    """Run a read-only SQL query against the marts dataset (BigQuery
-    Standard SQL). Unqualified table names resolve to marts, e.g.
-    SELECT * FROM kpi_sales_pipeline ORDER BY month DESC LIMIT 12.
+    """Run a read-only SQL query (BigQuery Standard SQL). Unqualified table
+    names resolve to marts, e.g. SELECT * FROM kpi_sales_pipeline ORDER BY
+    month DESC LIMIT 12. Staging tables need their prefix:
+    SELECT account_name, SUM(amount) FROM staging.stg_qbo__bill_lines ...
+    Joins across tables are fine; the descriptions say which columns join.
 
     Read get_table_schema for the table first and follow its descriptions
     when writing the SQL and when explaining the result. State the caveats

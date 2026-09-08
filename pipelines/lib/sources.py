@@ -103,9 +103,11 @@ QBO = {
     "base_url": "https://quickbooks.api.intuit.com",
     "token_url": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
     "minorversion": "75",
+    # Purchase is money out that is not a vendor bill: card charges, checks,
+    # cash. Without it, spend by account only sees what was invoiced to us.
     "entities": [
         "Customer", "Vendor", "Item", "Account",
-        "Estimate", "Invoice", "Bill", "Payment", "PurchaseOrder",
+        "Estimate", "Invoice", "Bill", "Payment", "PurchaseOrder", "Purchase",
     ],
     "id_field": "Id",
     "modified_field": "MetaData.LastUpdatedTime",

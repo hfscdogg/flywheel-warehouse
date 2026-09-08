@@ -9,6 +9,23 @@ One model per source entity, `stg_<source>__<entity>.sql`. Each is a plain
   a malformed value becomes NULL, never a failed build),
 - keeps `loaded_at` for lineage.
 
+Every staging table and column carries a BigQuery description, written for
+an agent: under `AGENT_SCOPE="wide"` ([docs/access-tiers.md](../../docs/access-tiers.md))
+`hermes-reader` reads staging directly, and the description is the only
+documentation it gets. Same pattern as the marts — `OPTIONS(description)`
+on the `CREATE`, `ALTER COLUMN … SET OPTIONS` after it, both guards enforce
+it — see [`sql/marts/README.md`](../marts/README.md). Final projections are
+explicit column lists, never `SELECT *`: the CI guard reads them, and a CTE
+change must not silently add or drop an agent-visible column. A description
+must not mention `raw_<src>.<x>`; the transform derives inputs by grepping
+for that.
+
+Line-item models (`stg_qbo__bill_lines`, `stg_qbo__purchase_lines`,
+`stg_qbo__invoice_lines`) unnest the `Line` array of the latest header
+record, so a re-edited transaction replaces its lines rather than
+accumulating them. They are what make "spend by account" and "revenue by
+item" answerable; the headers carry totals only.
+
 Dataset names are unqualified (`raw_zoho.deals`, `staging.stg_zoho__deals`):
 `bq query --project_id` resolves them against the client's project, so one
 SQL tree serves every client with zero templating.

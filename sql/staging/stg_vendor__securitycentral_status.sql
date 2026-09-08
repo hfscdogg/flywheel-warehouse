@@ -13,7 +13,11 @@
 --   "William Goodrum (Cottage) [A1651/1857]"
 -- The bracketed account uses "/" where the roster export uses "-"
 -- (A1651/1857 vs A1651-1857), so it is normalized here for joinability.
-CREATE OR REPLACE TABLE staging.stg_vendor__securitycentral_status AS
+CREATE OR REPLACE TABLE staging.stg_vendor__securitycentral_status
+OPTIONS (description = """
+Security Central's weekly Customer Count feed, one row per contract: the freshest word on whether an account is still active at the central station. Carries no address; join to stg_vendor__securitycentral_accounts on contract_no for that.
+""")
+AS
 WITH latest AS (
   SELECT payload, _source_id, _loaded_at
   FROM raw_vendor.securitycentral_status
@@ -33,3 +37,18 @@ SELECT
   SAFE.PARSE_DATE('%m/%d/%Y', JSON_VALUE(payload, '$.STARTED')) AS started_on,
   _loaded_at                                                 AS loaded_at
 FROM latest;
+
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN contract_no
+  SET OPTIONS (description = "Contract number; the key, and the join to the roster.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN status
+  SET OPTIONS (description = "Active, Deactivated or Inactive this week.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN is_active_at_vendor
+  SET OPTIONS (description = "TRUE when status is Active.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN subscriber_name
+  SET OPTIONS (description = "Subscriber name as the feed prints it, often with the account number in brackets.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN account_no
+  SET OPTIONS (description = "Security Central account number parsed from the subscriber text, when present.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN started_on
+  SET OPTIONS (description = "Account start date.");
+ALTER TABLE staging.stg_vendor__securitycentral_status ALTER COLUMN loaded_at
+  SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
