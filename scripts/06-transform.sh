@@ -79,15 +79,21 @@ describe_batch() {
 }
 
 describe_columns() {
-  local f="$1" chunk="" stmts=0 batches=0
+  # The CREATE counts against the same cap. It lands two seconds before the
+  # first batch does, inside the same ten-second window, so a first batch of
+  # five makes six operations and the fifth ALTER is rejected — with the table
+  # already rebuilt, which is the failure this whole split exists to prevent.
+  # Only the first batch is short; every later one is clear of the build.
+  local f="$1" chunk="" stmts=0 batches=0 limit=$((DESCRIBE_BATCH - 1))
   while IFS= read -r line; do
     chunk="$chunk$line"$'\n'
     case "$line" in *\;) stmts=$((stmts + 1)) ;; esac
-    [ "$stmts" -lt "$DESCRIBE_BATCH" ] && continue
+    [ "$stmts" -lt "$limit" ] && continue
     describe_batch "$chunk" "$batches"
     batches=$((batches + 1))
     chunk=""
     stmts=0
+    limit="$DESCRIBE_BATCH"
   done < <(awk '/^ALTER TABLE/,0' "$f")
   # A trailing partial batch, and the whole job for a model with fewer than
   # DESCRIBE_BATCH columns.
