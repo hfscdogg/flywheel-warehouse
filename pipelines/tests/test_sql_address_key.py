@@ -88,5 +88,64 @@ class AddressKey(unittest.TestCase):
         self.assertGreaterEqual(audit.count("address_key != '||'"), 4)
 
 
+class NameKey(unittest.TestCase):
+    """The name match key is written twice and must agree, for the same
+    reason the address key must agree across six models: the two sides of a
+    join have to reduce the same name to the same string.
+
+    Once on the Billing side, building billing_by_unique_name; once on the
+    vendor side, in the join to it. A parenthetical dropped on one side and
+    kept on the other silently matches nothing.
+    """
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    def name_keys(self):
+        flat = " ".join(self.AUDIT.read_text().split())
+        # The source column differs (display_name on one side, the vendor's
+        # subscriber_name on the other) and is masked; everything after it is
+        # the normalization and has to be identical.
+        return re.findall(
+            r"TRIM\(REGEXP_REPLACE\(REGEXP_REPLACE\(REGEXP_REPLACE\( "
+            r"LOWER\(COALESCE\([\w.]+, ''\)\), (.*?' '\)\))",
+            flat)
+
+    def test_both_copies_normalize_identically(self):
+        keys = self.name_keys()
+        self.assertEqual(len(keys), 2,
+                         "expected exactly two copies of the name key")
+        self.assertEqual(keys[0], keys[1],
+                         "the Billing side and the vendor side reduce names "
+                         "differently, so equal names produce unequal keys")
+
+    def test_a_name_shared_by_two_customers_is_dropped(self):
+        # A name belonging to more than one Billing customer identifies
+        # neither. Resolving it arbitrarily — as billing_by_name does for the
+        # CRM bridge, where an address has already pinned the property — would
+        # here attribute an account to a stranger on nothing but a shared name.
+        flat = " ".join(self.AUDIT.read_text().split())
+        self.assertIn("HAVING COUNT(DISTINCT customer_id) = 1", flat)
+
+    def test_the_empty_name_key_never_joins(self):
+        # Same shape as the address guard: an empty key would collapse every
+        # unnamed customer onto one row and match every unnamed account to it.
+        flat = " ".join(self.AUDIT.read_text().split())
+        self.assertIn("WHERE name_key != ''", flat)
+        self.assertIn("AND named.name_key != ''", flat)
+
+    def test_the_name_match_is_ranked_last(self):
+        # Address paths must win. Reordering this COALESCE would let a name
+        # override an address match without anything failing.
+        flat = " ".join(self.AUDIT.read_text().split())
+        self.assertIn(
+            "COALESCE(direct.customer_id, bridged.customer_id, "
+            "named.customer_id)", flat)
+        order = [flat.index(f"{w}.customer_id IS NOT NULL")
+                 for w in ("direct", "bridged", "named")]
+        self.assertEqual(order, sorted(order),
+                         "match_via is decided in a different order than the "
+                         "customer id is chosen")
+
+
 if __name__ == "__main__":
     unittest.main()
