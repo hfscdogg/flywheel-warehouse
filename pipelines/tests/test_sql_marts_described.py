@@ -126,6 +126,39 @@ class TestMartsDescribed(unittest.TestCase):
                 self.assertIsNone(re.search(pat, m.group(3)))
 
 
+class TestDescriptionBatching(unittest.TestCase):
+    """The first batch of descriptions is one short, and must stay that way.
+
+    BigQuery counts the CREATE against the same cap of 5 table metadata
+    updates per 10 seconds. The build lands roughly two seconds before the
+    first batch of descriptions does, inside the same window, so a first batch
+    of five makes six operations and the last one is rejected — with the table
+    already rebuilt and its descriptions half applied.
+
+    It is timing-dependent, so it does not fail every model or every run: it
+    took kpi_project_margin (16 descriptions) down mid-transform while 20-odd
+    other models went through. That is exactly the kind of constant someone
+    tidies away as an off-by-one, so it is asserted here.
+    """
+
+    TRANSFORM = SQL.parent / "scripts" / "06-transform.sh"
+
+    def test_the_first_batch_leaves_room_for_the_create(self):
+        text = self.TRANSFORM.read_text()
+        self.assertIn("limit=$((DESCRIBE_BATCH - 1))", text,
+                      "the first batch must be one smaller than the rest, to "
+                      "leave a slot in its window for the CREATE")
+        self.assertIn('limit="$DESCRIBE_BATCH"', text,
+                      "later batches must go back to the full size")
+
+    def test_the_batch_size_stays_within_the_cap(self):
+        size = re.search(r"^DESCRIBE_BATCH=(\d+)$", self.TRANSFORM.read_text(), re.M)
+        self.assertIsNotNone(size, "DESCRIBE_BATCH is not set")
+        self.assertLessEqual(int(size.group(1)), 5,
+                             "BigQuery allows 5 metadata updates per table "
+                             "per 10 seconds")
+
+
 if __name__ == "__main__":
     unittest.main()
 
