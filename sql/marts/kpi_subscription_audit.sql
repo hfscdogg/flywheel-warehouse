@@ -74,6 +74,7 @@ The leak is finding = BILLED_NO_SUBSCRIPTION. BILLED_NO_MATCH means no billing c
 Before acting on any row check name_overlaps: FALSE means the address probably matched the wrong household.
 vendor_monthly_cost is populated for all three vendors, each from that vendor's own billing feed, so summing it across vendors gives a real total. It is NULL where a vendor's billing feed has not been uploaded or carries no row for the account, which means the cost is unknown, never that the account is free.
 No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
+Check match_via before acting: name means the account was matched only because its subscriber name matched exactly one Billing customer, with no address agreeing. That is the weakest link in the table and two unrelated households can share a name.
 """)
 AS
 WITH roster AS (
@@ -349,6 +350,46 @@ customer_by_address AS (
     ORDER BY IF(match_via = 'billing', 0, 1), customer_id
   ) = 1
 ),
+-- NAME MATCHING, THE LAST RESORT
+-- Zoho Billing's customer list returns no addresses, so the address paths
+-- above reach Billing only by borrowing an address from a CRM account and
+-- hopping back by name. That leaves accounts whose customer is plainly in
+-- Billing under their own name but whose property has no CRM record to
+-- borrow from: 324 of the 577 unmatched accounts measured on 2026-09-08,
+-- $3,167 a month. More vendor names are found in Billing (204 + 141) than
+-- in CRM (189 + 135), so this goes to Billing directly rather than through
+-- the CRM bridge.
+--
+-- WEAKER THAN AN ADDRESS, AND RANKED THAT WAY
+-- Two unrelated households can share a name, and a false match does not
+-- leave an honest gap — it makes a confident wrong statement about a real
+-- customer. So this is used only where both address paths found nothing, it
+-- is reported as its own match_via rather than folded in, and a name that
+-- belongs to more than one Billing customer identifies nobody and is
+-- dropped rather than resolved arbitrarily.
+billing_by_unique_name AS (
+  SELECT
+    name_key,
+    ANY_VALUE(customer_id)  AS customer_id,
+    ANY_VALUE(display_name) AS display_name
+  FROM (
+    SELECT
+      TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(display_name, '')),
+        r'\([^)]*\)', ' '),
+        r'[^a-z0-9]+', ' '),
+        r'\s+', ' ')) AS name_key,
+      customer_id,
+      display_name
+    FROM staging.stg_zohobilling__customers
+  )
+  -- An empty key would collapse every unnamed customer onto one row and
+  -- match every unnamed account to it, which is the shape of bug the
+  -- address guard already carries a comment about.
+  WHERE name_key != ''
+  GROUP BY name_key
+  HAVING COUNT(DISTINCT customer_id) = 1
+),
 subs AS (
   SELECT
     customer_id,
@@ -390,11 +431,14 @@ sc_account_address AS (
 matched AS (
   SELECT
     v.*,
-    COALESCE(direct.customer_id, bridged.customer_id)     AS customer_id,
-    COALESCE(direct.display_name, bridged.display_name)   AS display_name,
+    COALESCE(direct.customer_id, bridged.customer_id, named.customer_id)
+                                                          AS customer_id,
+    COALESCE(direct.display_name, bridged.display_name, named.display_name)
+                                                          AS display_name,
     CASE
       WHEN direct.customer_id IS NOT NULL THEN direct.match_via
       WHEN bridged.customer_id IS NOT NULL THEN 'sc_account'
+      WHEN named.customer_id IS NOT NULL THEN 'name'
     END                                                   AS match_via
   FROM accounts v
   LEFT JOIN customer_by_address direct
@@ -403,6 +447,17 @@ matched AS (
     ON v.vendor = 'alarmdotcom' AND v.contract_no = bridge.account_no
   LEFT JOIN customer_by_address bridged
     ON bridge.address_key = bridged.address_key
+  -- Last: only reached where neither address path resolved. The subscriber
+  -- name is reduced the same way the Billing name is — parentheticals
+  -- ("ADRIANNE JOSEPH (MAIN HOUSE)") and punctuation dropped — and an empty
+  -- result never joins.
+  LEFT JOIN billing_by_unique_name named
+    ON TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+         LOWER(COALESCE(v.subscriber_name, '')),
+         r'\([^)]*\)', ' '),
+         r'[^a-z0-9]+', ' '),
+         r'\s+', ' ')) = named.name_key
+   AND named.name_key != ''
 )
 SELECT
   v.vendor,
@@ -485,9 +540,9 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
   SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
-  SET OPTIONS (description = "How the billing customer was reached: crm (vendor address to a Zoho CRM account, then to Billing by customer name), billing (a Billing address directly), sc_account (Alarm.com only: through Security Central's account number, an exact key rather than an address guess). NULL when unmatched.");
+  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, through Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by customer name), name (the subscriber name matched exactly one Zoho Billing customer, used only where no address path resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm a name-matched row against the property before acting on it.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
-  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand.");
+  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions
   SET OPTIONS (description = "Number of live Zoho Billing subscriptions for the matched customer. 0 when unmatched.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
@@ -495,6 +550,6 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN plan_names
   SET OPTIONS (description = "Comma-separated names of the live plans, for judging fit.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
-  SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
+  SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. Always read finding together with match_via: a BILLED_NO_SUBSCRIPTION reached by name is a weaker claim than one reached by address or account number. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at
   SET OPTIONS (description = "When this row was built (UTC).");
