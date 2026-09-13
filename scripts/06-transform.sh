@@ -22,27 +22,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 1 ] || usage_and_exit "$0"
 load_client "$1"
 shift
-require_cmd bq
+require_cmd bq python3
 
 # Set by validate_sql; checked once at the end so one bad model does not hide
 # the others — the point of validating is to see every problem at once.
 VALIDATE_FAILED=0
 
-# BigQuery caps table metadata updates at 5 per 10 seconds PER TABLE, and the
-# models here carry 7 to 26 ALTER COLUMN statements apiece. Sent as one script
-# they go over the cap, and the failure lands AFTER the CREATE has run: the
-# table is rebuilt and correct, its descriptions are half applied, and the run
-# is red. Re-running does not reliably fix it either — a model with more than
-# five descriptions can never apply them all in one submission no matter how
-# long you wait first, which is what made this look like a quota that needed
-# waiting out rather than a batch that needed splitting.
+# COLUMN DESCRIPTIONS ARE ONE OPERATION, NOT ONE PER COLUMN
 #
-# So the build and the descriptions are submitted separately, and the
-# descriptions go five at a time with a pause between batches. Deterministic
-# instead of lucky, for about two seconds per five columns.
-DESCRIBE_BATCH=5
-DESCRIBE_PAUSE=11
-
+# BigQuery caps table metadata updates at 5 per 10 seconds per table, and the
+# models here carry 7 to 26 descriptions each. Issued as separate ALTERs they
+# exceed that, and the failure lands AFTER the CREATE: the table rebuilt and
+# correct, its descriptions half applied, the run red. Three attempts to pace
+# around the cap each failed differently — five at a time (the CREATE also
+# counts), four then five (the gap is measured start to start, so batches
+# overlap in a sliding window), and again on a table rebuilt many times in one
+# day. Pacing was the wrong shape of fix.
+#
+# `bq update --schema` sets every description in ONE call. The cap stops being
+# something to stay under, and the pauses go with it — about eight minutes off
+# a full transform.
 bq_query() {
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
   $BQ query --use_legacy_sql=false --format=none
@@ -92,48 +91,34 @@ run_sql() {
   describe_columns "$f"
 }
 
-DESCRIBE_LAST=0
-
-# One batch of descriptions. The cap is measured over a window, so what has to
-# be spaced is the START of one batch from the start of the last — and a
-# submission already takes several seconds of that window by itself. Sleeping
-# only the shortfall rather than the whole window costs nothing in
-# correctness and takes about a third off the run.
-describe_batch() {
-  local chunk="$1" batches="$2" elapsed
-  if [ "$batches" -gt 0 ]; then
-    elapsed=$(( $(date +%s) - DESCRIBE_LAST ))
-    if [ "$elapsed" -lt "$DESCRIBE_PAUSE" ]; then
-      sleep "$(( DESCRIBE_PAUSE - elapsed ))"
-    fi
-  fi
-  DESCRIBE_LAST=$(date +%s)
-  printf '%s' "$chunk" | bq_query
+# The table a model builds, e.g. "marts.kpi_subscription_audit".
+model_table() {
+  awk '/^CREATE OR REPLACE TABLE /{print $5; exit}' "$1"
 }
 
+# Read the built table's schema, merge in the descriptions the model declares,
+# write it back once. Two metadata reads and one write per table, against a
+# cap of five per ten seconds, so there is nothing to pace.
+#
+# A description naming a column the table does not have stops the run, the way
+# the ALTER it replaces did: scripts/lib/merge_descriptions.py exits non-zero
+# and set -e carries it. Without that a renamed column would go quietly
+# undescribed until check_described caught it minutes later, naming no model.
 describe_columns() {
-  # The CREATE counts against the same cap. It lands two seconds before the
-  # first batch does, inside the same ten-second window, so a first batch of
-  # five makes six operations and the fifth ALTER is rejected — with the table
-  # already rebuilt, which is the failure this whole split exists to prevent.
-  # Only the first batch is short; every later one is clear of the build.
-  local f="$1" chunk="" stmts=0 batches=0 limit=$((DESCRIBE_BATCH - 1))
-  while IFS= read -r line; do
-    chunk="$chunk$line"$'\n'
-    case "$line" in *\;) stmts=$((stmts + 1)) ;; esac
-    [ "$stmts" -lt "$limit" ] && continue
-    describe_batch "$chunk" "$batches"
-    batches=$((batches + 1))
-    chunk=""
-    stmts=0
-    limit="$DESCRIBE_BATCH"
-  done < <(awk '/^ALTER TABLE/,0' "$f")
-  # A trailing partial batch, and the whole job for a model with fewer than
-  # DESCRIBE_BATCH columns.
-  [ "$stmts" -gt 0 ] && describe_batch "$chunk" "$batches"
-  # Explicit: the test above is the last command, and a model whose
-  # descriptions divided evenly would otherwise return its false.
-  return 0
+  local f="$1" table schema merged
+  table="$(model_table "$f")"
+  [ -n "$table" ] || die "no CREATE OR REPLACE TABLE in ${f#"$REPO_ROOT"/}"
+  schema="$(mktemp)"
+  merged="$(mktemp)"
+  # shellcheck disable=SC2064  # expand the paths now, not at trap time
+  trap "rm -f '$schema' '$merged'" RETURN
+
+  log "  \$ bq update --schema $table   # all columns, one call"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  $BQ show --schema --format=prettyjson "$table" > "$schema"
+  python3 "$SCRIPT_DIR/lib/merge_descriptions.py" "$f" < "$schema" > "$merged"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  $BQ update --schema "$merged" "$table" >/dev/null
 }
 
 # stg_<source>__<entity>.sql -> <source>; empty for anything else.

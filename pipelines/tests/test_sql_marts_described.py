@@ -126,37 +126,40 @@ class TestMartsDescribed(unittest.TestCase):
                 self.assertIsNone(re.search(pat, m.group(3)))
 
 
-class TestDescriptionBatching(unittest.TestCase):
-    """The first batch of descriptions is one short, and must stay that way.
+class TestDescriptionsAreOneOperation(unittest.TestCase):
+    """Descriptions go on in a single call, not one ALTER per column.
 
-    BigQuery counts the CREATE against the same cap of 5 table metadata
-    updates per 10 seconds. The build lands roughly two seconds before the
-    first batch of descriptions does, inside the same window, so a first batch
-    of five makes six operations and the last one is rejected — with the table
-    already rebuilt and its descriptions half applied.
+    BigQuery caps table metadata updates at 5 per 10 seconds per table and the
+    models here carry 7 to 26 descriptions. Three attempts to pace separate
+    ALTERs under that cap each failed differently, every one of them leaving a
+    table rebuilt and correct with its descriptions half applied. `bq update
+    --schema` writes them all at once, so there is no cap to stay under.
 
-    It is timing-dependent, so it does not fail every model or every run: it
-    took kpi_project_margin (16 descriptions) down mid-transform while 20-odd
-    other models went through. That is exactly the kind of constant someone
-    tidies away as an off-by-one, so it is asserted here.
+    If a later change reintroduces per-column ALTERs or a sleep, it has
+    reintroduced that failure, and this says so.
     """
 
     TRANSFORM = SQL.parent / "scripts" / "06-transform.sh"
 
-    def test_the_first_batch_leaves_room_for_the_create(self):
+    def test_descriptions_are_written_with_one_schema_update(self):
         text = self.TRANSFORM.read_text()
-        self.assertIn("limit=$((DESCRIBE_BATCH - 1))", text,
-                      "the first batch must be one smaller than the rest, to "
-                      "leave a slot in its window for the CREATE")
-        self.assertIn('limit="$DESCRIBE_BATCH"', text,
-                      "later batches must go back to the full size")
+        self.assertIn("bq update --schema", text)
+        self.assertIn("merge_descriptions.py", text)
 
-    def test_the_batch_size_stays_within_the_cap(self):
-        size = re.search(r"^DESCRIBE_BATCH=(\d+)$", self.TRANSFORM.read_text(), re.M)
-        self.assertIsNotNone(size, "DESCRIBE_BATCH is not set")
-        self.assertLessEqual(int(size.group(1)), 5,
-                             "BigQuery allows 5 metadata updates per table "
-                             "per 10 seconds")
+    def test_no_pacing_remains(self):
+        text = self.TRANSFORM.read_text()
+        for gone in ("DESCRIBE_BATCH", "DESCRIBE_PAUSE", "describe_batch"):
+            self.assertNotIn(gone, text,
+                             f"{gone} is pacing left over from the batching "
+                             f"approach; one update needs no pacing")
+        self.assertNotRegex(text, r"(?m)^\s*sleep ",
+                            "a sleep in the transform means something is "
+                            "being paced around a cap again")
+
+    def test_the_merger_is_executable_python(self):
+        merger = SQL.parent / "scripts" / "lib" / "merge_descriptions.py"
+        self.assertTrue(merger.is_file(), "merge_descriptions.py is missing")
+        compile(merger.read_text(), str(merger), "exec")
 
 
 if __name__ == "__main__":
