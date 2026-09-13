@@ -219,13 +219,21 @@ check_described() {
 }
 
 if [ $# -ge 1 ]; then
-  info "Transform (selected models) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
+  if is_validate; then
+    info "Validating selected models (no build) for '$CLIENT_SLUG'"
+  else
+    info "Transform (selected models) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
+  fi
   for f in "$@"; do
     [ -f "$f" ] || die "no such model file: $f"
     run_sql "$f"
   done
 else
-  info "Transform for '$CLIENT_SLUG' in $GCP_PROJECT_ID: staging"
+  if is_validate; then
+    info "Validating (no build) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
+  else
+    info "Transform for '$CLIENT_SLUG' in $GCP_PROJECT_ID: staging"
+  fi
   for f in "$REPO_ROOT"/sql/staging/*.sql; do
     [ -f "$f" ] || die "no staging models found under sql/staging/"
     src="$(model_source "$f")"
@@ -253,6 +261,9 @@ else
   if is_validate; then
     [ "$VALIDATE_FAILED" = 0 ] || die "one or more models are invalid (above)"
     info "every model is valid SQL against this project's schema"
+    info "NOTHING WAS BUILT — this was a validation pass. To build:"
+    info "  ./scripts/06-transform.sh $CLIENT_SLUG"
+    exit 0
   else
     info "Transform: every agent-readable table described"
     check_described
