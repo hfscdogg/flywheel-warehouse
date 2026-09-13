@@ -41,8 +41,8 @@ def models_with_address_key():
 class AddressKey(unittest.TestCase):
     def setUp(self):
         self.files = models_with_address_key()
-        self.assertEqual(len(self.files), 6,
-                         "expected six models to build an address key; if a "
+        self.assertEqual(len(self.files), 7,
+                         "expected seven models to build an address key; if a "
                          "model was added or removed, update this count "
                          "deliberately rather than loosening the check")
 

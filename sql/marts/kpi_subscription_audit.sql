@@ -336,18 +336,41 @@ billing_via_crm AS (
     ON LOWER(TRIM(a.account_name)) = b.name_key
   WHERE a.address_key != '||' AND a.account_name IS NOT NULL
 ),
--- One customer per address, direct Billing address winning over the CRM
--- bridge; duplicates within a path keep the lowest id, as elsewhere.
+-- A third address source, for properties Zoho CRM has no address for.
+-- QuickBooks has carried BillAddr all along and it was simply never
+-- extracted; an address that is wrong there bounces an invoice, so it gets
+-- corrected, which is a forcing function the CRM's addresses do not have.
+-- Measured at 154 accounts and $2,143 a month no other path reaches, and it
+-- is the only route to Parasol, whose subscriber names are absent from Zoho
+-- almost entirely (7 of 125).
+billing_via_qbo AS (
+  SELECT q.address_key, b.customer_id, b.display_name, 'qbo' AS match_via
+  FROM staging.stg_qbo__customers q
+  JOIN billing_by_name b
+    ON LOWER(TRIM(q.display_name)) = b.name_key
+  WHERE q.address_key != '||' AND q.display_name IS NOT NULL
+),
+-- One customer per address. The ordering is deliberately conservative: a
+-- direct Billing address wins, then the CRM bridge exactly as before, and
+-- QuickBooks last. QBO is not weaker evidence — both are a mailing address
+-- in another system resolved to Billing by name — but ranking it last makes
+-- this change purely ADDITIVE: every address that already resolved keeps the
+-- customer it had, and QBO only fills gaps. That is far easier to verify
+-- than a reshuffle, and the 874 CRM matches can be checked not to have moved.
+-- Duplicates within a path keep the lowest id, as elsewhere.
 customer_by_address AS (
   SELECT address_key, customer_id, display_name, match_via
   FROM (
     SELECT * FROM billing_direct WHERE address_key != '||'
     UNION ALL
     SELECT * FROM billing_via_crm
+    UNION ALL
+    SELECT * FROM billing_via_qbo
   )
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY address_key
-    ORDER BY IF(match_via = 'billing', 0, 1), customer_id
+    ORDER BY CASE match_via WHEN 'billing' THEN 0 WHEN 'crm' THEN 1 ELSE 2 END,
+             customer_id
   ) = 1
 ),
 -- NAME MATCHING, THE LAST RESORT
@@ -545,7 +568,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
   SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
-  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, through Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by customer name), name (the subscriber name matched exactly one Zoho Billing customer, used only where no address path resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm a name-matched row against the property before acting on it.");
+  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, through Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by customer name), qbo (vendor address to a QuickBooks billing address, then to Billing by customer name), name (the subscriber name matched exactly one Zoho Billing customer, used only where no address path resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm a name-matched row against the property before acting on it.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
   SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions
