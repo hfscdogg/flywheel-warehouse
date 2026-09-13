@@ -382,13 +382,18 @@ billing_by_unique_name AS (
       customer_id,
       display_name
     FROM staging.stg_zohobilling__customers
-  )
+  ) c
   -- An empty key would collapse every unnamed customer onto one row and
   -- match every unnamed account to it, which is the shape of bug the
   -- address guard already carries a comment about.
   WHERE name_key != ''
   GROUP BY name_key
-  HAVING COUNT(DISTINCT customer_id) = 1
+  -- Qualified deliberately. HAVING resolves a bare name against the SELECT
+  -- aliases first, and ANY_VALUE(customer_id) AS customer_id shadows the
+  -- column, so an unqualified customer_id here reads as
+  -- COUNT(DISTINCT ANY_VALUE(customer_id)) and BigQuery rejects the whole
+  -- model as an aggregate of an aggregate.
+  HAVING COUNT(DISTINCT c.customer_id) = 1
 ),
 subs AS (
   SELECT
