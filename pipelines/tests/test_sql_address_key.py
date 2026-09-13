@@ -123,8 +123,13 @@ class NameKey(unittest.TestCase):
         # neither. Resolving it arbitrarily — as billing_by_name does for the
         # CRM bridge, where an address has already pinned the property — would
         # here attribute an account to a stranger on nothing but a shared name.
+        # Qualified: HAVING resolves a bare name against the SELECT aliases
+        # first, and ANY_VALUE(customer_id) AS customer_id shadows the column,
+        # so the unqualified form is an aggregate of an aggregate and BigQuery
+        # rejects the whole model.
         flat = " ".join(self.AUDIT.read_text().split())
-        self.assertIn("HAVING COUNT(DISTINCT customer_id) = 1", flat)
+        self.assertIn("HAVING COUNT(DISTINCT c.customer_id) = 1", flat)
+        self.assertNotIn("HAVING COUNT(DISTINCT customer_id)", flat)
 
     def test_the_empty_name_key_never_joins(self):
         # Same shape as the address guard: an empty key would collapse every

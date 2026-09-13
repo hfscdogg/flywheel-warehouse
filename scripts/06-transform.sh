@@ -24,6 +24,10 @@ load_client "$1"
 shift
 require_cmd bq
 
+# Set by validate_sql; checked once at the end so one bad model does not hide
+# the others — the point of validating is to see every problem at once.
+VALIDATE_FAILED=0
+
 # BigQuery caps table metadata updates at 5 per 10 seconds PER TABLE, and the
 # models here carry 7 to 26 ALTER COLUMN statements apiece. Sent as one script
 # they go over the cap, and the failure lands AFTER the CREATE has run: the
@@ -44,6 +48,31 @@ bq_query() {
   $BQ query --use_legacy_sql=false --format=none
 }
 
+# VALIDATE=1 checks every model against BigQuery without building anything.
+#
+# sqlfluff parses these files but does not resolve names, so it passes SQL
+# BigQuery then rejects — a HAVING that reads an aggregate through a SELECT
+# alias parsed cleanly and failed the whole mart at run time, after four
+# merges and several days, because the model only runs at the end of a
+# transform. --dry_run does full semantic validation and processes no bytes,
+# so the same mistake is a few seconds of feedback instead of a deploy.
+#
+# Only the build half is validated: the descriptions are ALTERs against a
+# table the dry run has not created, so BigQuery cannot check them this way.
+is_validate() { [ "${VALIDATE:-0}" = "1" ]; }
+
+validate_sql() {
+  local f="$1"
+  log "  \$ bq query --dry_run < ${f#"$REPO_ROOT"/}"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  if awk '/^ALTER TABLE/{exit} {print}' "$f" \
+       | $BQ query --use_legacy_sql=false --dry_run --format=none; then
+    return 0
+  fi
+  warn "INVALID: ${f#"$REPO_ROOT"/}"
+  return 1
+}
+
 # Everything before the first ALTER builds the table; everything from there on
 # describes it. Splitting on the first `ALTER TABLE` at the start of a line
 # relies on the same layout pipelines/tests/test_sql_marts_described.py enforces:
@@ -52,6 +81,10 @@ run_sql() {
   local f="$1"
   if is_dry_run; then
     log "[dry-run] $BQ query < ${f#"$REPO_ROOT"/}   # build, then descriptions"
+    return 0
+  fi
+  if is_validate; then
+    validate_sql "$f" || VALIDATE_FAILED=1
     return 0
   fi
   log "  \$ bq query < ${f#"$REPO_ROOT"/}"
@@ -217,8 +250,13 @@ else
     fi
     run_sql "$f"
   done
-  info "Transform: every agent-readable table described"
-  check_described
+  if is_validate; then
+    [ "$VALIDATE_FAILED" = 0 ] || die "one or more models are invalid (above)"
+    info "every model is valid SQL against this project's schema"
+  else
+    info "Transform: every agent-readable table described"
+    check_described
+  fi
 fi
 
 info "Transform done."
