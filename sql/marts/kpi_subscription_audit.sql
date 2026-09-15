@@ -57,6 +57,11 @@
 -- second route: its export carries Security Central's account number, an
 -- exact key, so a row the address misses can borrow the match of the Security
 -- Central account it is the same property as (`match_via = 'sc_account'`).
+-- Two more keys sit between the addresses and the name: Alarm.com's
+-- export carries an email on every row and Security Central's a contact
+-- phone on most, and either matched against Zoho Billing's own email and
+-- phone reaches 37 accounts no address or name could
+-- (`match_via = 'email'` / `'phone'`).
 -- Street names
 -- are written inconsistently between systems ("Dr" vs "Drive"), but house
 -- number and ZIP rarely vary. Unmatched rows are reported, not hidden: a low
@@ -74,7 +79,7 @@ The leak is finding = BILLED_NO_SUBSCRIPTION. BILLED_NO_MATCH means no billing c
 Before acting on any row check name_overlaps: FALSE means the address probably matched the wrong household.
 vendor_monthly_cost is populated for all three vendors, each from that vendor's own billing feed, so summing it across vendors gives a real total. It is NULL where a vendor's billing feed has not been uploaded or carries no row for the account, which means the cost is unknown, never that the account is free.
 No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
-Check match_via before acting: name means the account was matched only because its subscriber name matched exactly one Billing customer, with no address agreeing. That is the weakest link in the table and two unrelated households can share a name.
+Check match_via before acting: name means the account was matched only because its subscriber name matched exactly one Billing customer, with no address and no contact detail agreeing. That is the weakest link in the table and two unrelated households can share a name. email and phone are stronger than name and weaker than an address.
 """)
 AS
 WITH roster AS (
@@ -418,6 +423,90 @@ billing_by_unique_name AS (
   -- model as an aggregate of an aggregate.
   HAVING COUNT(DISTINCT c.customer_id) = 1
 ),
+-- CONTACT KEYS: EMAIL AND PHONE
+-- Zoho Billing carries an email and a phone on the customer, and two of the
+-- three vendor exports carry one too: Alarm.com an email on every one of its
+-- 597 rows, Security Central a contact phone on 559 of 588. Neither was used
+-- until now. They earn their place because they are the only keys in this
+-- model that are near-identifiers rather than heuristics -- an address is
+-- approximate and a name is ambiguous, but two records sharing an email
+-- address are almost always the same person.
+--
+-- Measured on the 2026-09-15 data: 37 accounts no other path reached, 16 from
+-- Alarm.com worth $291.29 a month and 21 from Security Central worth $80,
+-- with 32 of the 37 also agreeing on name. No key was shared by more than two
+-- accounts, and that is the number that mattered: a shared key -- an
+-- installer's email, a main office line sitting on every account they ever
+-- touched -- would manufacture a confident wrong match for every account
+-- hanging off it. Re-check the fan-out if this tier ever grows sharply.
+--
+-- A key belonging to more than one Billing customer identifies nobody and is
+-- dropped, exactly as billing_by_unique_name drops an ambiguous name.
+billing_by_email AS (
+  SELECT
+    LOWER(TRIM(c.email))      AS contact_key,
+    ANY_VALUE(c.customer_id)  AS customer_id,
+    ANY_VALUE(c.display_name) AS display_name
+  FROM staging.stg_zohobilling__customers c
+  WHERE TRIM(COALESCE(c.email, '')) != ''
+  GROUP BY contact_key
+  -- Qualified for the same reason billing_by_unique_name is: ANY_VALUE(...)
+  -- AS customer_id shadows the column, and a bare name here reads as an
+  -- aggregate of an aggregate.
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+-- Phone numbers are written a dozen ways ("(804) 555-0142", "+1 804 555
+-- 0142", "804.555.0142"). Reduce to digits and keep the last ten, which drops
+-- a country code without having to know whether one is there. Fewer than ten
+-- digits is not a number that can be matched -- an extension, a truncated
+-- field -- and is excluded rather than padded.
+billing_by_phone AS (
+  SELECT
+    RIGHT(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), 10) AS contact_key,
+    ANY_VALUE(c.customer_id)  AS customer_id,
+    ANY_VALUE(c.display_name) AS display_name
+  FROM staging.stg_zohobilling__customers c
+  WHERE LENGTH(REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10
+  GROUP BY contact_key
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+-- One Billing customer per vendor account, reached by that account's own
+-- contact details. Parasol's invoice carries neither an email nor a phone, so
+-- it has no branch here and can never match this way.
+--
+-- The QUALIFY deduplicates for the reason sc_account_address does: two
+-- Security Central rows can share an account number (one account, two
+-- contacts), and two contacts can carry two phone numbers reaching two
+-- different customers. Without it one account fans out into several audit
+-- rows. Lowest id wins, as everywhere else in this file.
+customer_by_contact AS (
+  SELECT vendor, account_no, customer_id, display_name, match_via
+  FROM (
+    SELECT
+      'alarmdotcom'  AS vendor,
+      a.customer_id  AS account_no,
+      b.customer_id,
+      b.display_name,
+      'email'        AS match_via
+    FROM staging.stg_vendor__alarmdotcom_accounts a
+    JOIN billing_by_email b ON b.contact_key = LOWER(TRIM(a.email))
+    WHERE TRIM(COALESCE(a.email, '')) != ''
+    UNION ALL
+    SELECT
+      'securitycentral',
+      s.account_no,
+      b.customer_id,
+      b.display_name,
+      'phone'
+    FROM staging.stg_vendor__securitycentral_accounts s
+    JOIN billing_by_phone b
+      ON b.contact_key = RIGHT(REGEXP_REPLACE(s.contact_phone, r'[^0-9]', ''), 10)
+    WHERE LENGTH(REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) >= 10
+  )
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY vendor, account_no ORDER BY customer_id
+  ) = 1
+),
 subs AS (
   SELECT
     customer_id,
@@ -459,13 +548,14 @@ sc_account_address AS (
 matched AS (
   SELECT
     v.*,
-    COALESCE(direct.customer_id, bridged.customer_id, named.customer_id)
-                                                          AS customer_id,
-    COALESCE(direct.display_name, bridged.display_name, named.display_name)
-                                                          AS display_name,
+    COALESCE(direct.customer_id, bridged.customer_id, contact.customer_id,
+             named.customer_id)                           AS customer_id,
+    COALESCE(direct.display_name, bridged.display_name, contact.display_name,
+             named.display_name)                          AS display_name,
     CASE
       WHEN direct.customer_id IS NOT NULL THEN direct.match_via
       WHEN bridged.customer_id IS NOT NULL THEN 'sc_account'
+      WHEN contact.customer_id IS NOT NULL THEN contact.match_via
       WHEN named.customer_id IS NOT NULL THEN 'name'
     END                                                   AS match_via
   FROM accounts v
@@ -475,7 +565,15 @@ matched AS (
     ON v.vendor = 'alarmdotcom' AND v.contract_no = bridge.account_no
   LEFT JOIN customer_by_address bridged
     ON bridge.address_key = bridged.address_key
-  -- Last: only reached where neither address path resolved. The subscriber
+  -- Above the name match, below both address paths. An email or a phone is
+  -- better evidence than a shared name, so this is deliberately NOT the
+  -- purely-additive ranking the QuickBooks bridge used: an account that
+  -- matched by name alone can move here, and to a different customer. That is
+  -- the intended improvement rather than a regression, but it does mean the
+  -- name tier's count should FALL when this lands. Check it; do not assume.
+  LEFT JOIN customer_by_contact contact
+    ON contact.vendor = v.vendor AND contact.account_no = v.account_no
+  -- Last: only reached where no address and no contact path resolved. The subscriber
   -- name is reduced the same way the Billing name is — parentheticals
   -- ("ADRIANNE JOSEPH (MAIN HOUSE)") and punctuation dropped — and an empty
   -- result never joins.
@@ -568,7 +666,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
   SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
-  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, through Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by customer name), qbo (vendor address to a QuickBooks billing address, then to Billing by customer name), name (the subscriber name matched exactly one Zoho Billing customer, used only where no address path resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm a name-matched row against the property before acting on it.");
+  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, through Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by customer name), qbo (vendor address to a QuickBooks billing address, then to Billing by customer name), email (the account's own email address matched exactly one Zoho Billing customer; Alarm.com only, as no other vendor export carries one), phone (the same by contact phone reduced to its last ten digits; Security Central only), name (the subscriber name matched exactly one Zoho Billing customer, used only where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm a name-matched row against the property before acting on it. email and phone rank above name and below both address paths, so an account that once matched by name may now match by contact, to a different customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
   SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions

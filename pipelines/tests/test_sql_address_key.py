@@ -139,17 +139,87 @@ class NameKey(unittest.TestCase):
         self.assertIn("AND named.name_key != ''", flat)
 
     def test_the_name_match_is_ranked_last(self):
-        # Address paths must win. Reordering this COALESCE would let a name
-        # override an address match without anything failing.
+        # Address paths must win, then the contact keys, then the name.
+        # Reordering this COALESCE would let a name override an address match
+        # without anything failing.
         flat = " ".join(self.AUDIT.read_text().split())
         self.assertIn(
             "COALESCE(direct.customer_id, bridged.customer_id, "
-            "named.customer_id)", flat)
+            "contact.customer_id, named.customer_id)", flat)
         order = [flat.index(f"{w}.customer_id IS NOT NULL")
-                 for w in ("direct", "bridged", "named")]
+                 for w in ("direct", "bridged", "contact", "named")]
         self.assertEqual(order, sorted(order),
                          "match_via is decided in a different order than the "
                          "customer id is chosen")
+
+
+class ContactKeyTest(unittest.TestCase):
+    """Email and phone reach Billing directly, so both sides must agree."""
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    def flat(self):
+        return " ".join(self.AUDIT.read_text().split())
+
+    def test_both_phone_keys_normalize_identically(self):
+        # The same hazard the address key and the name key each carry a test
+        # for: the Billing side and the vendor side reduce the value, and if
+        # the two reductions ever drift apart, equal phone numbers produce
+        # unequal keys and the tier silently matches nobody. The column name
+        # differs and is masked; everything after it has to be identical.
+        keys = re.findall(r"RIGHT\(REGEXP_REPLACE\([\w.]+, (.*?, 10\))",
+                          self.flat())
+        self.assertEqual(len(keys), 2,
+                         "expected exactly two copies of the phone key")
+        self.assertEqual(keys[0], keys[1],
+                         "the Billing side and the vendor side reduce phone "
+                         "numbers differently, so equal numbers produce "
+                         "unequal keys")
+
+    def test_an_ambiguous_contact_key_is_dropped(self):
+        # An email or a phone belonging to two Billing customers identifies
+        # neither, and resolving it arbitrarily would attribute an account to
+        # a stranger. Both CTEs qualify the count for the same reason
+        # billing_by_unique_name does -- ANY_VALUE(customer_id) AS customer_id
+        # shadows the column, making the bare form an aggregate of an
+        # aggregate that BigQuery rejects outright.
+        flat = self.flat()
+        self.assertEqual(flat.count("HAVING COUNT(DISTINCT c.customer_id) = 1"),
+                         3, "billing_by_unique_name, billing_by_email and "
+                            "billing_by_phone must each drop an ambiguous key")
+        self.assertNotIn("HAVING COUNT(DISTINCT customer_id)", flat)
+
+    def test_an_empty_contact_key_never_joins(self):
+        # Same shape as the address and name guards. An empty email would
+        # collapse every customer without one onto a single row; a phone
+        # shorter than ten digits cannot identify anyone. Both are excluded
+        # on the Billing side AND the vendor side, since either alone leaves
+        # the empty value able to join from the other.
+        flat = self.flat()
+        self.assertEqual(flat.count("TRIM(COALESCE(c.email, '')) != ''"), 1)
+        self.assertEqual(flat.count("TRIM(COALESCE(a.email, '')) != ''"), 1)
+        self.assertEqual(flat.count(
+            "REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10"), 1)
+        self.assertEqual(flat.count(
+            "REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) "
+            ">= 10"), 1)
+
+    def test_one_contact_row_per_vendor_account(self):
+        # Two Security Central rows can share an account number (one account,
+        # two contacts) and their phones can reach two different customers.
+        # Without this the account fans out into several audit rows, which
+        # breaks the table's one-row-per-(vendor, account) grain.
+        self.assertIn(
+            "QUALIFY ROW_NUMBER() OVER ( PARTITION BY vendor, account_no "
+            "ORDER BY customer_id ) = 1", self.flat())
+
+    def test_the_contact_join_is_keyed_on_vendor_too(self):
+        # account_no is only unique within a vendor. Joining on it alone would
+        # let a Security Central account number collide with an Alarm.com
+        # customer id and match one vendor's account to the other's customer.
+        self.assertIn(
+            "ON contact.vendor = v.vendor AND contact.account_no = "
+            "v.account_no", self.flat())
 
 
 if __name__ == "__main__":
