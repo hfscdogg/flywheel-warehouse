@@ -298,6 +298,45 @@ accounts AS (
     vendor_monthly_cost
   FROM parasol
 ),
+-- NOT EVERY ROW IN THE BILLING BOOK IS A CUSTOMER
+-- Zoho Billing carries internal records alongside real customers: a generic
+-- "service" record, and staff-created ones marked in the display name
+-- ("Dayna Andersen **TEST**"). They are ordinary rows with ordinary emails and
+-- addresses, so every match path in this file would happily reach one, and a
+-- vendor account matched to a non-customer is worse than an unmatched one: it
+-- reports BILLED_NO_SUBSCRIPTION -- a leak, with a customer name beside it --
+-- for a record that was never going to hold a subscription.
+--
+-- Observed on 2026-09-15: Livewire's own Alarm.com account reached the
+-- "service" record by shared email and was reported as the single largest
+-- leak on the contact tier, $98.63 a month. Two office accounts had reached
+-- the **TEST** record by address earlier.
+--
+-- Deliberately narrow, on evidence rather than a guess at what a fake record
+-- looks like. Two rules:
+--   ** anywhere in the name -- a marker a person typed on purpose, and a
+--      character pair that does not occur in a real name.
+--   an exact name in the literal list below -- exact, never a substring, so
+--      a real customer called "Service Plus LLC" is untouched.
+-- Extend the list only from what a query shows, never from a hunch. To see
+-- what it excludes today, and what else might belong:
+--   SELECT customer_id, display_name, email
+--   FROM staging.stg_zohobilling__customers
+--   WHERE REGEXP_CONTAINS(COALESCE(display_name, ''), r'\*\*')
+--      OR LOWER(TRIM(COALESCE(display_name, ''))) IN ('service')
+--
+-- Every path reads this rather than the staging table, so the exclusion is
+-- declared once and cannot be forgotten in a tier added later.
+-- pipelines/tests/test_sql_address_key.py fails the build if any path goes
+-- back to reading staging.stg_zohobilling__customers directly.
+--
+-- `*` is safe here: one source, no UNION, so there is no positional hazard.
+billing_customers AS (
+  SELECT *
+  FROM staging.stg_zohobilling__customers
+  WHERE NOT REGEXP_CONTAINS(COALESCE(display_name, ''), r'\*\*')
+    AND LOWER(TRIM(COALESCE(display_name, ''))) NOT IN ('service')
+),
 -- '||' is the empty key: it is house|street|zip, so a record that yielded
 -- none of the three still carries two separators. Guarding on '|' — as this
 -- file did until pipelines/tests/test_sql_address_key.py existed — excludes
@@ -322,13 +361,13 @@ billing_direct AS (
     customer_id,
     display_name,
     'billing' AS match_via
-  FROM staging.stg_zohobilling__customers
+  FROM billing_customers
   WHERE billing_address IS NOT NULL AND billing_zip IS NOT NULL
 ),
 -- One Billing customer per normalized name; duplicates keep the lowest id.
 billing_by_name AS (
   SELECT LOWER(TRIM(display_name)) AS name_key, customer_id, display_name
-  FROM staging.stg_zohobilling__customers
+  FROM billing_customers
   WHERE display_name IS NOT NULL AND TRIM(display_name) != ''
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY LOWER(TRIM(display_name)) ORDER BY customer_id
@@ -409,7 +448,7 @@ billing_by_unique_name AS (
         r'\s+', ' ')) AS name_key,
       customer_id,
       display_name
-    FROM staging.stg_zohobilling__customers
+    FROM billing_customers
   ) c
   -- An empty key would collapse every unnamed customer onto one row and
   -- match every unnamed account to it, which is the shape of bug the
@@ -447,7 +486,7 @@ billing_by_email AS (
     LOWER(TRIM(c.email))      AS contact_key,
     ANY_VALUE(c.customer_id)  AS customer_id,
     ANY_VALUE(c.display_name) AS display_name
-  FROM staging.stg_zohobilling__customers c
+  FROM billing_customers c
   WHERE TRIM(COALESCE(c.email, '')) != ''
   GROUP BY contact_key
   -- Qualified for the same reason billing_by_unique_name is: ANY_VALUE(...)
@@ -465,7 +504,7 @@ billing_by_phone AS (
     RIGHT(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), 10) AS contact_key,
     ANY_VALUE(c.customer_id)  AS customer_id,
     ANY_VALUE(c.display_name) AS display_name
-  FROM staging.stg_zohobilling__customers c
+  FROM billing_customers c
   WHERE LENGTH(REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10
   GROUP BY contact_key
   HAVING COUNT(DISTINCT c.customer_id) = 1

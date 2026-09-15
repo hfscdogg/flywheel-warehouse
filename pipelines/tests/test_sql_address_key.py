@@ -213,6 +213,43 @@ class ContactKeyTest(unittest.TestCase):
             "QUALIFY ROW_NUMBER() OVER ( PARTITION BY vendor, account_no "
             "ORDER BY customer_id ) = 1", self.flat())
 
+    def test_every_path_reads_the_filtered_customer_list(self):
+        # Zoho Billing's book holds internal records -- a generic "service"
+        # row, staff rows marked "**TEST**" -- that are not customers. Matching
+        # a vendor account to one is worse than leaving it unmatched: it
+        # reports a leak, with a plausible customer name beside it, for a
+        # record that was never going to hold a subscription.
+        #
+        # billing_customers filters them once and every path reads it, so the
+        # exclusion cannot be forgotten in a tier added later. This fails if
+        # any path goes back to the staging table directly -- the single
+        # permitted read being billing_customers' own.
+        code = [l for l in self.AUDIT.read_text().splitlines()
+                if not l.lstrip().startswith("--")]
+        direct = [l for l in code
+                  if "staging.stg_zohobilling__customers" in l]
+        self.assertEqual(len(direct), 1,
+                         "a path reads the Billing customer table directly "
+                         "and so skips the non-customer exclusion; read "
+                         "billing_customers instead")
+        self.assertEqual(
+            sum("FROM billing_customers" in l for l in code), 5,
+            "expected all five Billing paths -- address, name, unique name, "
+            "email, phone -- to read the filtered list")
+
+    def test_the_exclusion_is_narrow(self):
+        # A too-broad rule silently drops real customers, which is the failure
+        # this table cannot show you: the account just goes unmatched. The
+        # marker rule keys on "**", which no real name contains. The name rule
+        # is an exact match, never a substring, so "Service Plus LLC" stays.
+        flat = self.flat()
+        self.assertIn(
+            r"NOT REGEXP_CONTAINS(COALESCE(display_name, ''), r'\*\*')", flat)
+        self.assertIn(
+            "LOWER(TRIM(COALESCE(display_name, ''))) NOT IN ('service')", flat)
+        self.assertNotIn("LIKE '%service%'", flat)
+        self.assertNotIn("REGEXP_CONTAINS(display_name, r'service')", flat)
+
     def test_the_contact_join_is_keyed_on_vendor_too(self):
         # account_no is only unique within a vendor. Joining on it alone would
         # let a Security Central account number collide with an Alarm.com
