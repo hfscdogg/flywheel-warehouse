@@ -1,0 +1,103 @@
+name: probe
+
+# Read-only SQL against the client's warehouse, for the questions the agent
+# endpoint cannot answer. hermes-mcp serves marts and staging to an agent but
+# deliberately never raw_*, so a "what shape is this payload" question has
+# meant a human pasting a query into Cloud Shell and pasting the answer back.
+# This closes that loop without widening the agent's own seat: the query runs
+# HERE, in GitHub Actions, as the existing ingest-writer identity by workload
+# identity federation. No key exists, and nothing new was granted.
+#
+# RESULTS GO TO THIS JOB'S LOG, which anyone who can read the repository can
+# read, and they outlive the run. raw_* payloads carry customer names,
+# addresses and emails. Prefer a query that answers the question without
+# returning customer data -- for a payload-shape question, ask for the KEY
+# NAMES rather than the rows:
+#
+#   SELECT DISTINCT k
+#   FROM raw_dtools.projects,
+#        UNNEST(REGEXP_EXTRACT_ALL(
+#          REPLACE(TO_JSON_STRING(payload), '\\"', '"'),
+#          r'"([A-Za-z0-9_]+)"\s*:')) AS k
+#   ORDER BY k
+#
+# That returns field names and no values, which is the whole of what a
+# wrong-JSON-path bug needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      sql:
+        description: "Read-only SQL (SELECT/WITH only). Output goes to the job log — see the note in this file before querying raw_*."
+        required: true
+      max_rows:
+        description: Maximum rows to print
+        default: "20"
+
+concurrency:
+  group: probe-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2 # provides bq
+
+      # The statement is read through the environment, never interpolated into
+      # a shell line: `${{ inputs.sql }}` written into a `run:` script would be
+      # pasted in verbatim before bash ever saw it, so a query containing a
+      # quote and a semicolon would run as a command on the runner. The runner
+      # holds a live WIF credential, so that is not a theoretical concern.
+      # Same reason the checks below read "$SQL" rather than the expression.
+      - name: Reject anything but a single read-only statement
+        env:
+          SQL: ${{ inputs.sql }}
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          sql = os.environ["SQL"]
+          # Comments stripped first: "-- DELETE" is not a delete, but
+          # "/* x */ DROP" would sail past a naive prefix check.
+          bare = re.sub(r"--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).strip().rstrip(";").strip()
+          if not bare:
+              sys.exit("empty query")
+          if ";" in bare:
+              sys.exit("one statement per probe")
+          if not re.match(r"(?is)^(select|with)\b", bare):
+              sys.exit("read-only probe: SELECT/WITH statements only")
+          print("statement accepted")
+          PY
+
+      # ingest-writer holds dataEditor, so BigQuery would happily run a DDL
+      # statement this workflow let through -- the guard above is the only
+      # thing standing between this input and a dropped table, which is why it
+      # runs as its own step and fails the job rather than warning.
+      # --maximum_bytes_billed caps a runaway scan; --dry_run first so a bad
+      # query fails before processing anything.
+      - name: Run it
+        env:
+          SQL: ${{ inputs.sql }}
+          MAX_ROWS: ${{ inputs.max_rows || '20' }}
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: |
+          set -euo pipefail
+          PROJECT="$(sed -n 's/^GCP_PROJECT_ID="\(.*\)"$/\1/p' "clients/$CLIENT/client.env")"
+          echo "project: $PROJECT"
+          printf '%s' "$SQL" | bq query --project_id="$PROJECT" \
+            --use_legacy_sql=false --dry_run --format=none
+          printf '%s' "$SQL" | bq query --project_id="$PROJECT" \
+            --use_legacy_sql=false --max_rows="$MAX_ROWS" \
+            --maximum_bytes_billed=1073741824 --format=prettyjson

@@ -8,9 +8,17 @@ on:
       client:
         description: Client slug
         default: livewire
+      validate:
+        description: Dry run — check every model against BigQuery, build nothing
+        type: boolean
+        default: false
 
+# A validate run builds nothing, so it has no reason to queue behind a real
+# build or to make one wait — which is what a shared group would do, and the
+# moment you most want to validate is right after a build went wrong. Separate
+# groups; real builds still serialize against each other as before.
 concurrency:
-  group: transform-${{ inputs.client || 'livewire' }}
+  group: transform-${{ inputs.client || 'livewire' }}${{ inputs.validate && '-validate' || '' }}
   cancel-in-progress: false
 
 permissions:
@@ -27,5 +35,12 @@ jobs:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v2 # provides bq
+      # VALIDATE=1 makes 06-transform.sh dry-run every model (bq query
+      # --dry_run: full semantic validation, zero bytes processed, nothing
+      # created) and exit non-zero if any model is invalid. On a schedule
+      # `inputs` is empty, so this resolves to '0' and the nightly build is
+      # unchanged.
       - name: Build staging + marts
+        env:
+          VALIDATE: ${{ inputs.validate && '1' || '0' }}
         run: ./scripts/06-transform.sh "${{ inputs.client || 'livewire' }}"
