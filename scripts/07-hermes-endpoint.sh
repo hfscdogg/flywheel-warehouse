@@ -7,8 +7,18 @@
 # Agents authenticate to the endpoint with a bearer token held in the
 # client's own Secret Manager.
 #
-#   deploy        enable APIs, mint the token secret if absent, deploy/update
-#                 the Cloud Run service, print the URL + connection info
+#   deploy        enable APIs, mint the token secret if absent, converge the
+#                 IAM this needs, deploy/update the service, print the URL
+#   redeploy      ONLY the deploy step: ship the current hermes-mcp/ to the
+#                 EXISTING service. Converges no APIs, creates no secret,
+#                 touches no IAM policy. Exists so the recurring 10% of
+#                 'deploy' can run somewhere that is not a human's laptop:
+#                 shipping a new revision is routine and happens whenever
+#                 server.py or AGENT_SCOPE changes, while the other four
+#                 steps are first-run convergence that need project-IAM and
+#                 Secret Manager admin. Splitting them is what lets CI hold
+#                 run.admin + serviceAccountUser and nothing else.
+#                 Refuses to run until 'deploy' has been run once by a human.
 #   rotate-token  add a new token version and roll the service to it
 #   url           print the service URL and how to read the current token
 #   delete        remove the service (the token secret is kept; delete it
@@ -21,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/lib/common.sh"
 
-[ $# -ge 1 ] || usage_and_exit "$0 (actions: deploy | rotate-token | url | delete)"
+[ $# -ge 1 ] || usage_and_exit "$0 (actions: deploy | redeploy | rotate-token | url | delete)"
 load_client "$1"
 ACTION="${2:-deploy}"
 require_cmd gcloud python3
@@ -48,6 +58,28 @@ print_connection_info() {
   log "  Verify scope from any MCP client (mirrors 90-verify.sh):"
   log "    query: SELECT month, deals_won FROM kpi_sales_pipeline ORDER BY month DESC LIMIT 3   -> rows"
   log "    query: SELECT COUNT(*) FROM \`$GCP_PROJECT_ID.${DATASETS_RAW%% *}.deals\`            -> Access Denied (by design)"
+}
+
+# The Cloud Run deploy itself, shared by 'deploy' and 'redeploy' so the two
+# cannot drift into shipping differently configured revisions. Everything it
+# needs is already true by the time either caller reaches it: the token secret
+# exists, hermes-reader can read it, and the build identity can build.
+deploy_service() {
+  info "Deploying $HERMES_MCP_SERVICE to Cloud Run ($RUN_REGION) as $SA_HERMES_READER_EMAIL"
+  run gcloud run deploy "$HERMES_MCP_SERVICE" \
+    --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
+    --source "$REPO_ROOT/hermes-mcp" \
+    --service-account "$SA_HERMES_READER_EMAIL" \
+    --allow-unauthenticated \
+    --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \
+    --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},DATASET_MARTS=${DATASET_MARTS},DATASETS_AGENT=${DATASETS_AGENT// /,}" \
+    --memory 512Mi --cpu 1 --max-instances 2 --timeout 120 \
+    --labels "managed-by=${LABEL_MANAGED_BY},env=${LABEL_ENV}"
+  # --allow-unauthenticated is the transport layer only: the app itself
+  # rejects every request without the bearer token (401), and the runtime
+  # identity can read DATASETS_AGENT and nothing else regardless.
+  # DATASETS_AGENT is what the server LISTS; IAM (03-iam.sh) is what it can
+  # actually read. They agree because both derive from AGENT_SCOPE.
 }
 
 mint_token_version() {
@@ -108,22 +140,30 @@ case "$ACTION" in
         --role roles/cloudbuild.builds.builder --format=none --quiet
     fi
 
-    info "Deploying $HERMES_MCP_SERVICE to Cloud Run ($RUN_REGION) as $SA_HERMES_READER_EMAIL"
-    run gcloud run deploy "$HERMES_MCP_SERVICE" \
-      --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
-      --source "$REPO_ROOT/hermes-mcp" \
-      --service-account "$SA_HERMES_READER_EMAIL" \
-      --allow-unauthenticated \
-      --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \
-      --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},DATASET_MARTS=${DATASET_MARTS},DATASETS_AGENT=${DATASETS_AGENT// /,}" \
-      --memory 512Mi --cpu 1 --max-instances 2 --timeout 120 \
-      --labels "managed-by=${LABEL_MANAGED_BY},env=${LABEL_ENV}"
-    # --allow-unauthenticated is the transport layer only: the app itself
-    # rejects every request without the bearer token (401), and the runtime
-    # identity can read DATASETS_AGENT and nothing else regardless.
-    # DATASETS_AGENT is what the server LISTS; IAM (03-iam.sh) is what it can
-    # actually read. They agree because both derive from AGENT_SCOPE.
+    deploy_service
+    print_connection_info
+    ;;
 
+  redeploy)
+    # Deliberately refuses to bootstrap. A caller holding only run.admin and
+    # serviceAccountUser CANNOT create the secret or grant the build identity
+    # its role, so attempting a first deploy here fails deep inside gcloud
+    # with a permission error that reads like a broken pipeline rather than
+    # "this step was never meant to run here". Check up front and say so.
+    info "Redeploy: shipping current hermes-mcp/ to the existing service"
+    # Skipped under DRY_RUN, where probe() reports everything absent on
+    # purpose so a dry run prints every create step. Without this the plan
+    # preview could never get past these checks and would show nothing.
+    if ! is_dry_run; then
+      if ! probe gcloud secrets describe "$TOKEN_SECRET" --project "$GCP_PROJECT_ID"; then
+        die "token secret '$TOKEN_SECRET' does not exist — run '$0 $CLIENT_SLUG deploy' once from an admin session first; redeploy deliberately cannot create it"
+      fi
+      if ! probe gcloud run services describe "$HERMES_MCP_SERVICE" \
+           --project "$GCP_PROJECT_ID" --region "$RUN_REGION"; then
+        die "service '$HERMES_MCP_SERVICE' does not exist in $RUN_REGION — run '$0 $CLIENT_SLUG deploy' once from an admin session first"
+      fi
+    fi
+    deploy_service
     print_connection_info
     ;;
 
@@ -151,6 +191,6 @@ case "$ACTION" in
     ;;
 
   *)
-    die "unknown action '$ACTION' (expected: deploy | rotate-token | url | delete)"
+    die "unknown action '$ACTION' (expected: deploy | redeploy | rotate-token | url | delete)"
     ;;
 esac
