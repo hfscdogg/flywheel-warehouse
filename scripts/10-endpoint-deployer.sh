@@ -29,9 +29,13 @@
 #                            service that RUNS AS hermes-reader. Scoped to the
 #                            one account, so it cannot act as ingest-writer.
 #   cloudbuild.builds.editor \ `gcloud run deploy --source` builds the image
-#   artifactregistry.writer   } with Cloud Build and pushes it. These are
-#   storage.objectAdmin      / project-level because the build staging bucket
-#                            and registry are project resources.
+#   artifactregistry.writer  / with Cloud Build and pushes it. Project-level,
+#                            because both are project resources.
+#   storage.admin            on the ONE bucket Cloud Run stages source uploads
+#                            through (run-sources-<project>-<region>), never
+#                            the project. objectAdmin is NOT enough: the
+#                            upload calls storage.buckets.get, which is a
+#                            bucket-level permission objectAdmin lacks.
 #
 # It gets NO BigQuery access, NO Secret Manager access, and no ability to
 # change IAM. Read the grants back with:
@@ -104,15 +108,43 @@ run gcloud iam service-accounts add-iam-policy-binding "$SA_HERMES_READER_EMAIL"
   --role=roles/iam.serviceAccountUser --format=none --quiet
 
 # Project-level, because a source deploy builds through Cloud Build and pushes
-# to Artifact Registry, and both are project resources. If a deploy ever fails
-# at "Uploading sources" or on the registry push, the missing role is one of
-# these three — add it here rather than widening to a broader role.
-info "Cloud Build + Artifact Registry + build staging (source deploys)"
-for role in roles/cloudbuild.builds.editor roles/artifactregistry.writer roles/storage.objectAdmin; do
+# to Artifact Registry, and both are project resources.
+info "Cloud Build + Artifact Registry (source deploys)"
+for role in roles/cloudbuild.builds.editor roles/artifactregistry.writer; do
   run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
     --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \
     --role="$role" --condition=None --format=none --quiet
 done
+
+# THE STAGING BUCKET NEEDS storage.admin, NOT objectAdmin, AND THE DIFFERENCE
+# IS NOT COSMETIC. `gcloud run deploy --source` stages the upload through a
+# Cloud Run-managed bucket and calls storage.buckets.get on it first.
+# objectAdmin grants permissions on OBJECTS; buckets.get is a BUCKET-level
+# permission and is not in it. The first real deploy through this account
+# failed on exactly that, five seconds in:
+#
+#   Uploading sources.....failed
+#   ERROR: ... does not have storage.buckets.get access to the Google Cloud
+#   Storage bucket ... 'run-sources-livewire-dw-us-east4'
+#
+# Granted on THAT ONE BUCKET rather than the project, which is the same
+# judgement as run.admin on the one service: this account can stage a build
+# and nothing else in Cloud Storage. The bucket name is what Cloud Run
+# derives, run-sources-<project>-<region>, and it is created by the first
+# source deploy — which is one more reason a human runs `deploy` before this
+# script, since a bucket that does not exist cannot be granted on.
+BUILD_BUCKET="run-sources-${GCP_PROJECT_ID}-${RUN_REGION}"
+info "storage.admin on gs://$BUILD_BUCKET only (source upload staging)"
+if probe gcloud storage buckets describe "gs://$BUILD_BUCKET" --project "$GCP_PROJECT_ID"; then
+  run gcloud storage buckets add-iam-policy-binding "gs://$BUILD_BUCKET" \
+    --project "$GCP_PROJECT_ID" \
+    --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \
+    --role=roles/storage.admin --format=none --quiet
+elif ! is_dry_run; then
+  warn "build staging bucket gs://$BUILD_BUCKET not found — Cloud Run creates it on"
+  warn "the first --source deploy. Run '07-hermes-endpoint.sh $CLIENT_SLUG deploy'"
+  warn "from an admin session once, then re-run this script to grant on it."
+fi
 
 info "Binding: this repo's workflows may impersonate $SA_ENDPOINT_DEPLOYER"
 run gcloud iam service-accounts add-iam-policy-binding "$SA_ENDPOINT_DEPLOYER_EMAIL" \
