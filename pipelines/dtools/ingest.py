@@ -5,7 +5,8 @@ DTOOLS were verified against the live API reference
 (https://dtcloudapi.d-tools.cloud/apidocs/index.html) on the first live run:
 
 - Auth is TWO headers: the tenant API key (X-API-Key) plus the fixed Basic
-  Authorization value D-Tools publishes in its public docs.
+  Authorization value D-Tools publishes in its public docs. Both are read
+  from Secret Manager (lib/sources.py names them); neither lives in the repo.
 - List endpoints wrap results under an entity-named key ('opportunities',
   'projects') with page/pageSize pagination.
 - GetQuotes requires an opportunityId (400 without one, despite the spec
@@ -21,22 +22,24 @@ from ..lib.sources import DTOOLS
 log = logging.getLogger("flywheel.ingest.dtools")
 
 
-def _headers(api_key):
-    # D-Tools requires BOTH headers (see lib/sources.py DTOOLS).
+def _headers(api_key, auth_basic):
+    # D-Tools requires BOTH headers (see lib/sources.py DTOOLS). Both values
+    # are passed in from main(), which reads them from Secret Manager — this
+    # module holds no credential of its own.
     return {
         "X-API-Key": api_key,
-        "Authorization": DTOOLS["auth_basic"],
+        "Authorization": auth_basic,
         "Accept": "application/json",
     }
 
 
-def fetch_entity(http, api_key, entity, limit):
+def fetch_entity(http, headers, entity, limit):
     """Paginated list pull; the list sits under entity['list_key'] (or is bare)."""
     records, page = [], 1
     while True:
         resp = http.get(
             f"{DTOOLS['base_url']}{entity['path']}",
-            headers=_headers(api_key),
+            headers=headers,
             params={"page": page, "pageSize": DTOOLS["page_size"]},
             timeout=60,
         )
@@ -52,13 +55,13 @@ def fetch_entity(http, api_key, entity, limit):
     return records
 
 
-def fetch_quotes(http, api_key, entity, opportunity_ids, limit):
+def fetch_quotes(http, headers, entity, opportunity_ids, limit):
     """One GetQuotes call per opportunity id; returns the combined list."""
     records = []
     for oid in opportunity_ids:
         resp = http.get(
             f"{DTOOLS['base_url']}{entity['path']}",
-            headers=_headers(api_key),
+            headers=headers,
             params={"opportunityId": oid},
             timeout=60,
         )
@@ -78,16 +81,19 @@ def main():
     from ..lib import secret_store, web
 
     http = web.session()
-    api_key = secret_store.get(cfg.project_id, "flywheel-dtools-api-key")
+    headers = _headers(
+        secret_store.get(cfg.project_id, DTOOLS["api_key_secret"]),
+        secret_store.get(cfg.project_id, DTOOLS["auth_basic_secret"]),
+    )
     bq = bq_mod.client_for(cfg)
 
     total = 0
     opportunity_ids = []
     for entity in DTOOLS["entities"]:
         if entity.get("per_opportunity"):
-            records = fetch_quotes(http, api_key, entity, opportunity_ids, args.limit)
+            records = fetch_quotes(http, headers, entity, opportunity_ids, args.limit)
         else:
-            records = fetch_entity(http, api_key, entity, args.limit)
+            records = fetch_entity(http, headers, entity, args.limit)
             if entity["name"] == "opportunities":
                 opportunity_ids = [r["id"] for r in records if r.get("id")]
         total += runner.land(bq_mod, bq, cfg, dataset, entity["name"], records,

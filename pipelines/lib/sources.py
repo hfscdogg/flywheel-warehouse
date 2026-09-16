@@ -46,9 +46,14 @@ DTOOLS = {
     # (https://dtcloudapi.d-tools.cloud/apidocs/index.html, linked from
     # https://docs.d-tools.cloud/en/collections/7640732-cloud-api-documentation).
     # Auth is TWO headers: the account's API key in X-API-Key, PLUS a fixed
-    # Basic Authorization value that D-Tools publishes verbatim in its public
-    # docs ("this is the only one that works") — it is shared across all
-    # tenants and is not a secret.
+    # Basic Authorization value D-Tools publishes in its public docs ("this is
+    # the only one that works"), shared across all tenants.
+    # BOTH are read from Secret Manager at run time, like every other source's
+    # credentials, and neither is written here. The Basic value being public
+    # is an argument about its blast radius, not a reason to hold a
+    # credential in the repo: it still authenticates a request, it still ends
+    # up in every clone and every fork of this history, and the one place it
+    # cannot be rotated from is a source file. Secret names, not secrets.
     # Endpoints are RPC-style (/api/v1/<Entity>/Get<Entities>). List
     # endpoints paginate with page/pageSize (server default 20) and wrap the
     # list under an entity-named key ('opportunities', 'projects') plus a
@@ -58,7 +63,8 @@ DTOOLS = {
     # fetched per opportunity id (per_opportunity).
     # Full pull every run (small data volumes); incremental can come later.
     "base_url": "https://dtcloudapi.d-tools.cloud",
-    "auth_basic": "Basic RFRDbG91ZEFQSVVzZXI6MyNRdVkrMkR1QCV3Kk15JTU8Yi1aZzlV",
+    "api_key_secret": "flywheel-dtools-api-key",
+    "auth_basic_secret": "flywheel-dtools-auth-basic",
     "entities": [
         {"name": "opportunities", "path": "/api/v1/Opportunities/GetOpportunities",
          "list_key": "opportunities"},

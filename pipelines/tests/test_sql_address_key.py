@@ -167,10 +167,16 @@ class ContactKeyTest(unittest.TestCase):
         # the two reductions ever drift apart, equal phone numbers produce
         # unequal keys and the tier silently matches nobody. The column name
         # differs and is masked; everything after it has to be identical.
+        #
+        # Three copies since the QuickBooks path landed: the Billing side, the
+        # vendor side (extracted once in vendor_contact and read by both
+        # consumers), and the QuickBooks side. All three must agree — the
+        # vendor copy is joined against BOTH book copies, so a drift in any
+        # one of them breaks a tier.
         keys = re.findall(r"RIGHT\(REGEXP_REPLACE\([\w.]+, (.*?, 10\))",
                           self.flat())
-        self.assertEqual(len(keys), 2,
-                         "expected exactly two copies of the phone key")
+        self.assertEqual(len(keys), 3,
+                         "expected exactly three copies of the phone key")
         self.assertEqual(keys[0], keys[1],
                          "the Billing side and the vendor side reduce phone "
                          "numbers differently, so equal numbers produce "
@@ -185,8 +191,10 @@ class ContactKeyTest(unittest.TestCase):
         # aggregate that BigQuery rejects outright.
         flat = self.flat()
         self.assertEqual(flat.count("HAVING COUNT(DISTINCT c.customer_id) = 1"),
-                         3, "billing_by_unique_name, billing_by_email and "
-                            "billing_by_phone must each drop an ambiguous key")
+                         7, "billing_by_unique_name, billing_by_email and "
+                            "billing_by_phone, plus the four QuickBooks tiers "
+                            "(address, email, phone, name), must each drop an "
+                            "ambiguous key")
         self.assertNotIn("HAVING COUNT(DISTINCT customer_id)", flat)
 
     def test_an_empty_contact_key_never_joins(self):
@@ -195,11 +203,17 @@ class ContactKeyTest(unittest.TestCase):
         # shorter than ten digits cannot identify anyone. Both are excluded
         # on the Billing side AND the vendor side, since either alone leaves
         # the empty value able to join from the other.
+        #
+        # Two book-side copies of each since the QuickBooks path landed (Zoho
+        # Billing and QuickBooks), and still exactly one vendor-side copy of
+        # each: vendor_contact extracts the account's email and phone once and
+        # both consumers read it, so the vendor-side guard cannot be dropped
+        # for one consumer and kept for the other.
         flat = self.flat()
-        self.assertEqual(flat.count("TRIM(COALESCE(c.email, '')) != ''"), 1)
+        self.assertEqual(flat.count("TRIM(COALESCE(c.email, '')) != ''"), 2)
         self.assertEqual(flat.count("TRIM(COALESCE(a.email, '')) != ''"), 1)
         self.assertEqual(flat.count(
-            "REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10"), 1)
+            "REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10"), 2)
         self.assertEqual(flat.count(
             "REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) "
             ">= 10"), 1)
@@ -257,6 +271,150 @@ class ContactKeyTest(unittest.TestCase):
         self.assertIn(
             "ON contact.vendor = v.vendor AND contact.account_no = "
             "v.account_no", self.flat())
+
+
+class QboCustomerPathTest(unittest.TestCase):
+    """The QuickBooks evidence path must stay INDEPENDENT of the Billing match.
+
+    Zoho Billing is not the whole picture — check payers reach QuickBooks and
+    never reach Billing — so the audit resolves each vendor account to a
+    QuickBooks customer as well, and reports whether that customer has been
+    invoiced for monitoring. Roughly half the leak list is explained by it.
+
+    The hazard this class guards is the shortcut: nothing links a QuickBooks
+    customer to a Zoho Billing one, so it is tempting to hop from the Billing
+    customer this mart already matched to a QuickBooks customer by name. That
+    stacks a second name match on top of whatever key found the Billing
+    customer, and the combined claim is weaker than either half — including on
+    the OK rows, where the damage cannot be seen. The QuickBooks path must
+    start from the vendor account's own keys, every time.
+    """
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    def code(self):
+        return [l for l in self.AUDIT.read_text().splitlines()
+                if not l.lstrip().startswith("--")]
+
+    def flat(self):
+        return " ".join(self.AUDIT.read_text().split())
+
+    def test_every_path_reads_the_one_customer_list(self):
+        # The analogue of the billing_customers guard. Two independent things
+        # read the QuickBooks customer book — the Billing bridge and the
+        # QuickBooks evidence path — and both must read the single CTE, so
+        # that a filter added to it later cannot be silently skipped by one.
+        # Exact equality, like the Billing counts: a new path that reads the
+        # staging table directly fails here until someone updates this
+        # deliberately.
+        code = self.code()
+        self.assertEqual(
+            sum("staging.stg_qbo__customers" in l for l in code), 1,
+            "a path reads the QuickBooks customer table directly instead of "
+            "the qbo_customers CTE")
+        self.assertEqual(
+            sum("FROM qbo_customers" in l for l in code), 5,
+            "expected all five QuickBooks reads — the Billing bridge plus the "
+            "four match tiers (address, email, phone, name) — to read the CTE")
+
+    def test_the_qbo_path_is_not_bridged_through_billing(self):
+        # customer_by_qbo must resolve from the vendor account's own keys. If
+        # it ever references the Billing match — billing_by_name, or the
+        # matched customer_id — the two answers stop being independent and the
+        # column stops meaning what its description says it means.
+        flat = self.flat()
+        start = flat.index("customer_by_qbo AS (")
+        body = flat[start:flat.index("qbo_monitoring AS (", start)]
+        for forbidden in ("billing_by_name", "billing_by_unique_name",
+                          "billing_customers", "billing_by_email",
+                          "billing_by_phone", "customer_by_address",
+                          "customer_by_contact"):
+            self.assertNotIn(
+                forbidden, body,
+                f"customer_by_qbo reads {forbidden}, so the QuickBooks match "
+                f"is bridged through the Billing one instead of resolved "
+                f"independently")
+
+    def test_both_qbo_name_keys_normalize_identically(self):
+        # Same hazard as the Billing name key, and one extra pass: the vendors
+        # write "Tilghman, Richard" where QuickBooks writes "Richard
+        # Tilghman", so this key inverts on the first comma. Written on the
+        # book side and the vendor side; they must agree or the tier — which
+        # reaches more leak rows than the other three combined — silently
+        # matches nobody.
+        keys = re.findall(
+            r"TRIM\(REGEXP_REPLACE\(REGEXP_REPLACE\(REGEXP_REPLACE\("
+            r"REGEXP_REPLACE\( LOWER\(COALESCE\([\w.]+, ''\)\), (.*?' '\)\))",
+            self.flat())
+        self.assertEqual(len(keys), 2,
+                         "expected exactly two copies of the QuickBooks name key")
+        self.assertEqual(keys[0], keys[1],
+                         "the QuickBooks side and the vendor side reduce names "
+                         "differently, so equal names produce unequal keys")
+        self.assertIn(r"r'^\s*([^,]+?)\s*,\s*(.+)$', r'\2 \1'", keys[0],
+                      "the comma inversion is missing; without it Parasol's "
+                      "'Last, First' names reach almost nothing")
+
+    def test_the_qbo_name_match_is_ranked_last(self):
+        # Address, then the contact keys, then the name — the same ranking the
+        # Billing match uses, for the same reason: a shared name is not
+        # evidence two records are the same household.
+        flat = self.flat()
+        self.assertIn(
+            "COALESCE(a.customer_id, e.customer_id, p.customer_id, "
+            "n.customer_id)", flat)
+        start = flat.index("customer_by_qbo AS (")
+        body = flat[start:flat.index("qbo_monitoring AS (", start)]
+        order = [body.index(f"{w}.customer_id IS NOT NULL")
+                 for w in ("a", "e", "p", "n")]
+        self.assertEqual(order, sorted(order),
+                         "qbo_match_via is decided in a different order than "
+                         "the customer id is chosen")
+
+    def test_the_empty_qbo_name_key_never_joins(self):
+        # Same shape as every other empty-key guard in this file. Excluded on
+        # the book side and on the vendor side, since either alone leaves the
+        # empty value able to join from the other.
+        flat = self.flat()
+        self.assertIn("WHERE qbo_name_key != ''", flat)
+        self.assertIn("AND n.match_key != ''", flat)
+
+    def test_monitoring_is_identified_by_income_account(self):
+        # Which item is monitoring is a bookkeeping fact. Matching on item
+        # names instead would miss LWS-APPCONTROL and INV-FULL-ANN, which do
+        # not say "monitoring", and catch items that are not.
+        flat = self.flat()
+        for account in ("'Security Monitoring Income'",
+                        "'Invision Monitoring Income'",
+                        "'Security Discounts'"):
+            self.assertIn(account, flat)
+        self.assertIn("income_account_name IN (", flat)
+        self.assertNotIn("item_name LIKE", flat)
+
+    def test_a_voided_invoice_is_not_revenue(self):
+        # QuickBooks keeps a void as a zero-amount invoice with its lines
+        # intact, so a naive filter reads one as evidence the customer is
+        # paying — the exact opposite of what it means, and in the direction
+        # that keeps a real leak off the list.
+        self.assertIn("AND i.total_amount > 0", self.flat())
+
+    def test_the_finding_gate_still_asks_billing_only(self):
+        # This change is ADDITIVE. The QuickBooks columns are advisory and the
+        # `finding` CASE must not consider them, so that every existing row
+        # keeps the finding it had and the two answers can be compared on real
+        # data before one is allowed to override the other. Folding
+        # qbo_monitoring_revenue into the revenue gate is a separate, later
+        # change — and when it is made, this test is the one to update.
+        flat = self.flat()
+        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
+        gate = flat[start:flat.index("END AS finding", start)]
+        for forbidden in ("qbo_", "qm."):
+            self.assertNotIn(
+                forbidden, gate,
+                "the finding CASE reads a QuickBooks column; this change is "
+                "additive and the gate must still ask Zoho Billing alone")
+        self.assertIn("COALESCE(s.active_subscriptions, 0) = 0 THEN "
+                      "'BILLED_NO_SUBSCRIPTION'", gate)
 
 
 if __name__ == "__main__":
