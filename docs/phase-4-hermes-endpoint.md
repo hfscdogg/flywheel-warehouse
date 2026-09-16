@@ -93,6 +93,45 @@ for the warehouse at all:
 > follow the descriptions — they say what each column means and what not to
 > do. Say the caveats they name as part of the answer.
 
+### Claude Code
+
+Two scopes, and which one you want depends on where Claude Code runs.
+
+**On your own machine** — one command, nothing committed:
+
+```sh
+claude mcp add --transport http -s user flywheel https://<service-url>/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+**In a session that is not your machine** — Claude Code on the web runs in an
+ephemeral container, so a `-s user` install dies with it. Project scope is the
+durable form: [`.mcp.json`](../.mcp.json) at the repo root carries the endpoint
+and a **reference** to the token, and the session's environment supplies
+`HERMES_TOKEN`.
+
+The token is never written to that file. It is committed to a repository; a
+literal there is a credential in git history, where it stays after any later
+correction. `pipelines/tests/test_mcp_config.py` fails the build if one is
+pasted in, if it is smuggled into the URL as a query parameter (which Cloud Run
+would then log on every request), or if the URL is downgraded to http.
+
+Setting `HERMES_TOKEN` is the only manual step:
+
+```sh
+gcloud secrets versions access latest --secret hermes-endpoint-token \
+  --project <project-id>
+```
+
+Copy it straight into the environment's variables and clear the scrollback. If
+it is ever exposed, `./scripts/07-hermes-endpoint.sh <client> rotate-token`
+replaces it — note that cuts off **every** agent sharing the token, Hermes
+included.
+
+MCP configuration is read at session start, so an existing session will not
+pick this up; start a new one and ask the agent what tables it can see. The
+scope checks below are the right first question.
+
 ## Verify the scope (from the agent's seat)
 
 Mirrors `90-verify.sh`, but through the endpoint:
