@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "flywheel": {
+      "type": "http",
+      "url": "https://hermes-mcp-3g4fj7eozq-uk.a.run.app/mcp",
+      "headers": {
+        "Authorization": "Bearer ${HERMES_TOKEN}"
+      }
+    }
+  }
+}
