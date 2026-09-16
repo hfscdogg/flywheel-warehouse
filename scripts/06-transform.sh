@@ -27,6 +27,14 @@ require_cmd bq python3
 # Set by validate_sql; checked once at the end so one bad model does not hide
 # the others — the point of validating is to see every problem at once.
 VALIDATE_FAILED=0
+# Tables whose schema could not be read, so their descriptions were not
+# applied. Collected rather than fatal — see describe_columns.
+#
+# describe_columns must stay a plain call in run_sql. Pipe it, or wrap it in
+# $(...), and it runs in a subshell where this assignment is discarded — the
+# run would then go green over an undescribed table, which is the failure this
+# variable exists to prevent.
+DESCRIBE_FAILED=""
 
 # COLUMN DESCRIPTIONS ARE ONE OPERATION, NOT ONE PER COLUMN
 #
@@ -116,6 +124,27 @@ describe_columns() {
   log "  \$ bq update --schema $table   # all columns, one call"
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
   $BQ show --schema --format=prettyjson "$table" > "$schema"
+
+  # bq exits 0 and prints NOTHING for a table with no columns, so set -e
+  # cannot see this and the empty file is the only evidence. Feeding it to
+  # merge_descriptions.py ends the run on a JSONDecodeError naming a line of
+  # Python rather than a table -- which is how four consecutive nightly
+  # transforms died at stg_alarmdotcom__customers, three models into staging,
+  # leaving every mart unbuilt while the manual runs people did instead
+  # looked fine.
+  #
+  # Recorded and reported after the build instead, the same shape as
+  # missing_input skipping a model and check_described running last: one
+  # undescribable table must not cost every model behind it. The run still
+  # goes red -- check_describe_failures below -- but the data is fresh first.
+  # check_described cannot catch this one on its own: a table with no columns
+  # has no column missing a description.
+  if [ ! -s "$schema" ]; then
+    warn "$table: bq returned an empty schema — the table has no columns"
+    DESCRIBE_FAILED="$DESCRIBE_FAILED $table"
+    return 0
+  fi
+
   python3 "$SCRIPT_DIR/lib/merge_descriptions.py" "$f" < "$schema" > "$merged"
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
   $BQ update --schema "$merged" "$table" >/dev/null
@@ -188,6 +217,21 @@ missing_input() {
 # agent reads both. Runs AFTER everything is built: the data is never left
 # stale, the run just goes red until the description is added (in the model's
 # SQL, as OPTIONS on the CREATE and ALTER COLUMN ... SET OPTIONS after it).
+# Runs after the build, before check_described, and names what that check
+# cannot: a table with no columns reports no undescribed column, so without
+# this an empty-schema table would pass silently.
+check_describe_failures() {
+  local t
+  [ -n "$DESCRIBE_FAILED" ] || return 0
+  warn "tables whose schema could not be read, so no description was applied:"
+  for t in $DESCRIBE_FAILED; do
+    warn "    $t"
+  done
+  warn "a table with no columns is a build that produced nothing usable —"
+  warn "check the model's source data landed, and that its SELECT projects columns"
+  die "every other model was built; fix these and re-run"
+}
+
 check_described() {
   local check="$REPO_ROOT/sql/checks/described.sql" missing
   if is_dry_run; then
@@ -213,6 +257,10 @@ if [ $# -ge 1 ]; then
     [ -f "$f" ] || die "no such model file: $f"
     run_sql "$f"
   done
+  # The dataset-wide description sweep is deliberately skipped for an explicit
+  # model list, but this reports only the models just run, so silence here
+  # would mean "Transform done." over a table that got no descriptions.
+  is_validate || check_describe_failures
 else
   if is_validate; then
     info "Validating (no build) for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
@@ -251,6 +299,7 @@ else
     exit 0
   else
     info "Transform: every agent-readable table described"
+    check_describe_failures
     check_described
   fi
 fi
