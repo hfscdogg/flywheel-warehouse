@@ -39,20 +39,22 @@ SELECT
            JSON_VALUE(payload, '$.stageGroup'),
            JSON_VALUE(payload, '$.systemState.name'),
            JSON_VALUE(payload, '$.systemState'))             AS status,
-  -- STILL UNRESOLVED, AND SAY SO RATHER THAN LOOK FIXED.
-  -- `$.opportunityId` was verified absent from the GetProjects payload on
-  -- 2026-09-16, which is why this has been NULL on all 1,599 rows and why the
-  -- projects -> quotes join has never returned a thing. The candidates below
-  -- are the shapes D-Tools uses elsewhere, NOT a verified path: if this is
-  -- still NULL after a build, the field is named something else again and the
-  -- probe has to be run against a live payload to find it.
-  -- NOTE THE OTHER HALF OF THAT JOIN IS ALSO BROKEN: stg_dtools__quotes reads
-  -- the same '$.opportunityId' and is NULL on all 3,165 of its rows, so
-  -- fixing this column alone does not make the join work. Fix both, from one
-  -- probe, or neither.
-  COALESCE(JSON_VALUE(payload, '$.opportunityId'),
-           JSON_VALUE(payload, '$.opportunity.id'),
-           JSON_VALUE(payload, '$.opportunityID'))           AS opportunity_id,
+  -- RESOLVED, AND THE ANSWER IS THAT IT DOES NOT EXIST.
+  -- The probe ran on 2026-09-16 and listed every key in the raw payload. The
+  -- 16 fields GetProjects returns are clientId, clientName, clientNumber,
+  -- completedDate, createdDate, id, isArchived, modifiedDate, name, number,
+  -- price, priority, projectManager, stage, stageGroup and systemState.
+  -- There is no opportunity reference under any spelling, so the earlier
+  -- guesses ($.opportunityId and two variants) are gone rather than left
+  -- looking hopeful: a COALESCE over three paths that cannot exist reads
+  -- like an unfinished search instead of a settled question.
+  --
+  -- The projects -> quotes join this column existed for is therefore not
+  -- buildable from these payloads at all. stg_dtools__quotes has no
+  -- opportunity reference either, and a project carries nothing tying it to
+  -- the opportunity it came from. Relating the two needs a key D-Tools does
+  -- not return here.
+  CAST(NULL AS STRING)                                       AS opportunity_id,
   SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.price'),
                      JSON_VALUE(payload, '$.totalPrice'),
                      JSON_VALUE(payload, '$.contractPrice')) AS NUMERIC)  AS price,
@@ -73,7 +75,7 @@ ALTER TABLE staging.stg_dtools__projects ALTER COLUMN client_name
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN status
   SET OPTIONS (description = "Where the project sits in the D-Tools pipeline. Taken from the payload's stage, falling back to the coarser stageGroup and then to D-Tools' own systemState — three different things, so a value here is the finest of them that was present. Was NULL on every row until 2026-09-16: the model looked for a status field the GetProjects response does not return.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN opportunity_id
-  SET OPTIONS (description = "The opportunity this project came from. STILL UNVERIFIED and may be NULL on every row: the field name in the GetProjects payload is not known, and the previous guess was confirmed absent on 2026-09-16. The quotes model carries the same unresolved field, so treat a projects-to-quotes join as unavailable until both are populated — an empty join result means the key is missing, not that no quotes exist.");
+  SET OPTIONS (description = "ALWAYS NULL, settled rather than pending. D-Tools' GetProjects response carries no opportunity reference at all — verified 2026-09-16 by listing every key in the raw payload — so a project cannot be traced to the opportunity it came from, and cannot be joined to quotes, from this data. Treat a question about a project's quotes as unanswerable here and say so; an empty join means the key does not exist, never that the project has no quotes.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN price
   SET OPTIONS (description = "Quoted sell price, USD.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN cost
