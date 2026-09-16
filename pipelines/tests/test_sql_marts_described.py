@@ -146,6 +146,61 @@ class TestDescriptionsAreOneOperation(unittest.TestCase):
         self.assertIn("bq update --schema", text)
         self.assertIn("merge_descriptions.py", text)
 
+    def code(self):
+        """The script with comment lines stripped.
+
+        These assertions are about what the shell DOES. Matching raw text
+        instead lets a comment that merely names a function satisfy a test
+        about calling it -- which is exactly how the first draft of these
+        three passed nothing and failed twice.
+        """
+        return "\n".join(l for l in self.TRANSFORM.read_text().splitlines()
+                          if not l.lstrip().startswith("#"))
+
+    def test_an_empty_schema_is_caught_before_it_reaches_python(self):
+        # bq exits 0 and prints nothing for a table with no columns. Piping
+        # that into merge_descriptions.py ends the run on a JSONDecodeError
+        # naming a line of Python, not a table -- four consecutive nightly
+        # transforms died that way at stg_alarmdotcom__customers, three models
+        # into staging, leaving every mart unbuilt.
+        #
+        # The guard has to come BEFORE the merge call or it never fires.
+        code = self.code()
+        self.assertIn('if [ ! -s "$schema" ]; then', code)
+        body = code[code.index("describe_columns() {"):]
+        self.assertLess(body.index('if [ ! -s "$schema" ]; then'),
+                        body.index("merge_descriptions.py"),
+                        "the empty-schema guard must precede the merge it "
+                        "protects, or the traceback happens first")
+
+    def test_an_undescribable_table_does_not_strand_the_models_behind_it(self):
+        # One table that cannot be described must not cost every model after
+        # it -- the same reason missing_input skips rather than dies. It is
+        # recorded and reported once the build is done, so the data is fresh
+        # and the run still goes red.
+        code = self.code()
+        body = code[code.index("describe_columns() {"):code.index("model_source() {")]
+        self.assertIn('DESCRIBE_FAILED="$DESCRIBE_FAILED $table"', body)
+        branch = body.split('if [ ! -s "$schema" ]; then')[1].split("fi")[0]
+        self.assertIn("return 0", branch,
+                      "describe_columns must continue past an empty schema")
+        self.assertNotIn("die ", branch,
+                         "the empty-schema branch must not be fatal in place; "
+                         "that is what stranded every model behind it")
+
+    def test_every_build_path_reports_undescribable_tables(self):
+        # Both the explicit-model-list path and the full sweep call
+        # describe_columns, so both must report. Without the first, an
+        # explicit run would print "Transform done." over a table that
+        # silently got no descriptions at all.
+        code = self.code()
+        self.assertEqual(code.count("check_describe_failures"), 3,
+                         "expected one definition and two call sites "
+                         "(explicit model list, and the full sweep)")
+        after = code[code.index("check_describe_failures() {"):]
+        self.assertIn("die ", after.split("\n}")[0],
+                      "the run must go red once the build has finished")
+
     def test_no_pacing_remains(self):
         text = self.TRANSFORM.read_text()
         for gone in ("DESCRIBE_BATCH", "DESCRIBE_PAUSE", "describe_batch"):
