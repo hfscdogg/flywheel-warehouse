@@ -112,6 +112,40 @@ class RedeployAction(unittest.TestCase):
         self.assertIn("run services describe", code)
         self.assertIn("die ", code)
 
+    def test_env_vars_survive_a_comma_in_a_value(self):
+        # The bug this test exists for shipped on 2026-09-04 and was not
+        # noticed until 2026-09-16. AGENT_SCOPE=wide makes DATASETS_AGENT
+        # "marts staging", which this script joins to "marts,staging".
+        # --set-env-vars splits PAIRS on a comma, so that value ends the pair
+        # early and leaves a bare "staging" with no '=' — gcloud rejects the
+        # whole invocation.
+        #
+        # The failure is silent in the way that matters: the script exits
+        # non-zero, no revision is created, and the OLD revision keeps serving
+        # perfectly well. Nothing is down. The only symptom is an endpoint
+        # answering from code that predates the variable, which showed up as
+        # agents being told staging did not exist.
+        #
+        # ^@^ is gcloud's documented escape: it makes '@' the pair separator,
+        # so commas inside values are ordinary characters. A narrow-scope
+        # client has no comma and would pass either way, which is exactly why
+        # this needs a test rather than a working deploy as evidence.
+        # Comment lines stripped first. The prose above this line explains the
+        # bug and therefore contains the flag name, and matching it instead of
+        # the real invocation is how a test like this quietly asserts nothing.
+        code = [l for l in SCRIPT.read_text().splitlines()
+                if not l.lstrip().startswith("#")]
+        line = next(l for l in code if "--set-env-vars" in l)
+        self.assertIn('--set-env-vars "^@^', line,
+                      "--set-env-vars does not use the ^delim^ escape; a "
+                      "DATASETS_AGENT naming two datasets puts a comma in a "
+                      "value and gcloud rejects the whole deploy")
+        # Pairs must be joined by the declared delimiter, not by commas.
+        for pair in ("@DATASET_MARTS=", "@DATASETS_AGENT="):
+            self.assertIn(pair, line,
+                          f"pairs are not separated by '@' ({pair} missing), "
+                          f"so the ^@^ escape is declared but not used")
+
     def test_deploy_and_redeploy_ship_the_same_revision(self):
         # Two copies of a `gcloud run deploy` invocation would drift, and the
         # drift would be invisible: both succeed, and only the agent notices
