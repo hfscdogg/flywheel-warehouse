@@ -76,6 +76,52 @@ class DeployWorkflow(unittest.TestCase):
         self.assertIn("gcloud run services describe", src)
 
 
+class DeployerGrants(unittest.TestCase):
+    """The deployer account's grants must cover a source deploy, and no more."""
+
+    SETUP = ROOT / "scripts" / "10-endpoint-deployer.sh"
+
+    def code(self):
+        return "\n".join(l for l in self.SETUP.read_text().splitlines()
+                          if not l.lstrip().startswith("#"))
+
+    def test_the_staging_bucket_gets_storage_admin_not_objectadmin(self):
+        # `gcloud run deploy --source` calls storage.buckets.get on the
+        # Cloud Run staging bucket before uploading. That is a BUCKET-level
+        # permission; roles/storage.objectAdmin grants object permissions and
+        # does not include it. The first real deploy through this account
+        # failed on exactly that, five seconds in, at "Uploading sources".
+        code = self.code()
+        self.assertNotIn("roles/storage.objectAdmin", code,
+                         "objectAdmin cannot stage a source deploy: it lacks "
+                         "storage.buckets.get")
+        self.assertIn("roles/storage.admin", code)
+
+    def test_storage_admin_is_scoped_to_the_one_bucket(self):
+        # Project-wide storage.admin would let a CI job that exists to ship a
+        # container read and delete every bucket in the project. The grant
+        # belongs on the single staging bucket, the same judgement as
+        # run.admin on the single service.
+        code = self.code()
+        self.assertIn("buckets add-iam-policy-binding", code,
+                      "the storage grant is not bucket-scoped")
+        self.assertNotIn(
+            'projects add-iam-policy-binding "$GCP_PROJECT_ID" \\\n'
+            '    --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \\\n'
+            '    --role=roles/storage.admin', code,
+            "storage.admin is granted at project level")
+
+    def test_it_still_grants_no_bigquery_or_secret_access(self):
+        # The premise of a separate deployer identity. If either appears,
+        # reusing ingest-writer would have been simpler and this account has
+        # stopped being narrow.
+        code = self.code()
+        for forbidden in ("roles/bigquery", "roles/secretmanager"):
+            self.assertNotIn(forbidden, code,
+                             f"the deployer account is granted {forbidden}; "
+                             f"it is meant to ship a container and nothing else")
+
+
 class RedeployAction(unittest.TestCase):
     """`redeploy` must do the deploy and nothing else."""
 
