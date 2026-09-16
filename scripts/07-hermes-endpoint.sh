@@ -165,22 +165,38 @@ case "$ACTION" in
     ;;
 
   redeploy)
-    # Deliberately refuses to bootstrap. A caller holding only run.admin and
-    # serviceAccountUser CANNOT create the secret or grant the build identity
-    # its role, so attempting a first deploy here fails deep inside gcloud
-    # with a permission error that reads like a broken pipeline rather than
-    # "this step was never meant to run here". Check up front and say so.
+    # Deliberately refuses to bootstrap. A caller holding only run.admin on
+    # this service and serviceAccountUser on hermes-reader cannot create the
+    # token secret or grant the build identity its role, so a first deploy
+    # attempted here would fail deep inside gcloud with a permission error
+    # that reads like a broken pipeline rather than "this was never meant to
+    # run here". One check up front says it plainly.
+    #
+    # ONE CHECK, NOT TWO, AND THIS ONE ON PURPOSE. The first version also
+    # probed `gcloud secrets describe` for the token secret, and the first
+    # gated run failed on it saying the secret did not exist — while the
+    # running service was mounting that very secret. `secrets describe` needs
+    # secretmanager.viewer, which the deployer account is deliberately not
+    # given, and probe() cannot tell "absent" from "not allowed to look": both
+    # are a false. So the guard asserted something untrue about a secret that
+    # was fine, and pointed at the wrong remedy.
+    #
+    # The check is also redundant. The service mounts
+    # HERMES_TOKEN=<secret>:latest, so a service that exists is proof the
+    # secret exists. Asking about the service answers both questions using a
+    # permission this account actually holds.
     info "Redeploy: shipping current hermes-mcp/ to the existing service"
     # Skipped under DRY_RUN, where probe() reports everything absent on
     # purpose so a dry run prints every create step. Without this the plan
-    # preview could never get past these checks and would show nothing.
+    # preview could never get past the check and would show nothing.
     if ! is_dry_run; then
-      if ! probe gcloud secrets describe "$TOKEN_SECRET" --project "$GCP_PROJECT_ID"; then
-        die "token secret '$TOKEN_SECRET' does not exist — run '$0 $CLIENT_SLUG deploy' once from an admin session first; redeploy deliberately cannot create it"
-      fi
       if ! probe gcloud run services describe "$HERMES_MCP_SERVICE" \
            --project "$GCP_PROJECT_ID" --region "$RUN_REGION"; then
-        die "service '$HERMES_MCP_SERVICE' does not exist in $RUN_REGION — run '$0 $CLIENT_SLUG deploy' once from an admin session first"
+        # Deliberately not "does not exist": probe() returns false for a
+        # missing service AND for one this identity may not read, and saying
+        # which would be a guess. Name both, so the reader checks the right
+        # thing instead of chasing the one the message picked.
+        die "cannot see Cloud Run service '$HERMES_MCP_SERVICE' in $RUN_REGION — either it does not exist yet, in which case run '$0 $CLIENT_SLUG deploy' once from an admin session, or this identity lacks run.viewer on it (10-endpoint-deployer.sh grants run.admin on the service; check it ran against this region)"
       fi
     fi
     deploy_service
