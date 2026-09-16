@@ -72,6 +72,14 @@ refreshing rows that stopped changing.
 
 1. In D-Tools Cloud: **Settings → Integrations / API** → generate an API key.
 2. Load it: `flywheel-dtools-api-key`.
+3. Load the fixed Basic Authorization header D-Tools publishes in its API
+   docs (the `Basic <base64>` value, verbatim including the word `Basic`)
+   into `flywheel-dtools-auth-basic`. D-Tools shares this value across all
+   tenants, so it is not secret in the way the API key is — it is stored
+   alongside it because a credential that authenticates a request does not
+   belong in the repository, where it cannot be rotated and where every fork
+   keeps a copy. Both values are read at run time; `sources.py` names the
+   secrets and holds neither.
 
 > First live run is a verification run: the endpoint paths in
 > `pipelines/lib/sources.py` (`DTOOLS`) are best-effort and must be checked

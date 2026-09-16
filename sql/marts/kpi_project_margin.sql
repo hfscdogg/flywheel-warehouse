@@ -14,7 +14,8 @@
 -- is the one copy — do not restate them here.
 CREATE OR REPLACE TABLE marts.kpi_project_margin
 OPTIONS (description = """
-Margin scoreboard, one row per D-Tools project. Quoted price, cost and margin are per project, from D-Tools.
+Margin scoreboard, one row per D-Tools project. Quoted price is per project, from D-Tools.
+THERE IS NO MARGIN IN THIS TABLE TODAY. quoted_cost is NULL on all 1,599 rows, and quoted_margin and quoted_margin_pct are NULL with it. The D-Tools endpoint this is built from returns no cost field of any name, so the column is empty at the source, not miscomputed. D-Tools does hold cost natively, on a different endpoint that is not ingested yet. Until that lands, this table answers what was QUOTED and what was INVOICED, and cannot answer what anything cost or earned — say so rather than reporting a margin of zero or nothing.
 The QuickBooks figures (invoiced, collected, AR) are matched on customer NAME and are CUSTOMER-level: when customer_project_count > 1 the same dollars appear on every project for that customer, so summing them across projects double-counts.
 qbo_matched = FALSE means no QuickBooks customer matched by name and the QBO columns are NULL. Amounts USD.
 """)
@@ -77,11 +78,11 @@ ALTER TABLE marts.kpi_project_margin ALTER COLUMN status
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN quoted_price
   SET OPTIONS (description = "Quoted sell price from D-Tools, USD.");
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN quoted_cost
-  SET OPTIONS (description = "Quoted cost from D-Tools, USD.");
+  SET OPTIONS (description = "Quoted cost from D-Tools, USD. NULL on every row today: the D-Tools endpoint this table is built from returns no cost field at all, so there is nothing to read. Verified 2026-09-16. D-Tools does track cost natively, on an endpoint that is not ingested yet; until it is, no margin figure in this table means anything.");
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN quoted_margin
-  SET OPTIONS (description = "quoted_price minus quoted_cost, USD.");
+  SET OPTIONS (description = "quoted_price minus quoted_cost, USD. NULL on every row today because quoted_cost is NULL — see that column. A NULL here is a missing cost, never a zero margin.");
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN quoted_margin_pct
-  SET OPTIONS (description = "quoted_margin / quoted_price as a percentage 0 to 100. NULL when quoted_price is 0.");
+  SET OPTIONS (description = "quoted_margin / quoted_price as a percentage 0 to 100. NULL whenever that division cannot be done: when quoted_price is 0 or NULL, AND — the reason it is NULL on every row today — whenever quoted_cost is NULL, since a NULL cost makes quoted_margin NULL too. The older description named only the zero-price case, which wrongly implied a populated cost.");
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN qbo_customer_id
   SET OPTIONS (description = "QuickBooks customer matched to this project by name. NULL when no match.");
 ALTER TABLE marts.kpi_project_margin ALTER COLUMN qbo_matched

@@ -80,6 +80,10 @@ Before acting on any row check name_overlaps: FALSE means the address probably m
 vendor_monthly_cost is populated for all three vendors, each from that vendor's own billing feed, so summing it across vendors gives a real total. It is NULL where a vendor's billing feed has not been uploaded or carries no row for the account, which means the cost is unknown, never that the account is free.
 No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
 Check match_via before acting: name means the account was matched only because its subscriber name matched exactly one Billing customer, with no address and no contact detail agreeing. That is the weakest link in the table and two unrelated households can share a name. email and phone are stronger than name and weaker than an address.
+READ qbo_monitoring_revenue BEFORE QUOTING THE LEAK. Zoho Billing is not the whole picture: Livewire's customers all flow into QuickBooks and check payers land only there, so a customer can be absent from Billing and still be invoiced for monitoring every month. qbo_monitoring_revenue is TRUE when the account's QuickBooks customer has been invoiced on a monitoring income account (Security Monitoring, Invision Monitoring, or a security agreement discount) on an invoice that was not voided. Measured 2026-09-16: 128 of the 229 BILLED_NO_SUBSCRIPTION rows are TRUE, so roughly half the leak list is accounted for and the unexplained remainder is about 101 accounts and $14,000 a year, not $31,752.
+qbo_monitoring_revenue is ADVISORY and is NOT part of finding. finding still asks Zoho Billing alone, so a BILLED_NO_SUBSCRIPTION row with qbo_monitoring_revenue TRUE is a row the finding gets wrong. Report both; never quote the BILLED_NO_SUBSCRIPTION total without saying how much of it this column explains.
+FALSE is not proof of a leak. It means no monitoring revenue was found for a QuickBooks customer this account could be resolved to, which includes the case where it reached no QuickBooks customer at all (qbo_customer_id IS NULL, 51 of the 229). Some customers also pay Security Central directly and will still surface here; that needs a known exclusion list Livewire has not supplied yet.
+The QuickBooks customer is resolved independently of the Billing one, from the account's own address, email, phone and name, so the two can disagree. Judge the QuickBooks match by qbo_match_via and qbo_name_overlaps, exactly as you would judge the Billing match by match_via and name_overlaps.
 """)
 AS
 WITH roster AS (
@@ -337,6 +341,28 @@ billing_customers AS (
   WHERE NOT REGEXP_CONTAINS(COALESCE(display_name, ''), r'\*\*')
     AND LOWER(TRIM(COALESCE(display_name, ''))) NOT IN ('service')
 ),
+-- THE QUICKBOOKS CUSTOMER BOOK, READ ONCE
+-- Two independent things need it: the Billing bridge below (a QBO address
+-- resolved to a Billing customer by name) and the QBO evidence path further
+-- down (a vendor account resolved to a QBO customer in its own right). They
+-- are separate questions and must not be chained -- see the block above
+-- customer_by_qbo -- but they read the same book, so it is read once here.
+-- pipelines/tests/test_sql_address_key.py fails the build if any path goes
+-- back to the staging table directly, the same guard billing_customers has.
+--
+-- NOT FILTERED THE WAY billing_customers IS, and deliberately so. QuickBooks
+-- carries job records alongside households -- "Pulley Residence Security
+-- System Budget", "Den", "Office Surge Protection", each with the real payer
+-- in company_name -- but they are ordinary customers that hold real invoices,
+-- not the fake records the Billing filter drops. There is no marker that
+-- separates a job from a household, so none is invented here; the cost is
+-- that a vendor account can resolve to a job rather than its parent and miss
+-- revenue billed to the parent. That direction is safe: it understates the
+-- evidence and leaves the row in the leak list for a person to check.
+-- `*` is safe here: one source, no UNION, so there is no positional hazard.
+qbo_customers AS (
+  SELECT * FROM staging.stg_qbo__customers
+),
 -- '||' is the empty key: it is house|street|zip, so a record that yielded
 -- none of the three still carries two separators. Guarding on '|' — as this
 -- file did until pipelines/tests/test_sql_address_key.py existed — excludes
@@ -389,7 +415,7 @@ billing_via_crm AS (
 -- almost entirely (7 of 125).
 billing_via_qbo AS (
   SELECT q.address_key, b.customer_id, b.display_name, 'qbo' AS match_via
-  FROM staging.stg_qbo__customers q
+  FROM qbo_customers q
   JOIN billing_by_name b
     ON LOWER(TRIM(q.display_name)) = b.name_key
   WHERE q.address_key != '||' AND q.display_name IS NOT NULL
@@ -518,33 +544,240 @@ billing_by_phone AS (
 -- contacts), and two contacts can carry two phone numbers reaching two
 -- different customers. Without it one account fans out into several audit
 -- rows. Lowest id wins, as everywhere else in this file.
+--
+-- THE VENDOR SIDE OF THOSE KEYS, EXTRACTED ONCE
+-- Two consumers now need an account's email and phone: the Billing contact
+-- tier just below, and the QuickBooks path further down. Extracted here once
+-- rather than in each, because this is exactly the drift the key tests exist
+-- to catch -- a phone reduced to ten digits in one place and to seven in
+-- another matches nobody, silently. The empty-key exclusions live here too,
+-- so a blank email cannot join from the vendor side no matter who reads this.
+vendor_contact AS (
+  SELECT
+    'alarmdotcom'            AS vendor,
+    a.customer_id            AS account_no,
+    LOWER(TRIM(a.email))     AS email_key,
+    CAST(NULL AS STRING)     AS phone_key
+  FROM staging.stg_vendor__alarmdotcom_accounts a
+  WHERE TRIM(COALESCE(a.email, '')) != ''
+  UNION ALL
+  SELECT
+    'securitycentral',
+    s.account_no,
+    NULL,
+    RIGHT(REGEXP_REPLACE(s.contact_phone, r'[^0-9]', ''), 10)
+  FROM staging.stg_vendor__securitycentral_accounts s
+  WHERE LENGTH(REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) >= 10
+),
 customer_by_contact AS (
   SELECT vendor, account_no, customer_id, display_name, match_via
   FROM (
     SELECT
-      'alarmdotcom'  AS vendor,
-      a.customer_id  AS account_no,
+      v.vendor,
+      v.account_no,
       b.customer_id,
       b.display_name,
       'email'        AS match_via
-    FROM staging.stg_vendor__alarmdotcom_accounts a
-    JOIN billing_by_email b ON b.contact_key = LOWER(TRIM(a.email))
-    WHERE TRIM(COALESCE(a.email, '')) != ''
+    FROM vendor_contact v
+    JOIN billing_by_email b ON b.contact_key = v.email_key
+    WHERE v.email_key IS NOT NULL
     UNION ALL
     SELECT
-      'securitycentral',
-      s.account_no,
+      v.vendor,
+      v.account_no,
       b.customer_id,
       b.display_name,
       'phone'
-    FROM staging.stg_vendor__securitycentral_accounts s
-    JOIN billing_by_phone b
-      ON b.contact_key = RIGHT(REGEXP_REPLACE(s.contact_phone, r'[^0-9]', ''), 10)
-    WHERE LENGTH(REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) >= 10
+    FROM vendor_contact v
+    JOIN billing_by_phone b ON b.contact_key = v.phone_key
+    WHERE v.phone_key IS NOT NULL
   )
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY vendor, account_no ORDER BY customer_id
   ) = 1
+),
+-- ============================================================================
+-- THE QUICKBOOKS EVIDENCE PATH -- ADVISORY, NOT PART OF `finding`
+-- ============================================================================
+-- Zoho Billing was never the right test for "is this customer paying us",
+-- only the one this mart had. Livewire's customers all flow into QuickBooks
+-- and check payers land there too, so QBO is the superset: a customer can be
+-- absent from Billing entirely and still be invoiced for monitoring every
+-- month. Measured 2026-09-16, 128 of the 229 BILLED_NO_SUBSCRIPTION rows have
+-- monitoring revenue in QuickBooks. Roughly half the leak list is wrong.
+--
+-- RESOLVED INDEPENDENTLY, NOT BRIDGED THROUGH BILLING
+-- Nothing links a QuickBooks customer to a Zoho Billing one -- no shared id,
+-- and the two books are maintained separately. The tempting shortcut is to
+-- hop Billing -> QBO by name off the match this mart already made, and it is
+-- wrong: every one of the eight customer-resolving paths above terminates in
+-- billing_customers, so that hop would stack a second name match on top of
+-- whatever key found the Billing customer, and the combined claim would be
+-- weaker than the weakest of the two. It would also quietly degrade every OK
+-- row, since a bad second hop cannot be seen from the first.
+--
+-- So this resolves the vendor account to a QuickBooks customer from scratch,
+-- in parallel with the Billing match and sharing none of its output, using
+-- the keys stg_qbo__customers carries in its own right: address_key, email,
+-- phone, display_name. The two answers are reported side by side and a
+-- disagreement between them is information, not a bug to be resolved here.
+--
+-- An ambiguous key identifies nobody and is dropped, exactly as the Billing
+-- tiers drop one. Same rule, same reason, four more times.
+qbo_by_address AS (
+  SELECT
+    c.address_key             AS match_key,
+    ANY_VALUE(c.customer_id)  AS customer_id,
+    ANY_VALUE(c.display_name) AS display_name
+  FROM qbo_customers c
+  WHERE c.address_key != '||'
+  GROUP BY match_key
+  -- Qualified for the reason billing_by_unique_name is: ANY_VALUE(...) AS
+  -- customer_id shadows the column and the bare form is an aggregate of an
+  -- aggregate, which BigQuery rejects outright.
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+qbo_by_email AS (
+  SELECT
+    LOWER(TRIM(c.email))      AS match_key,
+    ANY_VALUE(c.customer_id)  AS customer_id,
+    ANY_VALUE(c.display_name) AS display_name
+  FROM qbo_customers c
+  WHERE TRIM(COALESCE(c.email, '')) != ''
+  GROUP BY match_key
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+qbo_by_phone AS (
+  SELECT
+    RIGHT(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), 10) AS match_key,
+    ANY_VALUE(c.customer_id)  AS customer_id,
+    ANY_VALUE(c.display_name) AS display_name
+  FROM qbo_customers c
+  WHERE LENGTH(REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10
+  GROUP BY match_key
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+-- A NAME KEY OF ITS OWN, BECAUSE THE VENDORS DISAGREE ON NAME ORDER
+-- Parasol writes "Tilghman, Richard" where QuickBooks writes "Richard
+-- Tilghman". The Billing name key above does not invert on the comma and
+-- does not need to, since Billing is matched from vendor names that mostly
+-- already read first-name-first. Here it is the difference between reaching
+-- 3 of Parasol's 39 leak rows and reaching 33 of them, so this key carries
+-- one extra pass: anything before the first comma moves to the end.
+--
+-- Written out twice, once here and once in the join below, and the two must
+-- reduce a name identically or equal names produce unequal keys and this
+-- whole tier silently matches nobody. pipelines/tests/test_sql_address_key.py
+-- compares the copies, as it does for the Billing name key and the phone key.
+qbo_by_name AS (
+  SELECT
+    qbo_name_key              AS match_key,
+    ANY_VALUE(customer_id)    AS customer_id,
+    ANY_VALUE(display_name)   AS display_name
+  FROM (
+    SELECT
+      TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(display_name, '')),
+        r'\([^)]*\)', ' '),
+        r'^\s*([^,]+?)\s*,\s*(.+)$', r'\2 \1'),
+        r'[^a-z0-9]+', ' '),
+        r'\s+', ' ')) AS qbo_name_key,
+      customer_id,
+      display_name
+    FROM qbo_customers
+  ) c
+  -- An empty key would collapse every unnamed customer onto one row and
+  -- match every unnamed account to it, the same hazard the address and
+  -- Billing name guards each carry a comment about.
+  WHERE qbo_name_key != ''
+  GROUP BY match_key
+  HAVING COUNT(DISTINCT c.customer_id) = 1
+),
+-- One QuickBooks customer per vendor account. Ranked strongest first:
+-- address, then the two contact keys, then the name. Same ordering logic as
+-- the Billing side -- a shared email is near-identifying, a shared name is
+-- not -- though here the name tier does most of the work (121 of the 178
+-- leak rows it reaches), because a QuickBooks address is a BILLING address
+-- and often differs from the service address the vendor holds.
+--
+-- The QUALIFY keeps the grain: two Security Central identity rows can share
+-- an account number, and without it one account fans out into several audit
+-- rows. Lowest id wins, as everywhere else in this file.
+customer_by_qbo AS (
+  SELECT vendor, account_no, customer_id, display_name, match_via
+  FROM (
+    SELECT
+      v.vendor,
+      v.account_no,
+      COALESCE(a.customer_id, e.customer_id, p.customer_id, n.customer_id)
+                                                    AS customer_id,
+      COALESCE(a.display_name, e.display_name, p.display_name, n.display_name)
+                                                    AS display_name,
+      CASE
+        WHEN a.customer_id IS NOT NULL THEN 'address'
+        WHEN e.customer_id IS NOT NULL THEN 'email'
+        WHEN p.customer_id IS NOT NULL THEN 'phone'
+        WHEN n.customer_id IS NOT NULL THEN 'name'
+      END                                           AS match_via
+    FROM accounts v
+    LEFT JOIN qbo_by_address a
+      ON a.match_key = v.address_key AND v.address_key != '||'
+    LEFT JOIN vendor_contact vc
+      ON vc.vendor = v.vendor AND vc.account_no = v.account_no
+    LEFT JOIN qbo_by_email e ON e.match_key = vc.email_key
+    LEFT JOIN qbo_by_phone p ON p.match_key = vc.phone_key
+    LEFT JOIN qbo_by_name n
+      ON n.match_key = TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+           LOWER(COALESCE(v.subscriber_name, '')),
+           r'\([^)]*\)', ' '),
+           r'^\s*([^,]+?)\s*,\s*(.+)$', r'\2 \1'),
+           r'[^a-z0-9]+', ' '),
+           r'\s+', ' '))
+     AND n.match_key != ''
+  )
+  WHERE customer_id IS NOT NULL
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY vendor, account_no ORDER BY customer_id
+  ) = 1
+),
+-- MONITORING REVENUE, IDENTIFIED BY INCOME ACCOUNT
+-- Which item is monitoring is a bookkeeping fact, not a string-matching
+-- guess: every monitoring item posts to one of three income accounts, and
+-- the bookkeeper assigns that account when the item is created. Matching on
+-- item names instead would miss the ones that do not say "monitoring"
+-- (LWS-APPCONTROL, INV-FULL-ANN) and catch ones that are not.
+--   Security Monitoring Income  -- 46 active items, the LWS-* family
+--   Invision Monitoring Income  -- 17 items, INV-FULL-ANN, INVISIONPACKAGE-*
+--   Security Discounts          -- 4 items, the 2/3/5-year agreement
+--                                  discounts. Contra-revenue on the same
+--                                  service: a line here is still evidence
+--                                  the customer is on a monitoring
+--                                  agreement, which is what this measures.
+--
+-- total_amount > 0 excludes voided invoices. QuickBooks keeps a void as a
+-- zero-amount invoice with its lines intact, so a naive filter counts one as
+-- revenue; a voided monitoring invoice is the opposite of evidence.
+--
+-- WHAT THIS CANNOT SAY: that the monitoring line itself was paid.
+-- stg_qbo__payments carries no link to an invoice -- QuickBooks returns it in
+-- Line[].LinkedTxn[] and the raw payload is not extracted that far -- so the
+-- strongest available claim is "invoiced, and that invoice carries no
+-- balance", which is what last_settled_on reports. A partial payment against
+-- a multi-line invoice cannot be attributed to a line either way.
+qbo_monitoring AS (
+  SELECT
+    l.customer_id,
+    MAX(i.txn_date)                            AS last_invoiced_on,
+    MAX(IF(i.balance = 0, i.txn_date, NULL))   AS last_settled_on
+  FROM staging.stg_qbo__invoice_lines l
+  JOIN staging.stg_qbo__invoices i ON i.invoice_id = l.invoice_id
+  JOIN staging.stg_qbo__items it ON it.item_id = l.item_id
+  WHERE it.income_account_name IN (
+          'Security Monitoring Income',
+          'Invision Monitoring Income',
+          'Security Discounts')
+    AND i.total_amount > 0
+  GROUP BY l.customer_id
 ),
 subs AS (
   SELECT
@@ -655,6 +888,28 @@ SELECT
   COALESCE(s.active_subscriptions, 0)   AS active_subscriptions,
   COALESCE(s.subscription_amount, 0)    AS subscription_amount,
   s.plan_names,
+  -- The QuickBooks answer, reported beside the Billing one and deliberately
+  -- NOT folded into `finding` in this change. These columns say what the
+  -- evidence is; the gate still asks Zoho Billing alone, so every existing
+  -- row keeps the finding it had and the two can be compared on real data
+  -- before one is allowed to override the other. Folding
+  -- qbo_monitoring_revenue into the revenue gate is the next change, not
+  -- this one.
+  q.customer_id                         AS qbo_customer_id,
+  q.display_name                        AS qbo_customer_name,
+  q.match_via                           AS qbo_match_via,
+  -- The same sanity check name_overlaps applies to the Billing match, on the
+  -- QuickBooks one. Agreement is weak evidence; DISAGREEMENT means the key
+  -- probably reached the wrong household, and a row that is being kept OFF
+  -- the leak list on the strength of a wrong match is the expensive error
+  -- here -- it is a monthly cost nobody ever looks at again.
+  (SELECT LOGICAL_OR(LENGTH(t) >= 3 AND STRPOS(LOWER(q.display_name), t) > 0)
+   FROM UNNEST(SPLIT(LOWER(REGEXP_REPLACE(
+     COALESCE(v.subscriber_name, ''), r'[^a-zA-Z ]', '')), ' ')) AS t)
+                                        AS qbo_name_overlaps,
+  qm.customer_id IS NOT NULL            AS qbo_monitoring_revenue,
+  qm.last_invoiced_on                   AS qbo_monitoring_last_invoiced,
+  qm.last_settled_on                    AS qbo_monitoring_last_settled,
   CASE
     WHEN NOT COALESCE(v.is_active_at_vendor, FALSE) THEN 'DEACTIVATED'
     WHEN NOT v.in_roster THEN 'BILLED_NO_ROSTER'
@@ -664,7 +919,13 @@ SELECT
   END                                   AS finding,
   CURRENT_TIMESTAMP()                   AS computed_at
 FROM matched v
-LEFT JOIN subs s ON s.customer_id = v.customer_id;
+LEFT JOIN subs s ON s.customer_id = v.customer_id
+-- Keyed on (vendor, account_no) like the contact join above, and for the same
+-- reason: an account number is unique only within a vendor, so joining on it
+-- alone would match one vendor's account to another's customer.
+LEFT JOIN customer_by_qbo q
+  ON q.vendor = v.vendor AND q.account_no = v.account_no
+LEFT JOIN qbo_monitoring qm ON qm.customer_id = q.customer_id;
 
 -- What agents read. hermes-mcp serves these descriptions verbatim through
 -- get_table_schema, and a column without one is a column Hermes will guess
@@ -714,6 +975,20 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
   SET OPTIONS (description = "Summed recurring amount of those live subscriptions, USD.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN plan_names
   SET OPTIONS (description = "Comma-separated names of the live plans, for judging fit.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_customer_id
+  SET OPTIONS (description = "QuickBooks customer this account was resolved to, INDEPENDENTLY of the Zoho Billing match: from the account's own address, email, phone or name, never by bridging from the Billing customer. NULL when no QuickBooks customer could be reached (51 of the 229 leak rows), which is unknown, not evidence of anything. The two matches are separate answers and may disagree; that disagreement is information.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_customer_name
+  SET OPTIONS (description = "Display name of that QuickBooks customer. QuickBooks carries job records alongside households ('Pulley Residence Security System Budget', 'Den'), so a name that reads like a project rather than a person means the account resolved to a job; revenue billed to its parent customer will not be counted.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_match_via
+  SET OPTIONS (description = "How the QuickBooks customer was reached, strongest first: address (the account's address key matched exactly one QuickBooks customer), email, phone (last ten digits), name (the subscriber name matched exactly one QuickBooks customer, with the vendor's 'Last, First' order inverted to match QuickBooks). NULL when unmatched. name does most of the work here (121 of 178 matched leak rows) because a QuickBooks address is a BILLING address and often differs from the service address the vendor holds. A name match is the weakest: it says two records share a name, not that they are the same household.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_name_overlaps
+  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the QuickBooks customer's name. What name_overlaps is for the Billing match, for this one. FALSE is a strong signal the key reached the WRONG household — and a wrong match here is the expensive direction, because it can keep a real leak OFF the list. Carries no information where qbo_match_via is name. 126 of the 128 rows with monitoring revenue are TRUE.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_revenue
+  SET OPTIONS (description = "TRUE when the matched QuickBooks customer has ever been invoiced on a monitoring income account — Security Monitoring Income, Invision Monitoring Income, or Security Discounts (the 2/3/5-year agreement discounts, contra-revenue on the same service and so still evidence of an agreement) — on an invoice with a total above zero, which excludes voided invoices. Identified by the item's income account, a bookkeeping fact, not by matching item names. TRUE means this row's BILLED_NO_SUBSCRIPTION finding is probably wrong. FALSE means no such revenue was found, which includes the case where no QuickBooks customer was matched at all — check qbo_customer_id before reading FALSE as a leak. This column is ADVISORY: finding does not consider it.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_invoiced
+  SET OPTIONS (description = "Date of the most recent non-voided monitoring invoice for the matched QuickBooks customer; NULL when there is none. Use it to tell a current agreement from one that lapsed years ago. Of the 128 leak rows with monitoring revenue, 124 were invoiced within the last twelve months, so recency is not what is driving this number.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_settled
+  SET OPTIONS (description = "Date of the most recent such monitoring invoice that carries no remaining balance. This is the strongest paid-signal available: QuickBooks payments carry no link to the invoice they settle, so the monitoring LINE cannot be traced to a payment — only the invoice it sat on can be shown to be fully settled. All 124 recently-invoiced leak rows are settled. NULL means no monitoring invoice has been settled, which on a recent invoice may mean nothing more than that it is not due yet.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
   SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. Always read finding together with match_via: a BILLED_NO_SUBSCRIPTION reached by name is a weaker claim than one reached by address or account number. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at

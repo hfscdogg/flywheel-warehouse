@@ -22,9 +22,37 @@ SELECT
   JSON_VALUE(payload, '$.name')                              AS name,
   COALESCE(JSON_VALUE(payload, '$.client.name'),
            JSON_VALUE(payload, '$.clientName'))              AS client_name,
-  COALESCE(JSON_VALUE(payload, '$.status.name'),
-           JSON_VALUE(payload, '$.status'))                  AS status,
-  JSON_VALUE(payload, '$.opportunityId')                     AS opportunity_id,
+  -- VERIFIED AGAINST A LIVE PAYLOAD, 2026-09-16. GetProjects returns no
+  -- `status` field at all, so both paths below it missed and this column was
+  -- NULL on all 1,599 rows since the model was written. The payload carries
+  -- three fields instead, and they are three different things, not three
+  -- spellings of one -- `stage` is the finest (where the job is in the
+  -- pipeline) and is what `status` has always meant to kpi_project_margin,
+  -- so it wins. `stageGroup` is the coarser bucket that stage rolls up into
+  -- and only answers where stage is absent; `systemState` is D-Tools' own
+  -- workflow state and is the last resort. Read the value together with
+  -- whichever field supplied it if that distinction ever matters -- today it
+  -- does not, because stage is populated.
+  COALESCE(JSON_VALUE(payload, '$.stage.name'),
+           JSON_VALUE(payload, '$.stage'),
+           JSON_VALUE(payload, '$.stageGroup.name'),
+           JSON_VALUE(payload, '$.stageGroup'),
+           JSON_VALUE(payload, '$.systemState.name'),
+           JSON_VALUE(payload, '$.systemState'))             AS status,
+  -- STILL UNRESOLVED, AND SAY SO RATHER THAN LOOK FIXED.
+  -- `$.opportunityId` was verified absent from the GetProjects payload on
+  -- 2026-09-16, which is why this has been NULL on all 1,599 rows and why the
+  -- projects -> quotes join has never returned a thing. The candidates below
+  -- are the shapes D-Tools uses elsewhere, NOT a verified path: if this is
+  -- still NULL after a build, the field is named something else again and the
+  -- probe has to be run against a live payload to find it.
+  -- NOTE THE OTHER HALF OF THAT JOIN IS ALSO BROKEN: stg_dtools__quotes reads
+  -- the same '$.opportunityId' and is NULL on all 3,165 of its rows, so
+  -- fixing this column alone does not make the join work. Fix both, from one
+  -- probe, or neither.
+  COALESCE(JSON_VALUE(payload, '$.opportunityId'),
+           JSON_VALUE(payload, '$.opportunity.id'),
+           JSON_VALUE(payload, '$.opportunityID'))           AS opportunity_id,
   SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.price'),
                      JSON_VALUE(payload, '$.totalPrice'),
                      JSON_VALUE(payload, '$.contractPrice')) AS NUMERIC)  AS price,
@@ -43,9 +71,9 @@ ALTER TABLE staging.stg_dtools__projects ALTER COLUMN name
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN client_name
   SET OPTIONS (description = "Client name as entered in D-Tools. The only link to QuickBooks is this name, matched to customer display name.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN status
-  SET OPTIONS (description = "Project status word from D-Tools.");
+  SET OPTIONS (description = "Where the project sits in the D-Tools pipeline. Taken from the payload's stage, falling back to the coarser stageGroup and then to D-Tools' own systemState — three different things, so a value here is the finest of them that was present. Was NULL on every row until 2026-09-16: the model looked for a status field the GetProjects response does not return.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN opportunity_id
-  SET OPTIONS (description = "The opportunity this project came from; joins to stg_dtools__opportunities.");
+  SET OPTIONS (description = "The opportunity this project came from. STILL UNVERIFIED and may be NULL on every row: the field name in the GetProjects payload is not known, and the previous guess was confirmed absent on 2026-09-16. The quotes model carries the same unresolved field, so treat a projects-to-quotes join as unavailable until both are populated — an empty join result means the key is missing, not that no quotes exist.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN price
   SET OPTIONS (description = "Quoted sell price, USD.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN cost
