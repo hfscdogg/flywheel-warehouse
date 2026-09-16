@@ -104,13 +104,42 @@ class RedeployAction(unittest.TestCase):
                              f"permitted to do")
 
     def test_it_refuses_to_bootstrap(self):
-        # Without these checks a first-ever deploy attempted from CI fails
-        # deep inside gcloud with a permission error that reads like a broken
+        # Without this check a first-ever deploy attempted from CI fails deep
+        # inside gcloud with a permission error that reads like a broken
         # pipeline rather than "this was never meant to run here".
         code = "\n".join(self.code())
-        self.assertIn("secrets describe", code)
         self.assertIn("run services describe", code)
         self.assertIn("die ", code)
+
+    def test_the_guard_only_asks_what_this_identity_can_answer(self):
+        # The first gated run failed here, and the message was wrong: the
+        # guard probed `gcloud secrets describe` and reported that the token
+        # secret did not exist, while the running service was mounting it.
+        # secrets describe needs secretmanager.viewer, which the deployer
+        # account is deliberately never granted, and probe() returns false
+        # both for "absent" and for "not permitted to look".
+        #
+        # So redeploy must not probe anything outside this identity's grants.
+        # The service check covers it anyway: the service mounts the token
+        # secret, so a service that exists proves the secret does.
+        code = "\n".join(self.code())
+        for forbidden in ("secrets describe", "secrets versions",
+                          "secrets list"):
+            self.assertNotIn(
+                forbidden, code,
+                f"redeploy probes `{forbidden}`, which needs Secret Manager "
+                f"access the endpoint-deployer account does not have; the "
+                f"probe fails and reports the resource missing when it is "
+                f"only unreadable")
+
+    def test_the_guard_does_not_claim_the_service_is_absent(self):
+        # probe() cannot distinguish a missing resource from an unreadable
+        # one, so a message asserting non-existence is a guess presented as a
+        # fact — and it sends the reader to the wrong remedy. Name both.
+        body = self.body()
+        self.assertIn("cannot see", body)
+        self.assertIn("does not exist yet", body)
+        self.assertIn("lacks run.viewer", body)
 
     def test_env_vars_survive_a_comma_in_a_value(self):
         # The bug this test exists for shipped on 2026-09-04 and was not
