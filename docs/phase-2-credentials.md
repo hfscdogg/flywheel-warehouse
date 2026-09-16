@@ -14,6 +14,36 @@ Load each value like this (paste the value, then Ctrl-D):
 gcloud secrets versions add <secret-name> --project livewire-dw --data-file=-
 ```
 
+**Then check what actually landed.** An interactive paste is not reliable for
+a long unbroken string: on 2026-09-16 a 58-character `Basic <base64>` header
+arrived in Secret Manager two characters short, and every symptom pointed
+somewhere else — the pipeline failed with a bare `HTTP 401` and an empty
+response body, which reads like a revoked credential, not a damaged one. It
+cost an hour before anyone measured the stored value.
+
+```sh
+v=$(gcloud secrets versions access latest --secret=<secret-name> --project livewire-dw)
+printf 'length: %s\n' "${#v}"     # compare against the value you meant to load
+```
+
+For a base64 credential, check that it still decodes — a truncated one will
+not, and that is the cheapest possible proof it is intact:
+
+```sh
+printf '%s' "${v#Basic }" | base64 -d | cut -d: -f1   # prints the username, not the password
+```
+
+Better still, never paste a long value at all. If it exists in a file or in
+git history, pipe it straight in so no terminal selection is involved:
+
+```sh
+gcloud secrets versions add <secret-name> --project livewire-dw --data-file=path/to/value
+```
+
+A trailing newline is harmless — `secret_store.get()` strips whitespace — so
+do not go hunting for one. Missing characters are the failure that actually
+happens, and only a length or decode check will show them.
+
 ## 1. Zoho CRM (~10 min)
 
 1. Go to the [Zoho API Console](https://api-console.zoho.com/) → **Add

@@ -1,0 +1,103 @@
+name: deploy-endpoint
+
+# Ships the current hermes-mcp/ to the EXISTING Cloud Run service. This is the
+# recurring 10% of 07-hermes-endpoint.sh's `deploy`: a new revision whenever
+# server.py or AGENT_SCOPE changes. The other 90% — enabling APIs, minting the
+# token secret, granting the build identity its role — is first-run
+# convergence that needs project-IAM and Secret Manager admin, stays in
+# `deploy`, and stays a human's job. `redeploy` refuses to bootstrap, so this
+# workflow cannot quietly become the thing that sets the project up.
+#
+# GATED ON PURPOSE. The `environment:` below is what puts a person in the
+# loop: with required reviewers configured on it, a dispatch waits for an
+# approval before the job starts. Shipping a revision of the agent endpoint
+# changes what every connected agent can see — a wrong DATASETS_AGENT widens
+# or blinds it — and that deserves a click, not a cron.
+#
+# SETUP (once per client, by a human):
+#   1. ./scripts/07-hermes-endpoint.sh <client> deploy     # first deploy
+#   2. ./scripts/10-endpoint-deployer.sh <client>          # narrow CI identity
+#   3. Repo variable WIF_DEPLOYER_SERVICE_ACCOUNT = the email step 2 prints
+#   4. Settings -> Environments -> new environment 'endpoint' -> Required reviewers
+#
+# Step 4 is not optional in spirit. Without the environment the workflow still
+# runs, just ungated — GitHub treats an unknown environment name as one with
+# no protection rules rather than an error, so the absence is silent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      reason:
+        description: Why this redeploy (shown in the run, and in the approval request)
+        required: true
+
+concurrency:
+  group: deploy-endpoint-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The approval gate. Reviewers configured on this environment must approve
+    # before any step runs, including the WIF exchange — so an unapproved
+    # dispatch never holds a credential at all.
+    environment: endpoint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Say what is being shipped and why
+        env:
+          REASON: ${{ inputs.reason }}
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        # Through the environment, never interpolated into the script: a
+        # free-text input pasted into a `run:` line is substituted before bash
+        # parses it, and this job holds a deploy credential.
+        run: |
+          printf 'client : %s\n' "$CLIENT"
+          printf 'reason : %s\n' "$REASON"
+          printf 'commit : %s\n' "$GITHUB_SHA"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          # NOT WIF_SERVICE_ACCOUNT. That is ingest-writer, which holds
+          # dataEditor on every dataset; this job gets the endpoint-deployer
+          # account instead, which has no BigQuery access at all.
+          service_account: ${{ vars.WIF_DEPLOYER_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Redeploy the agent endpoint
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: ./scripts/07-hermes-endpoint.sh "$CLIENT" redeploy
+
+      # The failure this whole exercise came from: a deployed revision whose
+      # DATASETS_AGENT was stale, so the agent listed marts and silently not
+      # staging. The deploy succeeding says nothing about that; asking the
+      # running service does.
+      - name: Check the live revision serves the datasets this client configures
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: |
+          set -euo pipefail
+          . ./scripts/lib/common.sh
+          load_client "$CLIENT"
+          want="${DATASETS_AGENT// /,}"
+          got="$(gcloud run services describe "${HERMES_MCP_SERVICE:-hermes-mcp}" \
+                   --project "$GCP_PROJECT_ID" --region "${RUN_REGION:-us-east4}" \
+                   --format='value(spec.template.spec.containers[0].env)' \
+                 | tr ';' '\n' | sed -n "s/.*DATASETS_AGENT[^a-z]*\([a-z,]*\).*/\1/p" | head -1)"
+          printf 'client.env wants : %s\n' "$want"
+          printf 'live revision has: %s\n' "$got"
+          [ "$got" = "$want" ] || {
+            echo "::error::deployed DATASETS_AGENT ($got) does not match client.env ($want)"
+            exit 1
+          }
+          echo "match"
