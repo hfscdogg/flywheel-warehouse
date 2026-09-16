@@ -60,6 +60,26 @@ print_connection_info() {
   log "    query: SELECT COUNT(*) FROM \`$GCP_PROJECT_ID.${DATASETS_RAW%% *}.deals\`            -> Access Denied (by design)"
 }
 
+# THE ^@^ IS LOAD-BEARING. --set-env-vars splits pairs on a COMMA, so a value
+# that itself contains one is read as the start of the next pair:
+# "DATASETS_AGENT=marts,staging" parses as DATASETS_AGENT=marts plus a bare
+# token "staging" with no '=', and gcloud rejects the whole invocation with a
+# usage dump. The ^delim^ prefix is gcloud's documented escape for exactly
+# this — it makes '@' the separator instead, so commas inside values are just
+# characters.
+#
+# This is not hypothetical. AGENT_SCOPE was set to "wide" on 2026-09-04,
+# which made DATASETS_AGENT "marts staging" and so put a comma in the value.
+# EVERY deploy from that day until 2026-09-16 died on this line, and the
+# failure looked like nothing: the script exits non-zero, the existing
+# revision keeps serving, and the endpoint carries on answering — just from
+# code that predates the variable. The visible symptom was two weeks away
+# from the cause: agents were told staging did not exist, because the running
+# revision had no DATASETS_AGENT at all and fell back to marts.
+#
+# `--labels` below is a genuine comma-separated list of two labels and is
+# correct as written; only values that can contain a comma need the escape.
+#
 # The Cloud Run deploy itself, shared by 'deploy' and 'redeploy' so the two
 # cannot drift into shipping differently configured revisions. Everything it
 # needs is already true by the time either caller reaches it: the token secret
@@ -72,7 +92,7 @@ deploy_service() {
     --service-account "$SA_HERMES_READER_EMAIL" \
     --allow-unauthenticated \
     --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \
-    --set-env-vars "GCP_PROJECT_ID=${GCP_PROJECT_ID},DATASET_MARTS=${DATASET_MARTS},DATASETS_AGENT=${DATASETS_AGENT// /,}" \
+    --set-env-vars "^@^GCP_PROJECT_ID=${GCP_PROJECT_ID}@DATASET_MARTS=${DATASET_MARTS}@DATASETS_AGENT=${DATASETS_AGENT// /,}" \
     --memory 512Mi --cpu 1 --max-instances 2 --timeout 120 \
     --labels "managed-by=${LABEL_MANAGED_BY},env=${LABEL_ENV}"
   # --allow-unauthenticated is the transport layer only: the app itself
