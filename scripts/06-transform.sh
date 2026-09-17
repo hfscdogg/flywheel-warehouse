@@ -332,6 +332,35 @@ check_described() {
   die "add OPTIONS(description) / ALTER COLUMN ... SET OPTIONS in that model's SQL"
 }
 
+# A TRANSFORM OVER STALE SOURCES SUCCEEDS.
+# Every model rebuilds, every other check passes, the marts are served, and
+# the answers are quietly out of date — which is worse than an error, because
+# an error is visible and this is not. On 2026-09-17 the ingests did not run
+# at their scheduled hour and this script rebuilt all 35 models from the
+# previous day's extract without a word.
+#
+# Runs LAST, after everything is built and described, for the same reason
+# check_described does: a stale source is not a reason to withhold the fresher
+# models, so the data lands first and the run goes red after. Red is the
+# point — a stale feed that nobody is told about is the failure itself.
+check_fresh() {
+  local check="$REPO_ROOT/sql/checks/fresh.sql" stale
+  if is_dry_run; then
+    log "[dry-run] $BQ query --format=csv < ${check#"$REPO_ROOT"/}   # expect no rows"
+    return 0
+  fi
+  log "  \$ bq query < ${check#"$REPO_ROOT"/}"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  stale="$($BQ query --use_legacy_sql=false --format=csv < "$check" | tail -n +2)"
+  [ -z "$stale" ] && { log "  every source has loaded recently enough"; return 0; }
+  warn "sources older than their own cadence allows"
+  warn "(table, newest load, age in days, allowed, what to do):"
+  printf '%s\n' "$stale" | sed 's/^/    /' >&2
+  warn "the marts above were BUILT and are correct for what has landed —"
+  warn "what is stale is the input, so re-run that ingest or upload that report"
+  die "a stale source answers confidently and wrongly; this is why it is red"
+}
+
 if [ $# -ge 1 ]; then
   if is_validate; then
     info "Validating selected models (no build) for '$CLIENT_SLUG'"
@@ -386,6 +415,8 @@ else
     info "Transform: every agent-readable table described"
     check_describe_failures
     check_described
+    info "Transform: every source loaded recently enough to answer from"
+    check_fresh
   fi
 fi
 
