@@ -122,8 +122,25 @@ describe_columns() {
   trap "rm -f '$schema' '$merged'" RETURN
 
   log "  \$ bq update --schema $table   # all columns, one call"
+  # bq writes credential WARNINGs to STDOUT, not stderr:
+  #
+  #   WARNING: `--scopes` flag may not work as expected and will be ignored
+  #   for account type external_account.
+  #
+  # Under Workload Identity Federation that lands on every single call, so
+  # with stdout redirected it prefixes the JSON in every file and NO table in
+  # the warehouse gets described. The guard below caught all 35 of them on
+  # 2026-09-17: the run finished with fresh data and not one description
+  # applied, which is the failure that matters here — table and column
+  # descriptions are the whole of what hermes-mcp serves an agent.
+  #
+  # Reading from the first line that opens a JSON value drops the prefix
+  # without having to enumerate which warnings bq might print. Anything that
+  # survives that and still is not JSON is a genuine surprise, and the guard
+  # below is what reports it. pipefail keeps a bq failure fatal through the
+  # pipe.
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
-  $BQ show --schema --format=prettyjson "$table" > "$schema"
+  $BQ show --schema --format=prettyjson "$table" | sed -n '/^[[{]/,$p' > "$schema"
 
   # bq does not promise that stdout holds JSON and nothing else, and both ways
   # it can break that end the run in the same place: merge_descriptions.py
