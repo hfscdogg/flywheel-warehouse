@@ -28,7 +28,7 @@ AS
 WITH ...;
 
 ALTER TABLE marts.kpi_x ALTER COLUMN finding
-  SET OPTIONS (description = "OK: ... BILLED_NO_SUBSCRIPTION: the leak. ...");
+  SET OPTIONS (description = "What to do about this account ... BILLED_NO_SUBSCRIPTION: ... this is the leak. ...");
 ```
 
 Write them for the agent, not the engineer: state the grain, name the traps
@@ -117,15 +117,37 @@ cancelling a paying customer's alarm monitoring.
 **Do not dedupe across vendors.** Monitoring, interactive smart-home services
 and remote support are three separate products from three separate companies;
 one property on all three is three real monthly costs, not one billed thrice.
-The grain is the (vendor, account) pair for that reason. Exists to find the leak: an account
-still **active at the central station** whose customer has **no live
-subscription** — a monthly vendor cost with no revenue behind it. The
-`finding` column separates `BILLED_NO_SUBSCRIPTION` (matched customer, no
-live sub — the real leak), `BILLED_NO_MATCH` (in the roster, no billing
-customer matched; could be a leak or an address-key miss, check before
-acting), `BILLED_NO_ROSTER` (active in this week's feed but absent from the
-roster, so there's no address to match — ask for a fresh roster before
-judging), `OK`, and `DEACTIVATED`.
+The grain is the (vendor, account) pair for that reason.
+
+Exists to find the leak: an account still **active at the central station**
+whose customer is **paying nobody for it** — a monthly vendor cost with no
+revenue behind it anywhere. Zoho Billing alone is not the answer to that. A
+check payer lands only in QuickBooks, Security Central bills a few customers
+direct, and Zoho grows duplicate profiles where the subscription sits on the
+twin the account did not match. Until 2026-09-17 `finding` asked Zoho Billing
+alone and was wrong on 162 of the 227 rows it flagged, so any figure like
+227, 229 or $31,752 is the old definition and not comparable.
+
+`finding` says **what to do**, one action per value:
+
+| finding | meaning | action |
+|---|---|---|
+| `OK` | active at the vendor, live subscription on the matched profile | nothing |
+| `PAID_OUTSIDE_BILLING` | paying, but not via a Billing subscription: invoiced for monitoring in QuickBooks (`qbo_monitoring_revenue`) or billed direct by the vendor (`direct_billed`) | nothing owed; bring into Billing if wanted |
+| `BILLED_DUPLICATE_PROFILE` | subscribed on a *second* Zoho Billing profile this account did not match (`billing_duplicate_profile`) | merge the two profiles in Zoho; a name match, so check addresses first |
+| `BILLED_NO_SUBSCRIPTION` | vendor bills us, customer matched, no source anywhere shows them paying | **investigate — this is the leak** |
+| `BILLED_NO_MATCH` | no billing customer could be matched | unknown, not a proven leak |
+| `BILLED_NO_ROSTER` | active in this week's feed but absent from the roster, so no address to match | ask for a fresh roster before judging |
+| `DEACTIVATED` | not active at the vendor | nothing |
+
+Two orderings are deliberate and tested: a live subscription is asked first,
+so an `OK` row can never be relabelled by a namesake elsewhere; and the
+duplicate profile outranks the revenue evidence, because both mean "not a
+leak" but only one names a fix. `BILLED_NO_SUBSCRIPTION` is the `ELSE`, so a
+fourth source of evidence added above it narrows the leak automatically. The
+evidence stays in its own columns beside the verdict, so a finding can be
+checked rather than trusted. Measured 2026-09-17: 65 accounts, $840.08 a
+month, $10,080.96 a year.
 
 A high `BILLED_NO_MATCH` share is a broken join, not a finding: if nearly
 every active account lands there while `OK` is empty, the billing side has no
