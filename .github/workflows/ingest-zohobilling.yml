@@ -16,6 +16,8 @@ concurrency:
 permissions:
   contents: read
   id-token: write # WIF token exchange
+  issues: write # alert.yml opens the failure issue; a called
+                # workflow cannot hold a permission its caller lacks
 
 jobs:
   ingest:
@@ -38,3 +40,14 @@ jobs:
         run: >
           python -m pipelines.zohobilling.ingest
           --client "${{ inputs.client || 'livewire' }}"
+
+  # Nothing told anyone when this broke. See .github/workflows/alert.yml.
+  alert:
+    needs: ingest
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      workflow: ingest-zohobilling
+    permissions:
+      contents: read
+      issues: write

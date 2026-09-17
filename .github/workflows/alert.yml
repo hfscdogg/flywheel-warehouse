@@ -1,0 +1,108 @@
+name: alert
+
+# WHAT HAPPENS WHEN A NIGHTLY BREAKS AND NOBODY IS WATCHING.
+#
+# Until this existed, nothing did. A scheduled run that failed went red on a
+# page nobody opens, and the warehouse carried on serving whatever it last
+# built. Two of those ran for weeks:
+#
+#   the Zoho Billing customer list stopped landing on 2026-08-31 and was
+#   found on 2026-09-17, by a freshness check written for a different reason
+#
+#   four transforms failed on 2026-09-17 and were noticed only because
+#   someone happened to be looking at the time
+#
+# A silent failure is worse than a loud one. The data does not stop being
+# served, it stops being true, and every answer drawn from it is confident.
+#
+# WHY A GITHUB ISSUE. It needs no secret, no bot token and no third-party
+# service, so there is nothing to rotate and nothing to configure per client
+# — this works the day a new client's repo exists. GitHub already emails and
+# pushes issue notifications to whoever watches the repo, so the delivery
+# problem is someone else's. If a client later wants Telegram or email
+# instead, that is a step added here, in one file, not in eight.
+#
+# ONE ISSUE PER WORKFLOW, REOPENED AND COMMENTED, never a new issue per
+# night. A nightly that fails for a week must not produce seven issues: that
+# is how an alert channel becomes something people filter out, and a filtered
+# alert is indistinguishable from no alert.
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: The failing workflow, named as it should read in the issue
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          # Passed through the environment rather than interpolated into the
+          # script body. `${{ inputs.workflow }}` written into JavaScript is
+          # substituted by Actions BEFORE the script is parsed, so a name
+          # containing a quote becomes code. Same rule probe.yml follows for
+          # its SQL, and for the same reason.
+          FAILED_WORKFLOW: ${{ inputs.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const wf = process.env.FAILED_WORKFLOW;
+            const runUrl = process.env.RUN_URL;
+            const title = `Nightly failure: ${wf}`;
+            const when = new Date().toISOString().replace('T', ' ').slice(0, 16);
+            const line = `Run failed ${when} UTC — ${runUrl}`;
+
+            // Find this workflow's existing open issue by exact title. Listing
+            // beats search here: the search index lags by up to a minute, and
+            // a nightly that fails twice in that window would open a second
+            // issue for the same thing.
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = open.find(i => i.title === title && !i.pull_request);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `${line}\n\nStill failing. This is a repeat; see the run log above.`,
+              });
+              core.notice(`Commented on #${existing.number} for ${wf}`);
+              return;
+            }
+
+            const body = [
+              `\`${wf}\` failed on its schedule.`,
+              ``,
+              line,
+              ``,
+              `**Why this matters:** the warehouse does not stop answering when an`,
+              `ingest or transform fails. It keeps serving what it last built, so`,
+              `every answer stays confident and quietly goes out of date. Check`,
+              `what this feeds before trusting today's numbers.`,
+              ``,
+              `**When it is fixed,** close this issue. It is reused for every`,
+              `later failure of the same workflow, so an open one means the last`,
+              `run is still broken.`,
+            ].join('\n');
+
+            const created = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['pipeline-failure'],
+            });
+            core.notice(`Opened #${created.data.number} for ${wf}`);

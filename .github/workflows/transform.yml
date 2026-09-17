@@ -24,6 +24,8 @@ concurrency:
 permissions:
   contents: read
   id-token: write # WIF token exchange
+  issues: write # alert.yml opens the failure issue; a called
+                # workflow cannot hold a permission its caller lacks
 
 jobs:
   transform:
@@ -44,3 +46,14 @@ jobs:
         env:
           VALIDATE: ${{ inputs.validate && '1' || '0' }}
         run: ./scripts/06-transform.sh "${{ inputs.client || 'livewire' }}"
+
+  # Nothing told anyone when this broke. See .github/workflows/alert.yml.
+  alert:
+    needs: transform
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      workflow: transform
+    permissions:
+      contents: read
+      issues: write

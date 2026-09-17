@@ -20,6 +20,8 @@ concurrency:
 permissions:
   contents: read
   id-token: write # WIF token exchange
+  issues: write # alert.yml opens the failure issue; a called
+                # workflow cannot hold a permission its caller lacks
 
 jobs:
   ingest:
@@ -39,3 +41,14 @@ jobs:
           python -m pipelines.qbo.ingest
           --client "${{ inputs.client || 'livewire' }}"
           ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
+
+  # Nothing told anyone when this broke. See .github/workflows/alert.yml.
+  alert:
+    needs: ingest
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      workflow: ingest-qbo
+    permissions:
+      contents: read
+      issues: write
