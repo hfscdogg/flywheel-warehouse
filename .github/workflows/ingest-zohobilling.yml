@@ -8,6 +8,10 @@ on:
       client:
         description: Client slug
         default: livewire
+      customer_detail:
+        description: Also fetch per-customer detail (billing addresses); resumes from the detail watermark, stops at the budget
+        type: boolean
+        default: false
 
 concurrency:
   group: ingest-zohobilling-${{ inputs.client || 'livewire' }}
@@ -22,6 +26,9 @@ permissions:
 jobs:
   ingest:
     runs-on: ubuntu-latest
+    # The detail fetch budgets itself to 240 minutes and then stops cleanly;
+    # this is the backstop above it, under the runner's own 360.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
@@ -35,8 +42,14 @@ jobs:
       - name: Ingest Zoho Billing → raw_zohobilling
         env:
           ZOHO_BILLING_ORG_ID: ${{ vars.ZOHO_BILLING_ORG_ID }}
+          # Per-customer detail (the only place a billing address exists) is
+          # off unless asked for: the dispatch input for a hand-run backfill,
+          # or the ZOHOBILLING_CUSTOMER_DETAIL repository variable to make it
+          # nightly once the backfill has caught up. Empty means off.
+          ZOHOBILLING_CUSTOMER_DETAIL: ${{ inputs.customer_detail && '1' || vars.ZOHOBILLING_CUSTOMER_DETAIL }}
         # Full pull every run by design (see pipelines/zohobilling/ingest.py):
-        # no --full-refresh flag, no watermark to ignore.
+        # no --full-refresh flag, no watermark to ignore. The detail fetch is
+        # the one incremental piece and keeps its own watermark.
         run: >
           python -m pipelines.zohobilling.ingest
           --client "${{ inputs.client || 'livewire' }}"

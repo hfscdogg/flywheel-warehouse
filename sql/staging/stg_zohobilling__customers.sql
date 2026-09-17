@@ -7,7 +7,7 @@
 -- customers who are actually subscribed.
 CREATE OR REPLACE TABLE staging.stg_zohobilling__customers
 OPTIONS (description = """
-Zoho Billing customers, one row per customer: who can hold a subscription. The address columns are empty for nearly every row (Billing's list endpoint returns none), which is why matching to a service address goes through the CRM account by name instead.
+Zoho Billing customers, one row per customer: who can hold a subscription. The address columns are populated only for customers the per-customer detail fetch has reached (Billing's list endpoint returns none); until that backfill completes, matching to a service address goes through the CRM account by name instead.
 """)
 AS
 WITH latest AS (
@@ -16,7 +16,15 @@ WITH latest AS (
   WHERE _source_id IS NOT NULL
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY _source_id
-    ORDER BY _modified_at DESC NULLS LAST, _loaded_at DESC
+    -- A customer lands twice per run when the detail fetch is on: once from
+    -- the list (no address) and once from the per-customer GET (address),
+    -- both carrying the same last_modified_time. Of two records of the same
+    -- modification, the one with an address is the fuller one and wins;
+    -- without this tie-break the nightly list record, loaded later, would
+    -- quietly erase every address the detail fetch landed.
+    ORDER BY _modified_at DESC NULLS LAST,
+             (JSON_VALUE(payload, '$.billing_address.address') IS NOT NULL) DESC,
+             _loaded_at DESC
   ) = 1
 )
 SELECT

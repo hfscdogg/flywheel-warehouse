@@ -79,25 +79,29 @@ per-subscription GET. Sparse date columns (`next_billing_at`,
 `cancelled_at`, `expires_at`) are correct: they exist only for subscriptions
 in the matching state.
 
-**Zoho Billing customers come from the per-customer GET, not the list.** The
+**Zoho Billing addresses come from the per-customer GET, not the list.** The
 list endpoint returns no `billing_address` object at all — verified
-2026-08-30, 0 of 34,248 landed rows had one — so
-`stg_zohobilling__customers`' address columns were entirely NULL and
-`kpi_subscription_audit` reported all 522 active vendor accounts as
-`BILLED_NO_MATCH`. That reads like 522 unbilled customers and is really an
-empty join side. `pipelines/zohobilling/ingest.py` can land the per-customer GET instead, but
-that is **off by default** (`ZOHOBILLING_CUSTOMER_DETAIL`) after the first
-live attempt failed: 6,853 customers at ~8 detail calls/minute is ~14 hours,
-and the Zoho access token expires after one, so the run died on HTTP 401 at
-minute 62 having landed nothing. Re-enabling it needs a mid-run token
-refresh, chunked landing, and a per-run budget.
+2026-08-30, 0 of 34,248 landed rows had one, and still 0 of 6,919 customers
+on 2026-09-17 — so `stg_zohobilling__customers`' address columns are NULL
+until the detail fetch has reached a customer. `pipelines/zohobilling/ingest.py`
+lands the per-customer GET on top of the nightly list when
+`ZOHOBILLING_CUSTOMER_DETAIL` is set (the workflow's `customer_detail`
+input, or a repository variable of that name to make it nightly). The first
+live attempt failed — 6,853 customers at ~8 calls a minute is ~14 hours, the
+token expires after one, and everything was held for one load at the end —
+so the fetch now lands every 200 records oldest-first under its own
+watermark (`customers_detail`), refreshes the token on a 401, and stops at a
+per-run budget (240 minutes) leaving the rest for the next run. The staging
+model prefers the record carrying an address when two share a
+`last_modified_time`, so the nightly list record cannot erase a landed
+address.
 
-Billing's address columns therefore stay NULL, and `stg_zoho__accounts` now
-carries the addresses instead: CRM v2 returns full records, so
-`$.Billing_Street` and `$.Billing_Code` were there all along, just never
-extracted. `kpi_subscription_audit` reaches a subscription through them —
-address → CRM account → Billing customer by name — which measured 73% and
-94% on the two hops. That made the detail fetch unnecessary.
+Until the backfill completes, `stg_zoho__accounts` carries the addresses
+instead: CRM v2 returns full records, so `$.Billing_Street` and
+`$.Billing_Code` were there all along. `kpi_subscription_audit` reaches a
+subscription through them — address → CRM account → Billing customer by
+name — which measured 73% and 94% on the two hops. The Billing-side address
+path (`match_via = 'billing'`) switches itself on as addresses land.
 
 ## Access
 

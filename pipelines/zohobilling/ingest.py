@@ -10,17 +10,34 @@ and cancelled/expired subscriptions are exactly what the subscription audit
 needs — a last_modified_time watermark would quietly stop refreshing rows
 that stopped changing.
 
-Customers are the exception, and they invert the pattern: the list endpoint
-carries no address at all, so the list only enumerates ids and the record
-landed is the per-customer GET. See fetch_customer_details.
+Customers are the exception: the list endpoint carries no address at all, so
+the list lands every night as before AND, when ZOHOBILLING_CUSTOMER_DETAIL is
+set, the per-customer GET lands on top of it for every customer modified
+since the detail fetch last reached them. See fetch_customer_details.
 """
 
 import logging
+import time
 
 from ..lib import runner, util
 from ..lib.sources import ZOHO, ZOHO_BILLING
 
 log = logging.getLogger("flywheel.ingest.zohobilling")
+
+#: The detail fetch keeps its own watermark. The list lands nightly under
+#: "customers" and advances that watermark to the newest customer in the
+#: book, so reading it here would say every customer had already been
+#: detailed when none had -- the state the first live attempt left behind.
+DETAIL_WATERMARK_ENTITY = "customers_detail"
+
+#: Detail records land this many at a time, so a run that stops early --
+#: budget, token, runner -- keeps everything fetched up to the last batch.
+DETAIL_BATCH_SIZE = 200
+
+#: Minutes of detail fetching per run before stopping and leaving the rest
+#: for the next one. GitHub Actions kills a job at 360; the list pull and the
+#: landing need some of that.
+DETAIL_BUDGET_MINUTES_DEFAULT = 240
 
 
 def get_access_token(http, project_id):
@@ -79,51 +96,147 @@ def customers_needing_detail(listed, since):
     if since is None:
         return list(listed)
     modified = ZOHO_BILLING["modified_field"]
-    return [c for c in listed if (c.get(modified) or "") > since or not c.get(modified)]
+    # Parsed, not compared as strings. Zoho lists "2026-09-17T15:00:00-0400"
+    # and the stored watermark is UTC "2026-09-17T16:35:35+00:00"; as strings
+    # the first sorts BEFORE the second although it is the later instant,
+    # and a customer changed after the watermark would never be re-fetched.
+    since_ts = util.parse_ts(since)
+    out = []
+    for c in listed:
+        ts = util.parse_ts(c.get(modified))
+        if ts is None or since_ts is None or ts > since_ts:
+            out.append(c)
+    return out
 
 
-def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit):
-    """Full customer records — the only place a billing address exists.
+def detail_fetch_order(stale):
+    """Oldest modification first, customers with no timestamp last.
+
+    The detail watermark is the newest modification LANDED, and a run may
+    stop before it lands everything. Fetching oldest-first makes that
+    watermark honest: everything modified before it has been fetched, so the
+    next run resumes exactly where this one stopped instead of re-fetching
+    the whole book or, worse, skipping what it never reached. Customers with
+    no timestamp are always re-fetched (see customers_needing_detail), so
+    where they sit changes nothing about the watermark; last keeps them from
+    holding up the ones that do advance it.
+    """
+    modified = ZOHO_BILLING["modified_field"]
+    def key(c):
+        ts = util.parse_ts(c.get(modified))
+        return (ts is None, ts.timestamp() if ts is not None else 0.0)
+    return sorted(stale, key=key)
+
+
+def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit,
+                           land, refresh_token=None, budget_seconds=None,
+                           batch_size=DETAIL_BATCH_SIZE, clock=time.monotonic):
+    """Full customer records -- the only place a billing address exists.
 
     The Billing list endpoint returns no billing_address object whatsoever:
     verified 2026-08-30 against the landed data, 0 of 34,248 rows had one.
     Without an address there is nothing to match a monitoring-vendor account
-    against, and kpi_subscription_audit reported all 522 active accounts as
-    BILLED_NO_MATCH — a broken join that reads like 522 unbilled customers.
+    against directly, and Zoho Billing's own duplicate profiles can only be
+    told apart by name, email or phone.
 
     This is the LIST-vs-GET split that hid plan_code (#18) taken one step
     further: there the field sat at the top level instead of the documented
     nesting, here it is simply absent until you ask for the record itself.
 
+    THE FIRST LIVE ATTEMPT (2026-08-30) DID NOT SURVIVE CONTACT: 6,853
+    customers at ~8 detail calls a minute is ~14 hours, the access token
+    expires after one, and everything fetched was held for a single load at
+    the end -- so the run died on HTTP 401 at minute 62 having landed nothing.
+    Three things here answer those three defects:
+
+      * `land` is called every `batch_size` records, in oldest-modified-first
+        order, and advances the detail watermark to the batch's newest
+        modification. A run that stops for any reason keeps what it landed
+        and the next run resumes after it.
+      * `refresh_token` is called on a 401 and the request retried once with
+        the new token. A second 401 is a real failure.
+      * `budget_seconds` stops the loop once spent, after landing the partial
+        batch, and logs how many customers remain. Zoho's rate is not ours to
+        change, so the backfill takes as many nightly runs as it takes.
+
     Only customers whose list record is newer than the stored watermark are
-    re-fetched — every customer on a first run, a handful after that.
-    Addresses change rarely and the whole book is a couple of thousand rows,
-    so this stays cheap without going stale. --full-refresh refetches all.
+    fetched -- every customer on a first run, a handful after the backfill.
+    --full-refresh refetches all. Returns (records landed, finished).
     """
-    headers = {
-        "Authorization": f"Zoho-oauthtoken {token}",
-        ZOHO_BILLING["org_header"]: org_id,
-    }
-    stale = customers_needing_detail(listed, since)
+    stale = detail_fetch_order(customers_needing_detail(listed, since))
     if limit:
         stale = stale[:limit]
     log.info("customers: %d listed, %d need detail%s", len(listed), len(stale),
              "" if since is None else f" (modified since {since})")
 
-    records = []
+    started = clock()
+    landed, batch = 0, []
     for n, listed_customer in enumerate(stale, 1):
         customer_id = listed_customer.get("customer_id")
         if not customer_id:
             continue
         url = f"{api_domain}/{ZOHO_BILLING['api_path']}/customers/{customer_id}"
-        resp = http.get(url, headers=headers, timeout=60)
+        resp = http.get(url, headers=_headers(token, org_id), timeout=60)
+        # One refresh per customer, not one per run: the token expires every
+        # hour and a budgeted run lasts four. A 401 straight after a refresh
+        # is not expiry and raises below.
+        if resp.status_code == 401 and refresh_token is not None:
+            log.info("customers: token expired after %d details; refreshing", n - 1)
+            token = refresh_token()
+            resp = http.get(url, headers=_headers(token, org_id), timeout=60)
         util.raise_for_status(resp, f"Zoho Billing customer {customer_id}")
         record = resp.json().get("customer")
         if record:
-            records.append(record)
-        if n % 250 == 0:
+            batch.append(record)
+        if len(batch) >= batch_size:
+            landed += land(batch)
+            batch = []
             log.info("customers: %d/%d details fetched", n, len(stale))
-    return records
+        if budget_seconds is not None and clock() - started >= budget_seconds and n < len(stale):
+            if batch:
+                landed += land(batch)
+                batch = []
+            log.warning("customers: detail budget of %ds spent after %d of %d; "
+                        "%d remain for the next run", budget_seconds, n,
+                        len(stale), len(stale) - n)
+            return landed, False
+    if batch:
+        landed += land(batch)
+    return landed, True
+
+
+def _headers(token, org_id):
+    return {
+        "Authorization": f"Zoho-oauthtoken {token}",
+        ZOHO_BILLING["org_header"]: org_id,
+    }
+
+
+def land_detail_batch(bq_mod, bq, cfg, dataset, entity, records, run_id):
+    """Land one batch of detail records and advance the DETAIL watermark.
+
+    Not runner.land: that advances the entity's own watermark, which is the
+    list's, and a batch of old records would drag it backwards. The detail
+    watermark is the newest modification landed here, and because batches
+    arrive oldest-first it only ever moves forward.
+    """
+    loaded_at = util.utcnow_iso()
+    table_id = bq_mod.ensure_table(bq, cfg, dataset, entity["name"].lower(),
+                                   bq_mod.LANDING_SCHEMA)
+    rows = [util.build_row(r, entity["id_field"], ZOHO_BILLING["modified_field"],
+                           run_id, loaded_at) for r in records]
+    n = bq_mod.load_rows(bq, table_id, rows, bq_mod.LANDING_SCHEMA)
+    high = util.max_modified(records, ZOHO_BILLING["modified_field"])
+    if high:
+        bq_mod.set_watermark(bq, cfg, dataset, DETAIL_WATERMARK_ENTITY, high,
+                             run_id, loaded_at)
+    log.info("customers: landed %d detail rows (detail watermark → %s)", n, high)
+    return n
+
+
+def detail_budget_seconds():
+    minutes = util.env_or("ZOHOBILLING_DETAIL_BUDGET_MIN", str(DETAIL_BUDGET_MINUTES_DEFAULT))
+    return int(minutes) * 60
 
 
 def main():
@@ -145,27 +258,35 @@ def main():
     total = 0
     for entity in ZOHO_BILLING["entities"]:
         records = fetch_entity(http, token, api_domain, org_id, entity, args.limit)
-        # Customer detail fetch is off by default. The first live attempt
-        # (2026-08-30) showed the approach does not survive contact: 6,853
-        # customers, not the ~2.2k the subscription count suggested, fetched
-        # at ~8/minute — roughly 14 hours — and Zoho access tokens expire
-        # after one, so the run died on HTTP 401 at minute 62 having landed
-        # nothing. Three defects compound: no mid-run token refresh, a volume
-        # no single run can cover, and an all-or-nothing land at the end that
-        # discarded the 250 records it did fetch.
-        #
-        # Left in place rather than reverted because the underlying finding
-        # stands — the list endpoint carries no address — but enabling it
-        # again needs all three fixed, plus a decision on whether Zoho CRM's
-        # account addresses make it unnecessary. Off, the pipeline behaves
-        # exactly as it did before #25 instead of failing nightly.
-        if entity["name"] == "customers" and util.env_or("ZOHOBILLING_CUSTOMER_DETAIL"):
-            since = None if args.full_refresh else bq_mod.get_watermark(
-                bq, cfg, dataset, entity["name"])
-            records = fetch_customer_details(http, token, api_domain, org_id,
-                                             records, since, args.limit)
+        # The list lands every run as it always has: it refreshes names,
+        # emails and phones for the whole book in one pass.
         total += runner.land(bq_mod, bq, cfg, dataset, entity["name"], records,
                              entity["id_field"], ZOHO_BILLING["modified_field"], run_id)
+        # Then, when switched on, the per-customer GET lands on top for every
+        # customer the detail fetch has not reached since it was last
+        # modified. Same table, same _modified_at; the staging model prefers
+        # the record carrying an address, so the detail wins the tie.
+        #
+        # Off by default. The first live attempt (2026-08-30) died on HTTP
+        # 401 at minute 62 having landed nothing -- see fetch_customer_details
+        # for the three defects and what answers each. The backfill is ~6,900
+        # customers at Zoho's pace and will take several runs; the budget and
+        # the detail watermark make each one count. Switch on with the
+        # workflow's customer_detail input, or make it nightly by setting the
+        # ZOHOBILLING_CUSTOMER_DETAIL repository variable.
+        if entity["name"] == "customers" and util.env_or("ZOHOBILLING_CUSTOMER_DETAIL"):
+            since = None if args.full_refresh else bq_mod.get_watermark(
+                bq, cfg, dataset, DETAIL_WATERMARK_ENTITY)
+            landed, finished = fetch_customer_details(
+                http, token, api_domain, org_id, records, since, args.limit,
+                land=lambda batch: land_detail_batch(bq_mod, bq, cfg, dataset, entity,
+                                                     batch, run_id),
+                refresh_token=lambda: get_access_token(http, cfg.project_id)[0],
+                budget_seconds=detail_budget_seconds())
+            total += landed
+            if not finished:
+                log.warning("customers: detail backfill incomplete; the next run "
+                            "resumes from the detail watermark")
     log.info("done: %d rows total", total)
 
 

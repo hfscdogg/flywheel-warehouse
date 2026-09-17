@@ -180,14 +180,18 @@ class ContactKeyTest(unittest.TestCase):
         # consumers), and the QuickBooks side. All three must agree — the
         # vendor copy is joined against BOTH book copies, so a drift in any
         # one of them breaks a tier.
+        #
+        # Four since the duplicate-profile lookup started keying on phone
+        # too: a twin key that reduced a phone differently from the match
+        # key would find different twins than the match found customers.
         keys = re.findall(r"RIGHT\(REGEXP_REPLACE\([\w.]+, (.*?, 10\))",
                           self.flat())
-        self.assertEqual(len(keys), 3,
-                         "expected exactly three copies of the phone key")
-        self.assertEqual(keys[0], keys[1],
-                         "the Billing side and the vendor side reduce phone "
-                         "numbers differently, so equal numbers produce "
-                         "unequal keys")
+        self.assertEqual(len(keys), 4,
+                         "expected exactly four copies of the phone key")
+        self.assertEqual(len(set(keys)), 1,
+                         "the Billing side, the vendor side, the QuickBooks "
+                         "side and the twin key reduce phone numbers "
+                         "differently, so equal numbers produce unequal keys")
 
     def test_an_ambiguous_contact_key_is_dropped(self):
         # An email or a phone belonging to two Billing customers identifies
@@ -216,11 +220,15 @@ class ContactKeyTest(unittest.TestCase):
         # each: vendor_contact extracts the account's email and phone once and
         # both consumers read it, so the vendor-side guard cannot be dropped
         # for one consumer and kept for the other.
+        #
+        # Three book-side copies since the duplicate-profile lookup keys on
+        # email and phone: an empty contact there would make every profile
+        # without one a twin of every other.
         flat = self.flat()
-        self.assertEqual(flat.count("TRIM(COALESCE(c.email, '')) != ''"), 2)
+        self.assertEqual(flat.count("TRIM(COALESCE(c.email, '')) != ''"), 3)
         self.assertEqual(flat.count("TRIM(COALESCE(a.email, '')) != ''"), 1)
         self.assertEqual(flat.count(
-            "REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10"), 2)
+            "REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10"), 3)
         self.assertEqual(flat.count(
             "REGEXP_REPLACE(COALESCE(s.contact_phone, ''), r'[^0-9]', '')) "
             ">= 10"), 1)
@@ -254,9 +262,10 @@ class ContactKeyTest(unittest.TestCase):
                          "and so skips the non-customer exclusion; read "
                          "billing_customers instead")
         self.assertEqual(
-            sum("FROM billing_customers" in l for l in code), 5,
-            "expected all five Billing paths -- address, name, unique name, "
-            "email, phone -- to read the filtered list")
+            sum("FROM billing_customers" in l for l in code), 7,
+            "expected all seven Billing reads -- address, name, unique name, "
+            "email, phone, and the twin lookup's email and phone keys -- to "
+            "read the filtered list")
 
     def test_the_exclusion_is_narrow(self):
         # A too-broad rule silently drops real customers, which is the failure
@@ -514,12 +523,19 @@ class DuplicateProfilePathTest(unittest.TestCase):
     customer's name beside it. 22 of the first 27 flagged accounts reviewed by
     hand on 2026-09-17 were exactly this.
 
-    The hazard is the shape of the lookup. A name held by three profiles
+    The hazard is the shape of the lookup. A key held by three profiles
     produces three rows per customer on a self-join, and every vendor account
     matched to that customer fans out with it -- inflating both the count and
     every SUM over vendor_monthly_cost, in the direction that reads as a worse
     leak. That is the same trap the Security Central recurring feed set, and
-    it is why this is a window function over one row per customer.
+    it is why this is a window function over the customer's own key rows,
+    collapsed to one row per customer before it reaches the mart.
+
+    A twin is found by name, email or phone. The first version compared names
+    exactly and missed the twins accounting finds by hand -- "Thomas
+    Schievelbein" subscribed as "Tom & Betty Schievelbein" -- all of which
+    share an email or a phone with the empty profile. 8 of the 43 households
+    the name-only check left on the leak list on 2026-09-17 were this.
     """
 
     AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
@@ -531,46 +547,102 @@ class DuplicateProfilePathTest(unittest.TestCase):
     def flat(self):
         return " ".join(self.AUDIT.read_text().split())
 
+    def code_flat(self):
+        # Comments stripped: the block above these CTEs explains GROUP BY and
+        # self-joins in prose, and the assertions below are about the SQL.
+        return " ".join(" ".join(self.code()).split())
+
+    def keys_body(self):
+        m = re.search(r"billing_twin_keys AS \((.*?)billing_twins AS \(",
+                      self.code_flat())
+        self.assertIsNotNone(m, "billing_twin_keys or billing_twins is gone")
+        return m.group(1)
+
+    def twins_body(self):
+        m = re.search(r"billing_twins AS \((.*?)\), \w+ AS \(", self.code_flat())
+        self.assertIsNotNone(m, "billing_twins is gone")
+        return m.group(1)
+
     def test_the_name_key_is_reduced_in_one_place(self):
         # billing_named exists so the unique-name match and the twin lookup
         # cannot disagree about what a name reduces to. Both must read it.
-        flat = self.flat()
+        flat = self.code_flat()
         self.assertIn("FROM billing_named c", flat,
                       "billing_by_unique_name no longer reads the shared key")
-        self.assertIn("FROM billing_named n", flat,
-                      "billing_name_twins no longer reads the shared key")
+        self.assertIn("FROM billing_named WHERE name_key != ''", flat,
+                      "billing_twin_keys no longer reads the shared name key")
+
+    def test_a_twin_is_found_by_name_email_or_phone(self):
+        # Name alone missed the twins accounting finds by hand. Each key is
+        # a branch of the UNION; dropping one silently shrinks the signal.
+        body = self.keys_body()
+        for kind in ("'name' AS key_kind", "'email'", "'phone'"):
+            with self.subTest(kind=kind):
+                self.assertIn(kind, body,
+                              "a twin key was dropped, so profiles that "
+                              "share that contact are no longer twins")
 
     def test_the_twin_count_excludes_the_customers_own(self):
         # Without the subtraction every subscribed customer is its own twin
         # and the column is TRUE for everyone with a subscription.
         self.assertIn(
             "SUM(COALESCE(s.active_subscriptions, 0)) OVER (PARTITION BY "
-            "n.name_key) - COALESCE(s.active_subscriptions, 0)", self.flat(),
+            "k.key_kind, k.key_value) - COALESCE(s.active_subscriptions, 0)",
+            self.keys_body(),
             "the twin count does not subtract the customer's own "
             "subscriptions, so a customer counts as its own duplicate")
 
     def test_it_is_a_window_not_a_join(self):
-        flat = self.flat()
-        body = flat[flat.index("billing_name_twins AS ("):]
-        body = body[:body.index("),")]
-        self.assertIn("OVER (PARTITION BY", body)
-        self.assertNotIn("GROUP BY", body,
-                         "a grouped self-join here fans the mart out on any "
-                         "name held by more than two profiles")
+        # The key rows are joined to subs (one row per customer) and nothing
+        # else; the count across profiles is a window, never a join back to
+        # the customer book.
+        body = self.keys_body()
+        self.assertIn("OVER (PARTITION BY k.key_kind, k.key_value)", body)
+        self.assertEqual(body.count("JOIN"), 1,
+                         "billing_twin_keys joins something besides subs; a "
+                         "self-join here fans the mart out on any key held "
+                         "by more than two profiles")
+        self.assertNotIn("GROUP BY", body)
+
+    def test_it_collapses_to_one_row_per_customer(self):
+        # A customer holds up to three key rows (name, email, phone). They
+        # must be folded to one before the mart joins them, and only by
+        # customer_id -- grouping by anything finer leaves several rows.
+        body = self.twins_body()
+        self.assertIn("GROUP BY customer_id", body)
+        self.assertNotIn("GROUP BY customer_id,", body)
 
     def test_the_empty_name_key_is_excluded(self):
         # Partitioning by '' would make every unnamed customer a twin of
         # every other unnamed customer.
-        flat = self.flat()
-        body = flat[flat.index("billing_name_twins AS ("):]
-        self.assertIn("WHERE n.name_key != ''", body[:body.index("),")])
+        self.assertIn("WHERE name_key != ''", self.keys_body())
+
+    def test_placeholder_contacts_are_not_keys(self):
+        # none@none.com is on 24 profiles and the accounting inbox on 20.
+        # Treated as keys they make every profile on them a twin of every
+        # other, and one subscribed profile clears the rest off the leak
+        # list. Names are deliberately not capped: a common surname is real.
+        body = self.twins_body()
+        self.assertIn("WHERE key_kind = 'name' OR holders <= 4", body,
+                      "an email or phone shared by dozens of profiles is a "
+                      "placeholder, not a household, and must not be a key")
+        self.assertIn("COUNT(*) OVER (PARTITION BY k.key_kind, k.key_value) "
+                      "AS holders", self.keys_body())
 
     def test_the_join_is_one_row_per_customer(self):
         self.assertIn(
-            "LEFT JOIN billing_name_twins t ON t.customer_id = v.customer_id",
+            "LEFT JOIN billing_twins t ON t.customer_id = v.customer_id",
             self.flat(),
             "the twin lookup is not joined on customer_id alone, which is "
             "the only key that keeps it to one row per account")
+
+    def test_the_twin_is_named_for_the_person_merging_it(self):
+        # The finding says "merge the two profiles". Without the twin's name
+        # and the key that reached it, the person has to rediscover both.
+        code = " ".join(self.code())
+        for col in ("AS billing_twin_via", "AS billing_twin_name"):
+            with self.subTest(col=col):
+                self.assertIn(col, code)
 
     def test_the_gate_consults_the_duplicate_profile(self):
         self.assertIn("COALESCE(t.active_on_twins, 0) > 0", gate_of(self.AUDIT),
