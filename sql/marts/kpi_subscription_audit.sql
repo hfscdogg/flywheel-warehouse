@@ -80,9 +80,11 @@ Before acting on any row check name_overlaps: FALSE means the address probably m
 vendor_monthly_cost is populated for all three vendors, each from that vendor's own billing feed, so summing it across vendors gives a real total. It is NULL where a vendor's billing feed has not been uploaded or carries no row for the account, which means the cost is unknown, never that the account is free.
 No live subscription means none in Zoho Billing. A customer paying by check or outside Zoho looks identical here and must be confirmed by a person before anything is cancelled.
 Check match_via before acting: name means the account was matched only because its subscriber name matched exactly one Billing customer, with no address and no contact detail agreeing. That is the weakest link in the table and two unrelated households can share a name. email and phone are stronger than name and weaker than an address.
-READ qbo_monitoring_revenue BEFORE QUOTING THE LEAK. Zoho Billing is not the whole picture: Livewire's customers all flow into QuickBooks and check payers land only there, so a customer can be absent from Billing and still be invoiced for monitoring every month. qbo_monitoring_revenue is TRUE when the account's QuickBooks customer has been invoiced on a monitoring income account (Security Monitoring, Invision Monitoring, or a security agreement discount) on an invoice that was not voided. Measured 2026-09-16: 128 of the 229 BILLED_NO_SUBSCRIPTION rows are TRUE, so roughly half the leak list is accounted for and the unexplained remainder is about 101 accounts and $14,000 a year, not $31,752.
+READ qbo_monitoring_revenue BEFORE QUOTING THE LEAK. Zoho Billing is not the whole picture: Livewire's customers all flow into QuickBooks and check payers land only there, so a customer can be absent from Billing and still be invoiced for monitoring every month. qbo_monitoring_revenue is TRUE when the account's QuickBooks customer has been invoiced on a monitoring income account (Security Monitoring, Invision Monitoring, or a security agreement discount) on an invoice that was not voided. Measured 2026-09-17: 128 of the 230 BILLED_NO_SUBSCRIPTION rows are TRUE.
 qbo_monitoring_revenue is ADVISORY and is NOT part of finding. finding still asks Zoho Billing alone, so a BILLED_NO_SUBSCRIPTION row with qbo_monitoring_revenue TRUE is a row the finding gets wrong. Report both; never quote the BILLED_NO_SUBSCRIPTION total without saying how much of it this column explains.
-FALSE is not proof of a leak. It means no monitoring revenue was found for a QuickBooks customer this account could be resolved to, which includes the case where it reached no QuickBooks customer at all (qbo_customer_id IS NULL, 51 of the 229). Some customers also pay Security Central directly and will still surface here; that needs a known exclusion list Livewire has not supplied yet.
+FALSE is not proof of a leak. It means no monitoring revenue was found for a QuickBooks customer this account could be resolved to, which includes the case where it reached no QuickBooks customer at all (qbo_customer_id IS NULL, 51 of the 230).
+ALSO READ direct_billed, the second advisory column. Security Central bills a few customers directly, and those customers are paying for monitoring without any of it reaching Zoho Billing or our QuickBooks; the vendor's own recurring report marks them by payment method. That is the exclusion list this table used to say it was missing — it was in the warehouse the whole time.
+Together the two columns account for most of the list. Measured 2026-09-17 over 230 BILLED_NO_SUBSCRIPTION rows costing $2,671.01 a month: 128 have QuickBooks monitoring revenue, 17 are billed direct by Security Central, 2 are both, leaving 87 genuinely unexplained at $1,122.59 a month and $13,471.08 a year. Quote that, not the $32,052.16 the raw finding implies. Neither column is part of finding, so the raw count still reads 230.
 The QuickBooks customer is resolved independently of the Billing one, from the account's own address, email, phone and name, so the two can disagree. Judge the QuickBooks match by qbo_match_via and qbo_name_overlaps, exactly as you would judge the Billing match by match_via and name_overlaps.
 """)
 AS
@@ -129,7 +131,26 @@ sc_billing AS (
     -- Carried so a billing-only account arrives with a name on it. Those are
     -- the rows the audit most wants a human to look at, and an unnamed one
     -- cannot be checked against anything.
-    ANY_VALUE(subscriber_name) AS subscriber_name
+    ANY_VALUE(subscriber_name) AS subscriber_name,
+    -- THE DIRECT-PAYER MARKER, and the exclusion list this audit has been
+    -- asking for since it was written. Security Central bills a few customers
+    -- itself rather than billing Livewire for them, and prints how each one
+    -- pays (CHECK, CC-DRAFT, BANK-DRAFT). Those customers ARE paying for
+    -- monitoring -- just not to us and not through Zoho Billing -- so they are
+    -- not a leak, and nothing else in the warehouse says so.
+    --
+    -- LOGICAL_OR across the account's lines: the method is printed per
+    -- resource line, and one marked line makes the account direct-billed.
+    -- Derived here rather than in a CTE of its own because this feed is
+    -- already reduced to one row per account right here; a second read joined
+    -- back on account_no fans out -- the report carries several lines per
+    -- account, which silently inflates every count and every sum downstream.
+    --
+    -- bill_price (what the customer pays Security Central) is non-null on
+    -- exactly the same accounts, so the two agree and either would do. The
+    -- payment method is the better marker of the two: it says how the customer
+    -- pays rather than how much, and it cannot be confused with our cost.
+    LOGICAL_OR(payment_method IS NOT NULL) AS direct_billed
   FROM staging.stg_vendor__securitycentral_recurring
   WHERE account_no IS NOT NULL AND account_no != ''
   GROUP BY account_no
@@ -168,7 +189,11 @@ securitycentral AS (
     IF(ROW_NUMBER() OVER (
          PARTITION BY COALESCE(i.account_no, b.account_no)
          ORDER BY i.contract_no NULLS LAST
-       ) = 1, b.monthly_cost, NULL)             AS vendor_monthly_cost
+       ) = 1, b.monthly_cost, NULL)             AS vendor_monthly_cost,
+    -- NOT guarded by the ROW_NUMBER above. A cost must land on one row or a
+    -- SUM double-counts it; a property of the account belongs on every row of
+    -- that account, or a filter on it drops the row the cost is not on.
+    COALESCE(b.direct_billed, FALSE)            AS direct_billed
   FROM sc_identity i
   FULL OUTER JOIN sc_billing b ON i.account_no = b.account_no
 ),
@@ -241,6 +266,14 @@ parasol AS (
 -- most of these are STRING, so reordering one CTE would quietly swap city for
 -- state instead of failing. Adding a vendor means adding a CTE and one arm
 -- here, both of which name every column.
+-- direct_billed is FALSE, never NULL, on the two vendors that have no
+-- direct-billing arrangement to report -- the same choice
+-- qbo_monitoring_revenue makes, and for the same reason. A three-valued
+-- advisory column is a trap: the obvious way to use this one is
+-- `WHERE NOT direct_billed`, and NULL would silently drop every Alarm.com and
+-- Parasol row from that filter. FALSE here means "no direct-billing evidence",
+-- which on those two vendors is all that can be said; the column description
+-- says so rather than letting a reader infer that each was checked.
 accounts AS (
   SELECT
     'securitycentral' AS vendor,
@@ -259,7 +292,8 @@ accounts AS (
     in_roster,
     started_on,
     address_key,
-    vendor_monthly_cost
+    vendor_monthly_cost,
+    direct_billed
   FROM securitycentral
   UNION ALL
   SELECT
@@ -279,7 +313,8 @@ accounts AS (
     in_roster,
     started_on,
     address_key,
-    vendor_monthly_cost
+    vendor_monthly_cost,
+    FALSE AS direct_billed
   FROM alarmdotcom
   UNION ALL
   SELECT
@@ -299,7 +334,8 @@ accounts AS (
     in_roster,
     started_on,
     address_key,
-    vendor_monthly_cost
+    vendor_monthly_cost,
+    FALSE AS direct_billed
   FROM parasol
 ),
 -- NOT EVERY ROW IN THE BILLING BOOK IS A CUSTOMER
@@ -603,8 +639,11 @@ customer_by_contact AS (
 -- only the one this mart had. Livewire's customers all flow into QuickBooks
 -- and check payers land there too, so QBO is the superset: a customer can be
 -- absent from Billing entirely and still be invoiced for monitoring every
--- month. Measured 2026-09-16, 128 of the 229 BILLED_NO_SUBSCRIPTION rows have
--- monitoring revenue in QuickBooks. Roughly half the leak list is wrong.
+-- month. Measured 2026-09-17, 128 of the 230 BILLED_NO_SUBSCRIPTION rows have
+-- monitoring revenue in QuickBooks. With the 17 Security Central bills
+-- direct (see direct_billed, derived in sc_billing above) and the 2 that are
+-- both, 87 of the 230 are left genuinely unexplained. Most of the leak list
+-- is wrong.
 --
 -- RESOLVED INDEPENDENTLY, NOT BRIDGED THROUGH BILLING
 -- Nothing links a QuickBooks customer to a Zoho Billing one -- no shared id,
@@ -910,6 +949,13 @@ SELECT
   qm.customer_id IS NOT NULL            AS qbo_monitoring_revenue,
   qm.last_invoiced_on                   AS qbo_monitoring_last_invoiced,
   qm.last_settled_on                    AS qbo_monitoring_last_settled,
+  -- The second advisory answer, and the one that needs no matching at all:
+  -- it comes from the vendor's own billing report, on the vendor's own account
+  -- number. Where qbo_monitoring_revenue rests on a name or address reaching
+  -- the right QuickBooks customer, this rests on nothing but the account the
+  -- row is already keyed by. It is the strongest evidence in the table, and
+  -- also -- like the QuickBooks one -- deliberately NOT part of `finding`.
+  v.direct_billed,
   CASE
     WHEN NOT COALESCE(v.is_active_at_vendor, FALSE) THEN 'DEACTIVATED'
     WHEN NOT v.in_roster THEN 'BILLED_NO_ROSTER'
@@ -976,11 +1022,11 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN plan_names
   SET OPTIONS (description = "Comma-separated names of the live plans, for judging fit.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_customer_id
-  SET OPTIONS (description = "QuickBooks customer this account was resolved to, INDEPENDENTLY of the Zoho Billing match: from the account's own address, email, phone or name, never by bridging from the Billing customer. NULL when no QuickBooks customer could be reached (51 of the 229 leak rows), which is unknown, not evidence of anything. The two matches are separate answers and may disagree; that disagreement is information.");
+  SET OPTIONS (description = "QuickBooks customer this account was resolved to, INDEPENDENTLY of the Zoho Billing match: from the account's own address, email, phone or name, never by bridging from the Billing customer. NULL when no QuickBooks customer could be reached (51 of the 230 leak rows), which is unknown, not evidence of anything. The two matches are separate answers and may disagree; that disagreement is information.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_customer_name
   SET OPTIONS (description = "Display name of that QuickBooks customer. QuickBooks carries job records alongside households ('Pulley Residence Security System Budget', 'Den'), so a name that reads like a project rather than a person means the account resolved to a job; revenue billed to its parent customer will not be counted.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_match_via
-  SET OPTIONS (description = "How the QuickBooks customer was reached, strongest first: address (the account's address key matched exactly one QuickBooks customer), email, phone (last ten digits), name (the subscriber name matched exactly one QuickBooks customer, with the vendor's 'Last, First' order inverted to match QuickBooks). NULL when unmatched. name does most of the work here (121 of 178 matched leak rows) because a QuickBooks address is a BILLING address and often differs from the service address the vendor holds. A name match is the weakest: it says two records share a name, not that they are the same household.");
+  SET OPTIONS (description = "How the QuickBooks customer was reached, strongest first: address (the account's address key matched exactly one QuickBooks customer), email, phone (last ten digits), name (the subscriber name matched exactly one QuickBooks customer, with the vendor's 'Last, First' order inverted to match QuickBooks). NULL when unmatched. name does most of the work here (121 of 179 matched leak rows) because a QuickBooks address is a BILLING address and often differs from the service address the vendor holds. A name match is the weakest: it says two records share a name, not that they are the same household.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_name_overlaps
   SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the QuickBooks customer's name. What name_overlaps is for the Billing match, for this one. FALSE is a strong signal the key reached the WRONG household — and a wrong match here is the expensive direction, because it can keep a real leak OFF the list. Carries no information where qbo_match_via is name. 126 of the 128 rows with monitoring revenue are TRUE.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_revenue
@@ -989,6 +1035,8 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_invoic
   SET OPTIONS (description = "Date of the most recent non-voided monitoring invoice for the matched QuickBooks customer; NULL when there is none. Use it to tell a current agreement from one that lapsed years ago. Of the 128 leak rows with monitoring revenue, 124 were invoiced within the last twelve months, so recency is not what is driving this number.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_settled
   SET OPTIONS (description = "Date of the most recent such monitoring invoice that carries no remaining balance. This is the strongest paid-signal available: QuickBooks payments carry no link to the invoice they settle, so the monitoring LINE cannot be traced to a payment — only the invoice it sat on can be shown to be fully settled. All 124 recently-invoiced leak rows are settled. NULL means no monitoring invoice has been settled, which on a recent invoice may mean nothing more than that it is not due yet.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN direct_billed
+  SET OPTIONS (description = "TRUE when Security Central bills this account's customer DIRECTLY rather than billing Livewire for it, from the payment method (CHECK, CC-DRAFT, BANK-DRAFT) printed on the account's lines in Security Central's recurring billing report. Such a customer is paying for monitoring, just not to us and not through Zoho Billing, so the row is not a leak however its finding reads. This is the strongest evidence in the table and the only one that needs no matching: it is keyed on the vendor's own account number, where qbo_monitoring_revenue depends on a name or address reaching the right QuickBooks customer. Measured 2026-09-17: 17 of the 230 BILLED_NO_SUBSCRIPTION rows, 2 of which also have monitoring revenue. FALSE means no direct-billing evidence — and on an Alarm.com or Parasol row it means only that, because neither vendor reports such an arrangement at all; the marker exists for Security Central alone. Never NULL, so `WHERE NOT direct_billed` is safe. This column is ADVISORY: finding does not consider it.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
   SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. Always read finding together with match_via: a BILLED_NO_SUBSCRIPTION reached by name is a weaker claim than one reached by address or account number. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at

@@ -76,12 +76,28 @@ printf 'FAILED:%s\\n' "$DESCRIBE_FAILED"
 
 
 def stdout_filter():
-    """The sed program describe_columns pipes `bq show` through."""
+    """The sed program describe_columns runs `bq show`'s output through."""
     src = SCRIPT.read_text()
     for line in src.splitlines():
-        if "show --schema --format=prettyjson" in line and "sed -n" in line:
-            return line.split("sed -n", 1)[1].split(">", 1)[0].strip()
+        if line.lstrip().startswith("sed -n") and "$raw" in line:
+            prog = line.split("sed -n", 1)[1].split(">", 1)[0].strip()
+            # The script passes the file as an argument; these tests feed the
+            # same program on stdin, so drop the argument and keep the program.
+            return prog.split('"$raw"')[0].strip()
     raise AssertionError("describe_columns no longer filters bq's stdout")
+
+
+def bq_show_is_checked():
+    """Does describe_columns read `bq show`'s exit status itself?
+
+    A plain redirect lets set -e kill the run through the pipe and takes bq's
+    error message -- which bq prints on stdout -- into the file with it. That
+    is a silent exit 1 in a production build, and it happened.
+    """
+    src = " ".join(SCRIPT.read_text().split())
+    start = src.index("describe_columns() {")
+    body = src[start:src.index("merge_descriptions.py", start)]
+    return body
 
 
 def run_filter(text):
@@ -173,6 +189,44 @@ class StdoutFilter(unittest.TestCase):
         no schema at all, the file must end up empty and be refused."""
         rejected, _ = run_guard(run_filter(WARNING + "\n"))
         self.assertTrue(rejected)
+
+
+class BqFailureIsLoud(unittest.TestCase):
+    """A bq that fails here must say so in the log.
+
+    On 2026-09-17 the transform died describing marts.kpi_subscription_audit
+    with `Process completed with exit code 1` and nothing else: six marts
+    described, the seventh missing, and no way to tell from the log what bq
+    had objected to. bq reports on stdout, errors included, so redirecting
+    stdout into a file takes the error message with it.
+
+    A build that fails without saying why costs more than the failure.
+    """
+
+    def test_the_exit_status_is_read_not_inherited(self):
+        body = bq_show_is_checked()
+        self.assertIn("rc=$?", body,
+                      "bq show's exit status is not captured, so a failure "
+                      "dies through set -e with its message in a temp file")
+        self.assertIn('if [ "$rc" -ne 0 ]; then', body)
+
+    def test_the_failure_output_reaches_the_log(self):
+        body = bq_show_is_checked()
+        self.assertIn('while IFS= read -r line; do warn " $line"; done',
+                      body,
+                      "what bq said on failure is not written to the log")
+
+    def test_stderr_is_captured_too(self):
+        self.assertIn('> "$raw" 2>&1', bq_show_is_checked(),
+                      "bq's stderr is not captured with its stdout")
+
+    def test_a_failure_is_collected_not_fatal(self):
+        # Same shape as the two guards: the table is recorded, the build goes
+        # on, and check_describe_failures ends the run red afterwards.
+        body = bq_show_is_checked()
+        failed = body[body.index('if [ "$rc" -ne 0 ]; then'):]
+        self.assertIn('DESCRIBE_FAILED="$DESCRIBE_FAILED $table"', failed)
+        self.assertIn("return 0", failed)
 
 
 if __name__ == "__main__":

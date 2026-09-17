@@ -113,13 +113,14 @@ model_table() {
 # and set -e carries it. Without that a renamed column would go quietly
 # undescribed until check_described caught it minutes later, naming no model.
 describe_columns() {
-  local f="$1" table schema merged
+  local f="$1" table raw schema merged rc
   table="$(model_table "$f")"
   [ -n "$table" ] || die "no CREATE OR REPLACE TABLE in ${f#"$REPO_ROOT"/}"
+  raw="$(mktemp)"
   schema="$(mktemp)"
   merged="$(mktemp)"
   # shellcheck disable=SC2064  # expand the paths now, not at trap time
-  trap "rm -f '$schema' '$merged'" RETURN
+  trap "rm -f '$raw' '$schema' '$merged'" RETURN
 
   log "  \$ bq update --schema $table   # all columns, one call"
   # bq writes credential WARNINGs to STDOUT, not stderr:
@@ -139,8 +140,31 @@ describe_columns() {
   # survives that and still is not JSON is a genuine surprise, and the guard
   # below is what reports it. pipefail keeps a bq failure fatal through the
   # pipe.
+  # A FAILING bq MUST NOT BE SILENT.
+  # bq reports on stdout, errors included, so redirecting stdout into a file
+  # takes the error message with it. On 2026-09-17 the transform died here on
+  # marts.kpi_subscription_audit with `exit code 1` and NOT ONE WORD of
+  # explanation: six marts described, the seventh gone, and no way to tell
+  # from the log what bq had objected to. set -e through the pipe did exactly
+  # what it was asked to and threw away the only evidence.
+  #
+  # So the call is made on its own, its status read explicitly, and everything
+  # it said -- stdout and stderr together -- put in the log when it fails.
+  # Then the same collect-and-continue path the guards below use: one table
+  # that cannot be described must not cost the models behind it, and the run
+  # still ends red.
+  set +e
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
-  $BQ show --schema --format=prettyjson "$table" | sed -n '/^[[{]/,$p' > "$schema"
+  $BQ show --schema --format=prettyjson "$table" > "$raw" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    warn "$table: bq show exited $rc. What it said:"
+    while IFS= read -r line; do warn "    $line"; done < "$raw"
+    DESCRIBE_FAILED="$DESCRIBE_FAILED $table"
+    return 0
+  fi
+  sed -n '/^[[{]/,$p' "$raw" > "$schema"
 
   # bq does not promise that stdout holds JSON and nothing else, and both ways
   # it can break that end the run in the same place: merge_descriptions.py
