@@ -87,6 +87,13 @@ def stdout_filter():
     raise AssertionError("describe_columns no longer filters bq's stdout")
 
 
+def describe_body():
+    """describe_columns, whitespace-normalized, to the end of the function."""
+    src = " ".join(SCRIPT.read_text().split())
+    start = src.index("describe_columns() {")
+    return src[start:src.index("# stg_<source>__<entity>.sql", start)]
+
+
 def bq_show_is_checked():
     """Does describe_columns read `bq show`'s exit status itself?
 
@@ -189,6 +196,46 @@ class StdoutFilter(unittest.TestCase):
         no schema at all, the file must end up empty and be refused."""
         rejected, _ = run_guard(run_filter(WARNING + "\n"))
         self.assertTrue(rejected)
+
+
+class BqUpdateFailureIsLoud(unittest.TestCase):
+    """The SECOND bq call had the same flaw, and it is the one that fired.
+
+    `bq update --schema` ended in >/dev/null -- the ordinary way to silence a
+    chatty command. bq reports on stdout, errors included, so /dev/null ate
+    the error and set -e ended the run with `exit code 1` and nothing else.
+
+    Two production transforms were spent on that silence. The first fix made
+    `bq show` speak and changed nothing, because the failure was never there.
+    What bq was rejecting was a 1028-character column description against its
+    1024 limit: one line, if it had had anywhere to print it.
+    """
+
+    def test_stdout_is_not_discarded(self):
+        body = describe_body()
+        self.assertNotIn('$BQ update --schema "$merged" "$table" >/dev/null',
+                         body,
+                         "bq update discards stdout, which is where bq puts "
+                         "its errors; a rejected schema dies silently")
+
+    def test_the_exit_status_is_read(self):
+        body = describe_body()
+        after = body[body.index('$BQ update --schema "$merged" "$table"'):]
+        self.assertIn("rc=$?", after)
+        self.assertIn('if [ "$rc" -ne 0 ]; then', after)
+
+    def test_the_failure_output_reaches_the_log(self):
+        body = describe_body()
+        after = body[body.index('$BQ update --schema "$merged" "$table"'):]
+        self.assertIn('warn "$table: bq update exited $rc', after)
+        self.assertIn('while IFS= read -r line; do warn " $line"; done', after)
+
+    def test_a_rejected_schema_is_collected_not_fatal(self):
+        body = describe_body()
+        after = body[body.index('$BQ update --schema "$merged" "$table"'):]
+        failed = after[after.index('if [ "$rc" -ne 0 ]; then'):]
+        self.assertIn('DESCRIBE_FAILED="$DESCRIBE_FAILED $table"', failed)
+        self.assertIn("return 0", failed)
 
 
 class BqFailureIsLoud(unittest.TestCase):
