@@ -494,7 +494,7 @@ customer_by_address AS (
 -- The Billing name key, reduced ONCE for everything that needs it.
 -- Two things do, and they want opposite halves of the same fact: the name
 -- match below wants names belonging to exactly one customer, and
--- billing_name_twins further down wants the names belonging to more than
+-- billing_twin_keys further down wants the names belonging to more than
 -- one. Computed here so they cannot drift apart -- a third verbatim copy of
 -- this normalisation is a third chance to reduce the same name differently,
 -- and the two that already exist are pinned against each other by a test.
@@ -844,20 +844,85 @@ subs AS (
 -- 934 names are held by more than one profile and 205 of those have one
 -- profile subscribed and another not.
 --
--- Counted with a window rather than a self-join: a name held by three
+-- A TWIN IS FOUND BY NAME, EMAIL OR PHONE, NOT NAME ALONE. The first version
+-- compared names exactly, and the twins accounting finds by hand mostly do
+-- not share one: "Thomas Schievelbein" is subscribed as "Tom & Betty
+-- Schievelbein", "Evan Sherwood" as "Salisbury Country Club", "Kate
+-- Shaffrey" as "Catherine Shaffrey", "Carolyn Clay" as "Church Hill Animal
+-- Hospital". Every one of those shares an email or a phone with the empty
+-- profile. Measured 2026-09-17: of the 43 households the name-only check
+-- left on the leak list, 8 had a subscribed twin reachable this way, about
+-- $296 of the $840 a month it reported.
+--
+-- Billing carries no addresses (0 of 6,919 profiles), so name, email and
+-- phone are the only keys a Billing profile has. A key is a column of
+-- billing_twin_keys; adding one means adding a branch to the UNION.
+--
+-- PLACEHOLDER CONTACTS ARE NOT TWINS. A handful of emails and one phone are
+-- shared by dozens of unrelated profiles: none@none.com (24 profiles), the
+-- accounting inbox (20), a staff inbox (6), the office phone (7). Treated as
+-- keys they would make every profile on them a twin of every other, and any
+-- subscribed one would clear the rest off the leak list. A household or a
+-- business does not hold five Billing profiles, so an email or phone held by
+-- more than four is a placeholder and is dropped. Measured: that removes 4
+-- emails and 1 phone and keeps 4,688 emails and 3,254 phones. The one real
+-- family at exactly five profiles still matches on name. Names are not
+-- capped: a common surname is a real name, and the empty-name guard below
+-- already handles the one degenerate case.
+--
+-- Counted with a window rather than a self-join: a key held by three
 -- profiles would produce three rows per customer on a join and multiply
 -- every account matched to it. Subtracting the customer's own count leaves
 -- what sits on the OTHER profiles, which is the whole question.
-billing_name_twins AS (
+billing_twin_keys AS (
   SELECT
-    n.customer_id,
-    SUM(COALESCE(s.active_subscriptions, 0)) OVER (PARTITION BY n.name_key)
-      - COALESCE(s.active_subscriptions, 0) AS active_on_twins
-  FROM billing_named n
-  LEFT JOIN subs s ON s.customer_id = n.customer_id
-  -- The empty key is every unnamed customer at once; partitioning by it
-  -- would make them all twins of each other.
-  WHERE n.name_key != ''
+    k.customer_id,
+    k.key_kind,
+    k.key_value,
+    COUNT(*) OVER (PARTITION BY k.key_kind, k.key_value) AS holders,
+    SUM(COALESCE(s.active_subscriptions, 0)) OVER (PARTITION BY k.key_kind, k.key_value)
+      - COALESCE(s.active_subscriptions, 0) AS active_on_twins,
+    -- The name of a subscribed profile on this key, for the person who has
+    -- to find it in Zoho. On a leak row the customer's own count is 0, so
+    -- this can only be a twin.
+    MAX(IF(COALESCE(s.active_subscriptions, 0) > 0, k.display_name, NULL))
+      OVER (PARTITION BY k.key_kind, k.key_value) AS subscribed_name
+  FROM (
+    SELECT customer_id, display_name, 'name' AS key_kind, name_key AS key_value
+    FROM billing_named
+    -- The empty key is every unnamed customer at once; partitioning by it
+    -- would make them all twins of each other.
+    WHERE name_key != ''
+    UNION ALL
+    -- Spelled exactly as billing_by_email and billing_by_phone spell them,
+    -- and pinned to them by test: a twin key that reduced a contact
+    -- differently from the match key would find different twins than the
+    -- match found customers.
+    SELECT c.customer_id, c.display_name, 'email', LOWER(TRIM(c.email))
+    FROM billing_customers c
+    WHERE TRIM(COALESCE(c.email, '')) != ''
+    UNION ALL
+    SELECT c.customer_id, c.display_name, 'phone',
+           RIGHT(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), 10)
+    FROM billing_customers c
+    WHERE LENGTH(REGEXP_REPLACE(COALESCE(c.phone, ''), r'[^0-9]', '')) >= 10
+  ) k
+  LEFT JOIN subs s ON s.customer_id = k.customer_id
+),
+-- One row per customer, or the join below fans the mart out. GROUP BY here
+-- collapses a customer's own key rows (one per key it holds), never a join
+-- to other profiles, so it cannot multiply anything.
+billing_twins AS (
+  SELECT
+    customer_id,
+    MAX(active_on_twins) AS active_on_twins,
+    STRING_AGG(DISTINCT IF(active_on_twins > 0, key_kind, NULL), ', ' ORDER BY IF(active_on_twins > 0, key_kind, NULL))
+      AS twin_via,
+    ANY_VALUE(IF(active_on_twins > 0, subscribed_name, NULL) HAVING MAX active_on_twins)
+      AS twin_name
+  FROM billing_twin_keys
+  WHERE key_kind = 'name' OR holders <= 4
+  GROUP BY customer_id
 ),
 -- Alarm.com's export carries Security Central's own account number on 502 of
 -- 597 rows (CS Account Prefix + CS Account Number, e.g. A1651-1047), and the
@@ -990,6 +1055,10 @@ SELECT
   -- The third evidence source, and the only one that says the MATCH is
   -- wrong rather than that the revenue is elsewhere.
   COALESCE(t.active_on_twins, 0) > 0     AS billing_duplicate_profile,
+  -- Which key reached the subscribed twin, and what that profile is called:
+  -- the two things the person merging them in Zoho needs.
+  t.twin_via                             AS billing_twin_via,
+  t.twin_name                            AS billing_twin_name,
   -- THE GATE NOW ASKS EVERY SOURCE, NOT JUST ZOHO BILLING.
   -- It asked one question for months -- "is there a live Billing
   -- subscription" -- and answered BILLED_NO_SUBSCRIPTION for everything else.
@@ -1045,7 +1114,7 @@ LEFT JOIN customer_by_qbo q
   ON q.vendor = v.vendor AND q.account_no = v.account_no
 LEFT JOIN qbo_monitoring qm ON qm.customer_id = q.customer_id
 -- One row per Billing customer, so this cannot fan the mart out.
-LEFT JOIN billing_name_twins t ON t.customer_id = v.customer_id;
+LEFT JOIN billing_twins t ON t.customer_id = v.customer_id;
 
 -- What agents read. hermes-mcp serves these descriptions verbatim through
 -- get_table_schema, and a column without one is a column Hermes will guess
@@ -1112,7 +1181,11 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_settle
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN direct_billed
   SET OPTIONS (description = "TRUE when Security Central bills this account's customer DIRECTLY instead of billing Livewire, from the payment method (CHECK, CC-DRAFT, BANK-DRAFT) on the account's lines in its recurring billing report. Such a customer IS paying for monitoring, just not to us and not through Zoho Billing, so the row is not a leak however its finding reads. This is the strongest evidence here and the only kind needing no match at all: it is keyed on the vendor's own account number, where qbo_monitoring_revenue rests on a name or address reaching the right QuickBooks customer. Measured 2026-09-17: 17 of the 230 BILLED_NO_SUBSCRIPTION rows, 2 of them with monitoring revenue too. FALSE means no direct-billing evidence, and on an Alarm.com or Parasol row only that: neither vendor reports such an arrangement, so the marker is Security Central's alone. Never NULL, so `WHERE NOT direct_billed` is safe. TRUE sends the row to PAID_OUTSIDE_BILLING.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_duplicate_profile
-  SET OPTIONS (description = "TRUE when ANOTHER Zoho Billing profile sharing this customer's name holds active subscriptions that the matched profile does not. Zoho Billing grows duplicate profiles — a phone call or a CRM case can create a second one carrying the name and nothing else — so an account matches the empty twin while the subscription sits on the real profile. The subscription exists; the match landed on the wrong record. This is the only evidence column saying the MATCH is wrong rather than that the revenue is elsewhere, and the only one whose remedy is outside the warehouse: merge the two profiles in Zoho and the row resolves itself. Measured 2026-09-17: 92 of the 227 rows the old gate flagged, and 22 of the first 27 reviewed by hand. It is a NAME match, so two unrelated households sharing a name look identical here — check the addresses before merging. TRUE sends the row to BILLED_DUPLICATE_PROFILE.");
+  SET OPTIONS (description = "TRUE when ANOTHER Zoho Billing profile sharing this customer's name, email or phone holds active subscriptions that the matched profile does not. Zoho Billing grows duplicate profiles — a phone call or a CRM case can create a second one carrying the name and nothing else — so an account matches the empty twin while the subscription sits on the real profile. This is the only evidence column saying the MATCH is wrong rather than that the revenue is elsewhere, and the only one whose remedy is outside the warehouse: merge the two profiles in Zoho and the row resolves itself. billing_twin_via says which key reached the twin and billing_twin_name which profile holds the subscriptions. A twin found by name alone can be an unrelated household with the same name, so check addresses before merging; one found by email or phone is the same contact. An email or phone shared by more than four profiles is a placeholder, never a key. TRUE sends the row to BILLED_DUPLICATE_PROFILE.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_twin_via
+  SET OPTIONS (description = "Which keys reached a subscribed twin profile, comma-separated from: name (same display name after reducing punctuation and case), email (same address), phone (same last ten digits). NULL when billing_duplicate_profile is FALSE. name alone is the weakest — two households can share a name — so confirm the address before merging; email or phone means the two profiles carry the same contact and are almost certainly one customer. Measured 2026-09-17: of the 8 twins the name check missed, all were reached by email or phone.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_twin_name
+  SET OPTIONS (description = "Display name of a Zoho Billing profile that shares a key with the matched one and holds active subscriptions: the profile to merge INTO. NULL when billing_duplicate_profile is FALSE. Where several subscribed twins exist, one of them; the merge in Zoho shows the rest.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
   SET OPTIONS (description = "What to do about this account; each value has exactly one action. BILLED_NO_SUBSCRIPTION: the vendor bills us, a customer was matched, and NO source shows them paying — investigate, this is the leak. BILLED_DUPLICATE_PROFILE: they ARE subscribed, on a second Zoho Billing profile this account did not match; merge the two profiles in Zoho. PAID_OUTSIDE_BILLING: paying for monitoring, but not via a Billing subscription — invoiced in QuickBooks, or billed direct by the vendor; nothing owed. OK: a live Billing subscription on the matched profile. BILLED_NO_MATCH: no billing customer could be matched; unknown, NOT a proven leak. BILLED_NO_ROSTER: active but absent from the roster; get a fresh export. DEACTIVATED: not active at the vendor. Always read match_via too: a BILLED_NO_SUBSCRIPTION reached by name is a weaker claim than one reached by address or account number.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at
