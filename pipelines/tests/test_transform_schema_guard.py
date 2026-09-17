@@ -21,6 +21,7 @@ against real files, rather than by reading it. A guard that only recognises
 one of two shapes of the same failure is the bug, not the fix.
 """
 
+import json
 import pathlib
 import subprocess
 import tempfile
@@ -74,9 +75,28 @@ printf 'FAILED:%s\\n' "$DESCRIBE_FAILED"
     return "REACHED_PARSER" not in done.stdout, done.stderr
 
 
+def stdout_filter():
+    """The sed program describe_columns pipes `bq show` through."""
+    src = SCRIPT.read_text()
+    for line in src.splitlines():
+        if "show --schema --format=prettyjson" in line and "sed -n" in line:
+            return line.split("sed -n", 1)[1].split(">", 1)[0].strip()
+    raise AssertionError("describe_columns no longer filters bq's stdout")
+
+
+def run_filter(text):
+    """What lands in the schema file when bq prints `text`."""
+    done = subprocess.run(["bash", "-c", f'sed -n {stdout_filter()}'],
+                          input=text, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise AssertionError(f"filter exited {done.returncode}: {done.stderr}")
+    return done.stdout
+
+
 SCHEMA = '[{"name": "customer_id", "type": "STRING"}]'
 WARNING = ("WARNING: `--scopes` flag may not work as expected and will be "
            "ignored for account type external_account.")
+PRETTY = '[\n  {\n    "name": "customer_id",\n    "type": "STRING"\n  }\n]\n' 
 
 
 class SchemaGuard(unittest.TestCase):
@@ -115,6 +135,44 @@ class SchemaGuard(unittest.TestCase):
         diagnosing this from a Python traceback all over again."""
         _, log = run_guard(WARNING + "\n" + SCHEMA)
         self.assertIn("--scopes", log)
+
+
+class StdoutFilter(unittest.TestCase):
+    """The guard is the backstop; this is what stops it firing every night.
+
+    bq puts its credential warnings on stdout, and describe_columns redirects
+    stdout into the schema file, so under WIF every table in the warehouse
+    got a warning glued to the front of its JSON. On 2026-09-17 that was all
+    35 of them: the transform finished with fresh data and not one column
+    description applied, which is the whole of what hermes-mcp serves.
+    """
+
+    def test_warning_prefix_is_dropped(self):
+        kept = run_filter(WARNING + "\n" + PRETTY)
+        self.assertEqual(json.loads(kept), json.loads(PRETTY))
+
+    def test_several_warnings_are_dropped(self):
+        kept = run_filter(WARNING + "\n" + WARNING + "\n" + PRETTY)
+        self.assertEqual(json.loads(kept), json.loads(PRETTY))
+
+    def test_clean_output_is_untouched(self):
+        self.assertEqual(json.loads(run_filter(PRETTY)), json.loads(PRETTY))
+
+    def test_wrapped_form_survives_the_filter(self):
+        wrapped = '{\n  "schema": {\n    "fields": []\n  }\n}\n'
+        self.assertEqual(json.loads(run_filter(WARNING + "\n" + wrapped)),
+                         json.loads(wrapped))
+
+    def test_filtered_warning_then_passes_the_guard(self):
+        """End to end: what the filter keeps is what the guard must accept."""
+        rejected, _ = run_guard(run_filter(WARNING + "\n" + PRETTY))
+        self.assertFalse(rejected)
+
+    def test_nothing_but_warnings_still_reaches_the_guard(self):
+        """A filter that invents JSON would be worse than the bug. If bq sent
+        no schema at all, the file must end up empty and be refused."""
+        rejected, _ = run_guard(run_filter(WARNING + "\n"))
+        self.assertTrue(rejected)
 
 
 if __name__ == "__main__":
