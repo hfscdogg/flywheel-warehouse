@@ -202,8 +202,35 @@ describe_columns() {
   fi
 
   python3 "$SCRIPT_DIR/lib/merge_descriptions.py" "$f" < "$schema" > "$merged"
+
+  # THE SAME MISTAKE AS ABOVE, ONE LINE LOWER.
+  # This call used to end in >/dev/null, which is the ordinary way to silence
+  # a chatty command -- and bq is chatty. But bq reports on stdout, ERRORS
+  # INCLUDED, so /dev/null was eating the error too, and set -e then ended the
+  # run with nothing in the log but `exit code 1`.
+  #
+  # That cost two production transforms on 2026-09-17. The first was blamed on
+  # `bq show`, the call above, and making THAT one speak changed nothing,
+  # because the failure was never there. What bq was actually rejecting was a
+  # column description of 1028 characters against its 1024 limit -- one line
+  # it would have printed, had anywhere to print it.
+  #
+  # A rejected description is per-table and total: bq refuses the whole call,
+  # so the table keeps NONE of its descriptions, not merely the long one.
+  # pipelines/tests/test_sql_description_limits.py now catches an over-long
+  # description at commit time, which is where it belongs. This is the
+  # backstop for whatever bq rejects next.
+  set +e
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
-  $BQ update --schema "$merged" "$table" >/dev/null
+  $BQ update --schema "$merged" "$table" > "$raw" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    warn "$table: bq update exited $rc. What it said:"
+    while IFS= read -r line; do warn "    $line"; done < "$raw"
+    DESCRIBE_FAILED="$DESCRIBE_FAILED $table"
+    return 0
+  fi
 }
 
 # stg_<source>__<entity>.sql -> <source>; empty for anything else.
