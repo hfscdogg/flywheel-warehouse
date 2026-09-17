@@ -38,6 +38,13 @@ def models_with_address_key():
                   if "address_key" in f.read_text())
 
 
+def gate_of(path):
+    """The `finding` CASE, whitespace-normalized."""
+    flat = " ".join(path.read_text().split())
+    start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
+    return flat[start:flat.index("END AS finding", start)]
+
+
 class AddressKey(unittest.TestCase):
     def setUp(self):
         self.files = models_with_address_key()
@@ -398,23 +405,13 @@ class QboCustomerPathTest(unittest.TestCase):
         # that keeps a real leak off the list.
         self.assertIn("AND i.total_amount > 0", self.flat())
 
-    def test_the_finding_gate_still_asks_billing_only(self):
-        # This change is ADDITIVE. The QuickBooks columns are advisory and the
-        # `finding` CASE must not consider them, so that every existing row
-        # keeps the finding it had and the two answers can be compared on real
-        # data before one is allowed to override the other. Folding
-        # qbo_monitoring_revenue into the revenue gate is a separate, later
-        # change — and when it is made, this test is the one to update.
-        flat = self.flat()
-        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
-        gate = flat[start:flat.index("END AS finding", start)]
-        for forbidden in ("qbo_", "qm."):
-            self.assertNotIn(
-                forbidden, gate,
-                "the finding CASE reads a QuickBooks column; this change is "
-                "additive and the gate must still ask Zoho Billing alone")
-        self.assertIn("COALESCE(s.active_subscriptions, 0) = 0 THEN "
-                      "'BILLED_NO_SUBSCRIPTION'", gate)
+    def test_the_gate_consults_quickbooks(self):
+        # Was "the gate must ask Billing alone", written to fail the day the
+        # evidence was folded in. That day came: measured 2026-09-17, 128 of
+        # the 227 flagged rows had QuickBooks monitoring revenue.
+        self.assertIn("qm.customer_id IS NOT NULL", gate_of(self.AUDIT),
+                      "the finding CASE no longer consults QuickBooks "
+                      "monitoring revenue")
 
 
 class DirectBilledPathTest(unittest.TestCase):
@@ -500,16 +497,11 @@ class DirectBilledPathTest(unittest.TestCase):
                          "the two vendors with no direct-billing arrangement "
                          "must read FALSE, not NULL")
 
-    def test_the_finding_gate_does_not_read_it(self):
-        # Additive, exactly like the QuickBooks columns. When direct_billed is
-        # folded into the revenue gate, this test is one of the two to update.
-        flat = self.flat()
-        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
-        gate = flat[start:flat.index("END AS finding", start)]
-        self.assertNotIn(
-            "direct_billed", gate,
-            "the finding CASE reads direct_billed; this change is additive "
-            "and the gate must still ask Zoho Billing alone")
+    def test_the_gate_consults_the_direct_payers(self):
+        # A customer paying Security Central directly is paying for
+        # monitoring. The gate called them a leak until 2026-09-17.
+        self.assertIn("v.direct_billed", gate_of(self.AUDIT),
+                      "the finding CASE no longer consults direct_billed")
 
 
 class DuplicateProfilePathTest(unittest.TestCase):
@@ -580,17 +572,93 @@ class DuplicateProfilePathTest(unittest.TestCase):
             "the twin lookup is not joined on customer_id alone, which is "
             "the only key that keeps it to one row per account")
 
-    def test_the_finding_gate_does_not_read_it(self):
-        # Additive, like the two advisory columns before it. When these are
-        # folded into the revenue gate, this test is one of three to update.
-        flat = self.flat()
-        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
-        gate = flat[start:flat.index("END AS finding", start)]
-        for forbidden in ("billing_duplicate_profile", "active_on_twins", "t."):
-            self.assertNotIn(
-                forbidden, gate,
-                "the finding CASE reads the duplicate-profile signal; this "
-                "change is additive and the gate must still ask Billing alone")
+    def test_the_gate_consults_the_duplicate_profile(self):
+        self.assertIn("COALESCE(t.active_on_twins, 0) > 0", gate_of(self.AUDIT),
+                      "the finding CASE no longer consults the duplicate "
+                      "profile signal")
+
+
+class FindingGate(unittest.TestCase):
+    """`finding` says what to DO. Each value has exactly one action.
+
+    For months it asked one question -- is there a live Zoho Billing
+    subscription -- and called everything else BILLED_NO_SUBSCRIPTION.
+    Measured on 2026-09-17 that was wrong on 162 of the 227 rows it flagged:
+    128 had QuickBooks monitoring revenue, 92 were matched to a duplicate
+    Billing profile whose twin held the subscription, 17 were billed direct
+    by the vendor. People were asked to act on a list that was ~71% noise.
+
+    The three explanations do not mean the same thing, and the hazard in
+    folding them in is flattening them: calling a duplicate profile OK is its
+    own confident wrong statement, because that row needs two records merged
+    in Zoho and nobody would ever be told.
+    """
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    #: Every value the CASE can return. A new one is a consumer-visible
+    #: change and has to be added here on purpose.
+    VALUES = {
+        "OK", "PAID_OUTSIDE_BILLING", "BILLED_DUPLICATE_PROFILE",
+        "BILLED_NO_SUBSCRIPTION", "BILLED_NO_MATCH", "BILLED_NO_ROSTER",
+        "DEACTIVATED",
+    }
+
+    def test_the_vocabulary_is_exactly_what_is_documented(self):
+        import re
+        found = set(re.findall(r"'([A-Z_]{2,})'", gate_of(self.AUDIT)))
+        self.assertEqual(
+            found, self.VALUES,
+            "the finding vocabulary changed. Every consumer filtering on it "
+            "is affected, so update VALUES here and the column description "
+            "deliberately rather than letting a new label appear")
+
+    def test_a_subscribed_account_is_ok_before_anything_else_is_asked(self):
+        # The cheapest and strongest evidence, and the one that needs no
+        # caveat. Asking it first keeps every previously-OK row OK.
+        gate = gate_of(self.AUDIT)
+        self.assertLess(
+            gate.index("COALESCE(s.active_subscriptions, 0) > 0 THEN 'OK'"),
+            gate.index("'BILLED_DUPLICATE_PROFILE'"),
+            "a live subscription must be tested before the explanations, or "
+            "an OK row with a namesake elsewhere is relabelled")
+
+    def test_the_duplicate_profile_outranks_the_revenue_evidence(self):
+        # Both mean "not a leak", but only one names a fix. A row that is
+        # both still has two records that want merging.
+        gate = gate_of(self.AUDIT)
+        self.assertLess(
+            gate.index("'BILLED_DUPLICATE_PROFILE'"),
+            gate.index("'PAID_OUTSIDE_BILLING'"),
+            "PAID_OUTSIDE_BILLING is tested first, so a duplicate profile "
+            "that also has QuickBooks revenue is never reported as one and "
+            "nobody is told to merge it")
+
+    def test_the_leak_is_what_is_left_over(self):
+        # BILLED_NO_SUBSCRIPTION must be the ELSE, not a test of its own:
+        # anything reachable past every explanation is unexplained by
+        # construction, and a new source of evidence added above it narrows
+        # the leak automatically instead of being forgotten.
+        gate = gate_of(self.AUDIT)
+        self.assertIn("ELSE 'BILLED_NO_SUBSCRIPTION'", gate)
+        self.assertEqual(gate.count("'BILLED_NO_SUBSCRIPTION'"), 1)
+
+    def test_every_explanation_is_consulted(self):
+        gate = gate_of(self.AUDIT)
+        for signal in ("qm.customer_id IS NOT NULL",
+                       "v.direct_billed",
+                       "COALESCE(t.active_on_twins, 0) > 0"):
+            with self.subTest(signal=signal):
+                self.assertIn(signal, gate,
+                              "an evidence source the table carries is not "
+                              "consulted, so it silently explains nothing")
+
+    def test_the_unmatched_are_still_not_called_a_leak(self):
+        # BILLED_NO_MATCH is unknown, not a proven leak, and must stay ahead
+        # of everything that assumes a customer was found.
+        gate = gate_of(self.AUDIT)
+        self.assertLess(gate.index("'BILLED_NO_MATCH'"),
+                        gate.index("'BILLED_NO_SUBSCRIPTION'"))
 
 
 if __name__ == "__main__":
