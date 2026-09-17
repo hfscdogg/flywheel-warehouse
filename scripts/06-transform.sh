@@ -125,22 +125,37 @@ describe_columns() {
   # shellcheck disable=SC2086  # $BQ is intentionally word-split
   $BQ show --schema --format=prettyjson "$table" > "$schema"
 
-  # bq exits 0 and prints NOTHING for a table with no columns, so set -e
-  # cannot see this and the empty file is the only evidence. Feeding it to
-  # merge_descriptions.py ends the run on a JSONDecodeError naming a line of
-  # Python rather than a table -- which is how four consecutive nightly
-  # transforms died at stg_alarmdotcom__customers, three models into staging,
-  # leaving every mart unbuilt while the manual runs people did instead
-  # looked fine.
+  # bq does not promise that stdout holds JSON and nothing else, and both ways
+  # it can break that end the run in the same place: merge_descriptions.py
+  # raises a JSONDecodeError naming a line of Python rather than a table.
+  #
+  #   nothing at all      -- a table with no columns; bq still exits 0, so
+  #                          set -e cannot see it
+  #   JSON with a prefix  -- bq writes credential WARNINGs to stdout, and with
+  #                          stdout redirected here they land in the file
+  #                          instead of the log
+  #
+  # The second is why testing for emptiness was not enough: a file holding a
+  # warning is not empty, so the old guard passed it straight to the parser.
+  # The test is now "did this parse as JSON", and whatever did arrive gets its
+  # first line logged -- a guard that swallows the evidence costs the next
+  # diagnosis more than the failure it caught.
   #
   # Recorded and reported after the build instead, the same shape as
   # missing_input skipping a model and check_described running last: one
   # undescribable table must not cost every model behind it. The run still
   # goes red -- check_describe_failures below -- but the data is fresh first.
-  # check_described cannot catch this one on its own: a table with no columns
-  # has no column missing a description.
+  # check_described cannot catch this one on its own: a table whose schema
+  # never arrived reports no column missing a description.
   if [ ! -s "$schema" ]; then
     warn "$table: bq returned an empty schema — the table has no columns"
+    DESCRIBE_FAILED="$DESCRIBE_FAILED $table"
+    return 0
+  fi
+  if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$schema" 2>/dev/null; then
+    warn "$table: bq wrote something other than JSON to stdout, so the schema"
+    warn "    could not be read. Its first line was:"
+    warn "    $(head -n 1 "$schema")"
     DESCRIBE_FAILED="$DESCRIBE_FAILED $table"
     return 0
   fi
@@ -218,8 +233,8 @@ missing_input() {
 # stale, the run just goes red until the description is added (in the model's
 # SQL, as OPTIONS on the CREATE and ALTER COLUMN ... SET OPTIONS after it).
 # Runs after the build, before check_described, and names what that check
-# cannot: a table with no columns reports no undescribed column, so without
-# this an empty-schema table would pass silently.
+# cannot: a table whose schema never arrived reports no undescribed column, so
+# without this it would pass silently.
 check_describe_failures() {
   local t
   [ -n "$DESCRIBE_FAILED" ] || return 0
@@ -227,8 +242,10 @@ check_describe_failures() {
   for t in $DESCRIBE_FAILED; do
     warn "    $t"
   done
-  warn "a table with no columns is a build that produced nothing usable —"
-  warn "check the model's source data landed, and that its SELECT projects columns"
+  warn "the warning logged above each one says which it was:"
+  warn "    an empty schema is a build that produced nothing usable — check the"
+  warn "    model's source data landed and that its SELECT projects columns"
+  warn "    non-JSON on stdout is bq, not the model — the first line names it"
   die "every other model was built; fix these and re-run"
 }
 
