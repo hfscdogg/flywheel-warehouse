@@ -417,5 +417,100 @@ class QboCustomerPathTest(unittest.TestCase):
                       "'BILLED_NO_SUBSCRIPTION'", gate)
 
 
+class DirectBilledPathTest(unittest.TestCase):
+    """The direct-payer marker must be read once, where it is already grouped.
+
+    Security Central bills a few customers itself instead of billing Livewire,
+    and prints how each pays. Those customers are paying for monitoring — just
+    not to us and not through Zoho Billing — so they are not a leak, and
+    nothing else in the warehouse says so. This is the exclusion list the mart
+    spent months asking for.
+
+    The hazard is the shape of the feed. It carries ONE ROW PER RESOURCE LINE,
+    several per account, so a second read joined back on account_no fans the
+    mart out: the count of BILLED_NO_SUBSCRIPTION rows rises, and every SUM
+    over vendor_monthly_cost rises with it, silently and in the direction that
+    looks like a worse leak. The first query written against this column hit
+    exactly that and turned 230 rows into 238. The one read must stay in
+    sc_billing, which is already reduced to one row per account.
+    """
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    def code(self):
+        return [l for l in self.AUDIT.read_text().splitlines()
+                if not l.lstrip().startswith("--")]
+
+    def flat(self):
+        return " ".join(self.AUDIT.read_text().split())
+
+    def test_the_recurring_feed_is_read_exactly_once(self):
+        # Exact equality, like the billing_customers and qbo_customers counts
+        # above: a second read of a per-line feed is the fan-out, so a new one
+        # fails here until someone adds it deliberately and proves it groups.
+        self.assertEqual(
+            sum("staging.stg_vendor__securitycentral_recurring" in l
+                for l in self.code()), 1,
+            "the per-line Security Central billing feed is read more than "
+            "once; a second read joined on account_no fans the mart out")
+
+    def test_the_marker_is_derived_where_the_feed_is_grouped(self):
+        # Inside sc_billing, which is GROUP BY account_no — that is what makes
+        # one row per account, and what makes the flag safe to join on.
+        flat = self.flat()
+        start = flat.index("sc_billing AS (")
+        body = flat[start:flat.index("securitycentral AS (", start)]
+        self.assertIn("LOGICAL_OR(payment_method IS NOT NULL) AS direct_billed",
+                      body,
+                      "direct_billed is not derived inside sc_billing")
+        self.assertIn("GROUP BY account_no", body)
+
+    def test_the_marker_is_not_dropped_by_the_cost_guard(self):
+        # vendor_monthly_cost is deliberately put on ONE row per account so a
+        # SUM cannot double-count it. A property of the account must NOT be,
+        # or a filter on it drops the row the cost is not on.
+        flat = self.flat()
+        start = flat.index("securitycentral AS (")
+        body = flat[start:flat.index("FROM sc_identity i", start)]
+        guarded = body[body.index("ROW_NUMBER() OVER ("):]
+        self.assertIn("COALESCE(b.direct_billed, FALSE) AS direct_billed",
+                      " ".join(body.split()))
+        self.assertNotIn(
+            "direct_billed", guarded[:guarded.index("AS vendor_monthly_cost")],
+            "direct_billed is inside the ROW_NUMBER guard that exists to stop "
+            "a COST being counted twice; an account property belongs on every "
+            "row of the account")
+
+    def test_every_vendor_branch_carries_the_column(self):
+        # A UNION ALL branch that omits it does not fail in BigQuery — it
+        # shifts the columns and the union takes the next one by position.
+        self.assertEqual(
+            sum("direct_billed" in l for l in self.code()
+                if "AS direct_billed" in l or l.strip() == "direct_billed,"),
+            4,
+            "expected the derivation, the carry-through and one entry per "
+            "vendor branch of the accounts union")
+
+    def test_the_column_is_never_null(self):
+        # The obvious use is `WHERE NOT direct_billed`, and a NULL would drop
+        # every Alarm.com and Parasol row from that filter without a word.
+        flat = self.flat()
+        self.assertIn("COALESCE(b.direct_billed, FALSE)", flat)
+        self.assertEqual(flat.count("FALSE AS direct_billed"), 2,
+                         "the two vendors with no direct-billing arrangement "
+                         "must read FALSE, not NULL")
+
+    def test_the_finding_gate_does_not_read_it(self):
+        # Additive, exactly like the QuickBooks columns. When direct_billed is
+        # folded into the revenue gate, this test is one of the two to update.
+        flat = self.flat()
+        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
+        gate = flat[start:flat.index("END AS finding", start)]
+        self.assertNotIn(
+            "direct_billed", gate,
+            "the finding CASE reads direct_billed; this change is additive "
+            "and the gate must still ask Zoho Billing alone")
+
+
 if __name__ == "__main__":
     unittest.main()
