@@ -84,7 +84,8 @@ READ qbo_monitoring_revenue BEFORE QUOTING THE LEAK. Zoho Billing is not the who
 qbo_monitoring_revenue is ADVISORY and is NOT part of finding. finding still asks Zoho Billing alone, so a BILLED_NO_SUBSCRIPTION row with qbo_monitoring_revenue TRUE is a row the finding gets wrong. Report both; never quote the BILLED_NO_SUBSCRIPTION total without saying how much of it this column explains.
 FALSE is not proof of a leak. It means no monitoring revenue was found for a QuickBooks customer this account could be resolved to, which includes the case where it reached no QuickBooks customer at all (qbo_customer_id IS NULL, 51 of the 230).
 ALSO READ direct_billed, the second advisory column. Security Central bills a few customers directly, and those customers are paying for monitoring without any of it reaching Zoho Billing or our QuickBooks; the vendor's own recurring report marks them by payment method. That is the exclusion list this table used to say it was missing — it was in the warehouse the whole time.
-Together the two columns account for most of the list. Measured 2026-09-17 over 230 BILLED_NO_SUBSCRIPTION rows costing $2,671.01 a month: 128 have QuickBooks monitoring revenue, 17 are billed direct by Security Central, 2 are both, leaving 87 genuinely unexplained at $1,122.59 a month and $13,471.08 a year. Quote that, not the $32,052.16 the raw finding implies. Neither column is part of finding, so the raw count still reads 230.
+AND READ billing_duplicate_profile, the third. Zoho Billing grows duplicate customer profiles — a phone call or a CRM case can create a second one holding the name and nothing else — so an account can be matched to the empty twin while the subscription sits on the real profile. That one says the MATCH is wrong rather than that the revenue is elsewhere, and it is fixed by merging the profiles in Zoho, not in the warehouse.
+Together the three account for most of the list. Measured 2026-09-17 over 230 BILLED_NO_SUBSCRIPTION rows costing $2,671.01 a month: 128 have QuickBooks monitoring revenue, 91 are matched to a duplicate profile whose twin is subscribed, 17 are billed direct by Security Central, and the overlaps are large. 69 are left genuinely unexplained, at $903.53 a month and $10,842.36 a year. Quote that, not the $32,052.16 the raw finding implies. None of the three is part of finding, so the raw count still reads 230.
 The QuickBooks customer is resolved independently of the Billing one, from the account's own address, email, phone and name, so the two can disagree. Judge the QuickBooks match by qbo_match_via and qbo_name_overlaps, exactly as you would judge the Billing match by match_via and name_overlaps.
 """)
 AS
@@ -496,22 +497,30 @@ customer_by_address AS (
 -- is reported as its own match_via rather than folded in, and a name that
 -- belongs to more than one Billing customer identifies nobody and is
 -- dropped rather than resolved arbitrarily.
+-- The Billing name key, reduced ONCE for everything that needs it.
+-- Two things do, and they want opposite halves of the same fact: the name
+-- match below wants names belonging to exactly one customer, and
+-- billing_name_twins further down wants the names belonging to more than
+-- one. Computed here so they cannot drift apart -- a third verbatim copy of
+-- this normalisation is a third chance to reduce the same name differently,
+-- and the two that already exist are pinned against each other by a test.
+billing_named AS (
+  SELECT
+    customer_id,
+    display_name,
+    TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+      LOWER(COALESCE(display_name, '')),
+      r'\([^)]*\)', ' '),
+      r'[^a-z0-9]+', ' '),
+      r'\s+', ' ')) AS name_key
+  FROM billing_customers
+),
 billing_by_unique_name AS (
   SELECT
     name_key,
     ANY_VALUE(customer_id)  AS customer_id,
     ANY_VALUE(display_name) AS display_name
-  FROM (
-    SELECT
-      TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
-        LOWER(COALESCE(display_name, '')),
-        r'\([^)]*\)', ' '),
-        r'[^a-z0-9]+', ' '),
-        r'\s+', ' ')) AS name_key,
-      customer_id,
-      display_name
-    FROM billing_customers
-  ) c
+  FROM billing_named c
   -- An empty key would collapse every unnamed customer onto one row and
   -- match every unnamed account to it, which is the shape of bug the
   -- address guard already carries a comment about.
@@ -827,6 +836,35 @@ subs AS (
   FROM staging.stg_zohobilling__subscriptions
   GROUP BY customer_id
 ),
+-- ONE CUSTOMER, TWO PROFILES -- AND THE SUBSCRIPTION IS ON THE OTHER ONE.
+-- Zoho Billing grows duplicate customer profiles: accounting reports that a
+-- phone call or a CRM case sometimes creates a second profile carrying the
+-- name and nothing else, while the real one keeps the subscriptions. They
+-- merge them by hand when they notice, and cannot notice all of them.
+--
+-- The audit then matches a vendor account to whichever profile its key
+-- reaches. Land on the empty twin and the account reads
+-- BILLED_NO_SUBSCRIPTION with a real customer's name beside it -- a leak
+-- that is only a bookkeeping artefact. Reviewed by hand on 2026-09-17:
+-- 22 of the first 27 flagged accounts were this. Across the whole book,
+-- 934 names are held by more than one profile and 205 of those have one
+-- profile subscribed and another not.
+--
+-- Counted with a window rather than a self-join: a name held by three
+-- profiles would produce three rows per customer on a join and multiply
+-- every account matched to it. Subtracting the customer's own count leaves
+-- what sits on the OTHER profiles, which is the whole question.
+billing_name_twins AS (
+  SELECT
+    n.customer_id,
+    SUM(COALESCE(s.active_subscriptions, 0)) OVER (PARTITION BY n.name_key)
+      - COALESCE(s.active_subscriptions, 0) AS active_on_twins
+  FROM billing_named n
+  LEFT JOIN subs s ON s.customer_id = n.customer_id
+  -- The empty key is every unnamed customer at once; partitioning by it
+  -- would make them all twins of each other.
+  WHERE n.name_key != ''
+),
 -- Alarm.com's export carries Security Central's own account number on 502 of
 -- 597 rows (CS Account Prefix + CS Account Number, e.g. A1651-1047), and the
 -- alarmdotcom CTE above puts it in contract_no. This maps that number to the
@@ -956,6 +994,9 @@ SELECT
   -- row is already keyed by. It is the strongest evidence in the table, and
   -- also -- like the QuickBooks one -- deliberately NOT part of `finding`.
   v.direct_billed,
+  -- The third advisory answer, and the only one that says the MATCH is
+  -- wrong rather than that the revenue is elsewhere.
+  COALESCE(t.active_on_twins, 0) > 0     AS billing_duplicate_profile,
   CASE
     WHEN NOT COALESCE(v.is_active_at_vendor, FALSE) THEN 'DEACTIVATED'
     WHEN NOT v.in_roster THEN 'BILLED_NO_ROSTER'
@@ -971,7 +1012,9 @@ LEFT JOIN subs s ON s.customer_id = v.customer_id
 -- alone would match one vendor's account to another's customer.
 LEFT JOIN customer_by_qbo q
   ON q.vendor = v.vendor AND q.account_no = v.account_no
-LEFT JOIN qbo_monitoring qm ON qm.customer_id = q.customer_id;
+LEFT JOIN qbo_monitoring qm ON qm.customer_id = q.customer_id
+-- One row per Billing customer, so this cannot fan the mart out.
+LEFT JOIN billing_name_twins t ON t.customer_id = v.customer_id;
 
 -- What agents read. hermes-mcp serves these descriptions verbatim through
 -- get_table_schema, and a column without one is a column Hermes will guess
@@ -1037,6 +1080,8 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_settle
   SET OPTIONS (description = "Date of the most recent such monitoring invoice that carries no remaining balance. This is the strongest paid-signal available: QuickBooks payments carry no link to the invoice they settle, so the monitoring LINE cannot be traced to a payment — only the invoice it sat on can be shown to be fully settled. All 124 recently-invoiced leak rows are settled. NULL means no monitoring invoice has been settled, which on a recent invoice may mean nothing more than that it is not due yet.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN direct_billed
   SET OPTIONS (description = "TRUE when Security Central bills this account's customer DIRECTLY instead of billing Livewire, from the payment method (CHECK, CC-DRAFT, BANK-DRAFT) on the account's lines in its recurring billing report. Such a customer IS paying for monitoring, just not to us and not through Zoho Billing, so the row is not a leak however its finding reads. This is the strongest evidence here and the only kind needing no match at all: it is keyed on the vendor's own account number, where qbo_monitoring_revenue rests on a name or address reaching the right QuickBooks customer. Measured 2026-09-17: 17 of the 230 BILLED_NO_SUBSCRIPTION rows, 2 of them with monitoring revenue too. FALSE means no direct-billing evidence, and on an Alarm.com or Parasol row only that: neither vendor reports such an arrangement, so the marker is Security Central's alone. Never NULL, so `WHERE NOT direct_billed` is safe. ADVISORY: finding does not consider it.");
+ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_duplicate_profile
+  SET OPTIONS (description = "TRUE when ANOTHER Zoho Billing profile sharing this customer's name holds active subscriptions that the matched profile does not. Zoho Billing grows duplicate profiles — a phone call or a CRM case can create a second one carrying the name and nothing else — so the account is matched to the empty twin and reads BILLED_NO_SUBSCRIPTION with a real customer's name beside it. The subscription exists; the match landed on the wrong profile. Unlike the other advisory columns this says the MATCH is wrong, not that the revenue is somewhere else, and the remedy is merging the profiles in Zoho rather than anything in the warehouse. Measured 2026-09-17: 91 of the 230 BILLED_NO_SUBSCRIPTION rows, and 22 of the first 27 reviewed by hand were this. It is a NAME match, so two unrelated households sharing a name look identical here — check the addresses before merging. ADVISORY: finding does not consider it.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN finding
   SET OPTIONS (description = "OK: active at the vendor with a live subscription. BILLED_NO_SUBSCRIPTION: active at the vendor, customer matched, no live subscription; the leak. BILLED_NO_MATCH: active at the vendor but no billing customer could be matched; unknown, not a proven leak. Always read finding together with match_via: a BILLED_NO_SUBSCRIPTION reached by name is a weaker claim than one reached by address or account number. BILLED_NO_ROSTER: active but absent from the roster; request a fresh export before judging. DEACTIVATED: not active at the vendor; informational.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN computed_at

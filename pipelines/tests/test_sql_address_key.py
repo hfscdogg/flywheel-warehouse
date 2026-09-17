@@ -512,5 +512,86 @@ class DirectBilledPathTest(unittest.TestCase):
             "and the gate must still ask Zoho Billing alone")
 
 
+class DuplicateProfilePathTest(unittest.TestCase):
+    """The duplicate-profile signal must not multiply the mart.
+
+    Zoho Billing grows duplicate customer profiles: accounting reports that a
+    phone call or a CRM case can create a second profile holding the name and
+    nothing else, while the real one keeps the subscriptions. An account
+    matched to the empty twin reads BILLED_NO_SUBSCRIPTION with a real
+    customer's name beside it. 22 of the first 27 flagged accounts reviewed by
+    hand on 2026-09-17 were exactly this.
+
+    The hazard is the shape of the lookup. A name held by three profiles
+    produces three rows per customer on a self-join, and every vendor account
+    matched to that customer fans out with it -- inflating both the count and
+    every SUM over vendor_monthly_cost, in the direction that reads as a worse
+    leak. That is the same trap the Security Central recurring feed set, and
+    it is why this is a window function over one row per customer.
+    """
+
+    AUDIT = SQL / "marts" / "kpi_subscription_audit.sql"
+
+    def code(self):
+        return [l for l in self.AUDIT.read_text().splitlines()
+                if not l.lstrip().startswith("--")]
+
+    def flat(self):
+        return " ".join(self.AUDIT.read_text().split())
+
+    def test_the_name_key_is_reduced_in_one_place(self):
+        # billing_named exists so the unique-name match and the twin lookup
+        # cannot disagree about what a name reduces to. Both must read it.
+        flat = self.flat()
+        self.assertIn("FROM billing_named c", flat,
+                      "billing_by_unique_name no longer reads the shared key")
+        self.assertIn("FROM billing_named n", flat,
+                      "billing_name_twins no longer reads the shared key")
+
+    def test_the_twin_count_excludes_the_customers_own(self):
+        # Without the subtraction every subscribed customer is its own twin
+        # and the column is TRUE for everyone with a subscription.
+        self.assertIn(
+            "SUM(COALESCE(s.active_subscriptions, 0)) OVER (PARTITION BY "
+            "n.name_key) - COALESCE(s.active_subscriptions, 0)", self.flat(),
+            "the twin count does not subtract the customer's own "
+            "subscriptions, so a customer counts as its own duplicate")
+
+    def test_it_is_a_window_not_a_join(self):
+        flat = self.flat()
+        body = flat[flat.index("billing_name_twins AS ("):]
+        body = body[:body.index("),")]
+        self.assertIn("OVER (PARTITION BY", body)
+        self.assertNotIn("GROUP BY", body,
+                         "a grouped self-join here fans the mart out on any "
+                         "name held by more than two profiles")
+
+    def test_the_empty_name_key_is_excluded(self):
+        # Partitioning by '' would make every unnamed customer a twin of
+        # every other unnamed customer.
+        flat = self.flat()
+        body = flat[flat.index("billing_name_twins AS ("):]
+        self.assertIn("WHERE n.name_key != ''", body[:body.index("),")])
+
+    def test_the_join_is_one_row_per_customer(self):
+        self.assertIn(
+            "LEFT JOIN billing_name_twins t ON t.customer_id = v.customer_id",
+            self.flat(),
+            "the twin lookup is not joined on customer_id alone, which is "
+            "the only key that keeps it to one row per account")
+
+    def test_the_finding_gate_does_not_read_it(self):
+        # Additive, like the two advisory columns before it. When these are
+        # folded into the revenue gate, this test is one of three to update.
+        flat = self.flat()
+        start = flat.index("WHEN NOT COALESCE(v.is_active_at_vendor, FALSE)")
+        gate = flat[start:flat.index("END AS finding", start)]
+        for forbidden in ("billing_duplicate_profile", "active_on_twins", "t."):
+            self.assertNotIn(
+                forbidden, gate,
+                "the finding CASE reads the duplicate-profile signal; this "
+                "change is additive and the gate must still ask Billing alone")
+
+
 if __name__ == "__main__":
     unittest.main()
