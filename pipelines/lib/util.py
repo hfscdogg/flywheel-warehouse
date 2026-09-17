@@ -63,6 +63,50 @@ def parse_ts(value):
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
+def normalize_ts(value):
+    """A source timestamp in a spelling BigQuery's JSON loader accepts.
+
+    Sources return ISO 8601 in whatever dialect they please, and the loader is
+    stricter than Python is. Zoho Billing returns a COMPACT UTC offset -- no
+    colon -- and BigQuery rejects it outright:
+
+      Could not parse '2026-09-16T16:35:35-0400' as a timestamp.
+      Required format is YYYY-MM-DD HH:MM[:SS[.SSSSSS]]
+      Field: _modified_at; Value: 2026-09-16T16:35:35-0400
+
+    ONE such row fails the ENTIRE load, because a landing load runs with
+    max_bad_records at 0 — "Rows: 1; errors: 1; max bad: 0". That is the right
+    setting (a landing table that silently drops rows is worse than one that
+    fails) and it is what makes normalising here, rather than tolerating there,
+    the fix.
+
+    This cost seventeen days. raw_zohobilling.customers stopped landing on
+    2026-08-31 and the nightly ingest failed every night after, unnoticed
+    because nothing reported a failed workflow. Subscriptions, landed earlier
+    in the same run, kept arriving — so the pipeline looked alive while the
+    customer book, which every match path in kpi_subscription_audit resolves
+    through, silently aged.
+
+    Normalised to UTC rather than merely reformatted: an offset-carrying
+    timestamp and its UTC equivalent are the same instant, and the landing
+    column is a TIMESTAMP, which has no timezone of its own to preserve one.
+
+    An unparseable value lands as NULL rather than taking the run down with
+    it. Staging orders by `_modified_at DESC NULLS LAST, _loaded_at DESC`, so
+    a NULL degrades to load order for that one record instead of losing 6,853.
+    It is logged, because a value nothing can read is worth a line in the log
+    whatever else happens to it.
+    """
+    if value is None:
+        return None
+    try:
+        return parse_ts(value).astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        logging.getLogger("flywheel.util").warning(
+            "unparseable source timestamp, landing NULL: %r", value)
+        return None
+
+
 def get_path(record, dotted):
     """record["MetaData"]["LastUpdatedTime"] via 'MetaData.LastUpdatedTime'.
 
@@ -89,7 +133,9 @@ def build_row(record, id_field, modified_field, run_id, loaded_at):
         "payload": record,
         "_source_id": None if get_path(record, id_field) is None
         else str(get_path(record, id_field)),
-        "_modified_at": get_path(record, modified_field),
+        # Normalised, not raw: the loader rejects spellings Python accepts,
+        # and one bad row fails the whole load. See normalize_ts.
+        "_modified_at": normalize_ts(get_path(record, modified_field)),
         "_loaded_at": loaded_at,
         "_run_id": run_id,
     }

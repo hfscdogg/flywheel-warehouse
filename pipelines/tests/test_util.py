@@ -46,13 +46,18 @@ class TestRowBuilding(unittest.TestCase):
     def test_build_row_flat_field(self):
         row = util.build_row(self.RECORD, "id", "Modified_Time", "run1", "2026-08-04T00:00:00+00:00")
         self.assertEqual(row["_source_id"], "42")
-        self.assertEqual(row["_modified_at"], "2026-08-01T10:00:00+05:30")
+        # Normalised to UTC, not passed through: +05:30 and its UTC
+        # equivalent are the same instant, and the landing column is a
+        # TIMESTAMP with no timezone of its own. Passing the raw value through
+        # is what let Zoho Billing's compact offset reach BigQuery and fail
+        # seventeen nights of loads — see NormalizeTs below.
+        self.assertEqual(row["_modified_at"], "2026-08-01T04:30:00+00:00")
         self.assertEqual(row["_run_id"], "run1")
         self.assertEqual(row["payload"], self.RECORD)
 
     def test_build_row_dotted_field(self):
         row = util.build_row(self.RECORD, "id", "MetaData.LastUpdatedTime", "r", "t")
-        self.assertEqual(row["_modified_at"], "2026-08-02T00:00:00Z")
+        self.assertEqual(row["_modified_at"], "2026-08-02T00:00:00+00:00")
 
     def test_build_row_missing_fields(self):
         row = util.build_row({}, "id", "Modified_Time", "r", "t")
@@ -134,6 +139,72 @@ class TestRaiseForStatus(unittest.TestCase):
                 util.raise_for_status(FakeResponse(404, "nope"))
         # No stray empty brackets when no context is supplied.
         self.assertNotIn("[]", "\n".join(captured.output))
+
+
+class NormalizeTs(unittest.TestCase):
+    """A source timestamp must reach BigQuery in a spelling it accepts.
+
+    BigQuery's JSON loader is stricter than datetime.fromisoformat. Zoho
+    Billing returns a compact UTC offset -- no colon -- and the loader rejects
+    it, failing the WHOLE load because a landing load runs at max_bad_records
+    0. raw_zohobilling.customers stopped landing on 2026-08-31 and the nightly
+    failed every night for seventeen days on one row.
+
+    parse_ts already handled the value, which is why the watermark kept
+    advancing while the data did not land: the two paths disagreed about what
+    a timestamp is, and only one of them talked to BigQuery.
+    """
+
+    #: Verbatim from the failing run's log, 2026-09-17.
+    ZOHO_COMPACT_OFFSET = "2026-09-16T16:35:35-0400"
+
+    def test_the_value_that_broke_it(self):
+        self.assertEqual(util.normalize_ts(self.ZOHO_COMPACT_OFFSET),
+                         "2026-09-16T20:35:35+00:00")
+
+    def test_every_dialect_lands_as_one(self):
+        # Same instant, four spellings, one stored form. A landing column is a
+        # TIMESTAMP and holds no timezone of its own, so normalising to UTC
+        # loses nothing.
+        for value in ("2026-09-16T16:35:35-0400",
+                      "2026-09-16T16:35:35-04:00",
+                      "2026-09-16T20:35:35Z",
+                      "2026-09-16T20:35:35+00:00"):
+            with self.subTest(value=value):
+                self.assertEqual(util.normalize_ts(value),
+                                 "2026-09-16T20:35:35+00:00")
+
+    def test_a_naive_timestamp_is_left_at_its_own_offset(self):
+        # No offset means none can be invented; it must still parse.
+        self.assertTrue(util.normalize_ts("2026-09-16 20:35:35"))
+
+    def test_none_stays_none(self):
+        # Alarm.com exposes no modified timestamp at all.
+        self.assertIsNone(util.normalize_ts(None))
+
+    def test_an_unparseable_value_lands_null_rather_than_failing_the_run(self):
+        # Staging orders by _modified_at DESC NULLS LAST, _loaded_at DESC, so
+        # one NULL degrades to load order for that record instead of losing
+        # every row in the batch.
+        with self.assertLogs("flywheel.util", level="WARNING") as caught:
+            self.assertIsNone(util.normalize_ts("not a date"))
+        self.assertIn("not a date", caught.output[0])
+
+    def test_build_row_normalizes_rather_than_passing_the_raw_value(self):
+        # The regression that matters: build_row is the one place a source
+        # timestamp reaches a BigQuery TIMESTAMP column.
+        row = util.build_row(
+            {"id": "7", "last_modified_time": self.ZOHO_COMPACT_OFFSET},
+            "id", "last_modified_time", "run-1", "2026-09-17T00:00:00+00:00")
+        self.assertEqual(row["_modified_at"], "2026-09-16T20:35:35+00:00")
+        self.assertNotEqual(row["_modified_at"], self.ZOHO_COMPACT_OFFSET)
+
+    def test_build_row_survives_a_bad_timestamp(self):
+        row = util.build_row(
+            {"id": "7", "last_modified_time": "garbage"},
+            "id", "last_modified_time", "run-1", "2026-09-17T00:00:00+00:00")
+        self.assertIsNone(row["_modified_at"])
+        self.assertEqual(row["_source_id"], "7")  # the record still lands
 
 
 if __name__ == "__main__":
