@@ -5,7 +5,9 @@
 -- an all-NULL column means a wrong path — a one-line COALESCE fix here.
 CREATE OR REPLACE TABLE staging.stg_dtools__projects
 OPTIONS (description = """
-D-Tools projects, one row per project: the job as sold, with quoted price and cost. kpi_project_margin joins this to QuickBooks invoices by client name for invoiced and collected figures. Amounts USD.
+D-Tools projects, one row per project: the job as sold, with its quoted price.
+THERE IS NO COST HERE. cost is NULL on every row — the endpoint these are ingested from returns no cost field of any name, confirmed by listing every key in the payload. So this table cannot answer what a job cost or what it earned, only what it was quoted at. D-Tools does hold cost natively, on a different endpoint that is not ingested yet.
+kpi_project_margin joins this to QuickBooks invoices by client name for invoiced and collected figures. Amounts USD.
 """)
 AS
 WITH latest AS (
@@ -58,9 +60,13 @@ SELECT
   SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.price'),
                      JSON_VALUE(payload, '$.totalPrice'),
                      JSON_VALUE(payload, '$.contractPrice')) AS NUMERIC)  AS price,
-  SAFE_CAST(COALESCE(JSON_VALUE(payload, '$.cost'),
-                     JSON_VALUE(payload, '$.totalCost'),
-                     JSON_VALUE(payload, '$.estimatedCost')) AS NUMERIC)  AS cost,
+  -- No cost on this payload, under any name. The probe that settled
+  -- opportunity_id listed all 16 fields GetProjects returns and there is no
+  -- cost among them; all 1,599 rows read NULL. Kept as a typed NULL rather
+  -- than three candidate paths, for the reason the opportunity_id search was
+  -- retired above: a COALESCE over paths that cannot exist reads like an
+  -- unfinished search, and the next person re-runs it.
+  CAST(NULL AS NUMERIC)                                      AS cost,
   SAFE_CAST(JSON_VALUE(payload, '$.createdDate') AS TIMESTAMP)  AS created_at,
   SAFE_CAST(JSON_VALUE(payload, '$.modifiedDate') AS TIMESTAMP) AS modified_at,
   _loaded_at                                                 AS loaded_at
@@ -79,7 +85,7 @@ ALTER TABLE staging.stg_dtools__projects ALTER COLUMN opportunity_id
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN price
   SET OPTIONS (description = "Quoted sell price, USD.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN cost
-  SET OPTIONS (description = "Quoted cost, USD. price minus cost is the quoted margin.");
+  SET OPTIONS (description = "ALWAYS NULL. The endpoint these projects are ingested from returns no cost field of any name, so there is nothing to populate this with — it is empty at the source, not miscomputed. Quoted margin is therefore NOT available: price minus cost is price minus NULL, which is NULL, and an empty result means the data is missing rather than the margin being zero. Say that rather than reporting a margin. D-Tools holds cost on a different endpoint that is not ingested yet.");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN created_at
   SET OPTIONS (description = "When the record was created in the source system (UTC).");
 ALTER TABLE staging.stg_dtools__projects ALTER COLUMN modified_at
