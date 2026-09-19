@@ -146,8 +146,9 @@ duplicate profile outranks the revenue evidence, because both mean "not a
 leak" but only one names a fix. `BILLED_NO_SUBSCRIPTION` is the `ELSE`, so a
 fourth source of evidence added above it narrows the leak automatically. The
 evidence stays in its own columns beside the verdict, so a finding can be
-checked rather than trusted. Measured 2026-09-17: 65 accounts, $840.08 a
-month, $10,080.96 a year.
+checked rather than trusted. Measured 2026-09-18: 51 accounts across 37
+households, $665.98 a month, $7,991.76 a year — an upper bound, since 25 of
+the 51 reached no QuickBooks customer.
 
 A high `BILLED_NO_MATCH` share is a broken join, not a finding: if nearly
 every active account lands there while `OK` is empty, the billing side has no
