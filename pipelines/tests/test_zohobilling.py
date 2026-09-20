@@ -107,9 +107,11 @@ class FakeHttp:
         self.calls.append((customer_id, token))
         if token in self.expired:
             return FakeResponse(401)
+        # Shaped like Zoho's per-customer GET: updated_time, created_time
+        # and the address, but NO last_modified_time (probed 2026-09-20).
         return FakeResponse(200, {"customer": {
             "customer_id": customer_id,
-            "last_modified_time": f"2026-01-{int(customer_id):02d}T00:00:00Z",
+            "updated_time": f"2026-01-{int(customer_id):02d}T00:00:00Z",
             "billing_address": {"address": f"{customer_id} Main St"}}})
 
 
@@ -139,6 +141,39 @@ class TestFetchCustomerDetails(unittest.TestCase):
         _, batches = self.fetch(FakeHttp(), 5, batch_size=2)
         ids_in_order = [r["customer_id"] for b in batches for r in b]
         self.assertEqual(ids_in_order, ["1", "2", "3", "4", "5"])
+
+    def test_a_detail_record_is_stamped_with_the_lists_modified_time(self):
+        # Zoho's detail GET returns updated_time and no last_modified_time.
+        # The first budgeted run (2026-09-19) landed 1,160 such records with
+        # a NULL _modified_at: the watermark never advanced, so the next run
+        # would have re-fetched the same 1,160, and staging's NULLS LAST
+        # tie-break handed every one of those addresses back to the list
+        # record. The detail must land carrying the list's instant.
+        _, batches = self.fetch(FakeHttp(), 3, batch_size=10)
+        stamped = [r["last_modified_time"] for r in batches[0]]
+        self.assertEqual(stamped, [r["last_modified_time"] for r in listed(3)])
+        self.assertTrue(all("billing_address" in r for r in batches[0]))
+
+    def test_the_lists_instant_wins_over_the_details_own(self):
+        # The watermark is compared against LIST times. A detail time newer
+        # than the list's could carry it past a customer not yet fetched.
+        class NewerDetail(FakeHttp):
+            def get(self, url, headers, timeout):
+                resp = super().get(url, headers, timeout)
+                resp._body["customer"]["last_modified_time"] = "2030-01-01T00:00:00Z"
+                return resp
+        _, batches = self.fetch(NewerDetail(), 2, batch_size=10)
+        self.assertEqual([r["last_modified_time"] for r in batches[0]],
+                         [r["last_modified_time"] for r in listed(2)])
+
+    def test_a_listed_customer_with_no_timestamp_lands_its_detail_unstamped(self):
+        # Unknown stays unknown: it is always re-fetched, and inventing an
+        # instant for it would let the watermark claim it was covered.
+        batches = []
+        fetch_customer_details(FakeHttp(), "tok0", "https://api", "org",
+                               [{"customer_id": "1"}], None, 0,
+                               land=lambda b: batches.append(list(b)) or len(b))
+        self.assertNotIn("last_modified_time", batches[0][0])
 
     def test_a_401_refreshes_the_token_once_and_retries(self):
         # The token expires after an hour and the backfill runs for four.
