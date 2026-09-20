@@ -163,6 +163,7 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
     fetched -- every customer on a first run, a handful after the backfill.
     --full-refresh refetches all. Returns (records landed, finished).
     """
+    modified = ZOHO_BILLING["modified_field"]
     stale = detail_fetch_order(customers_needing_detail(listed, since))
     if limit:
         stale = stale[:limit]
@@ -187,6 +188,21 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
         util.raise_for_status(resp, f"Zoho Billing customer {customer_id}")
         record = resp.json().get("customer")
         if record:
+            # The detail record carries `updated_time` and no
+            # `last_modified_time` at all (probed 2026-09-20 on the 1,160
+            # records the first budgeted run landed). Left as it comes, every
+            # detail row lands with a NULL _modified_at, the detail watermark
+            # never moves (max over nothing is None), the next run re-fetches
+            # the same oldest 1,160 forever, and staging's NULLS LAST tie-break
+            # lets the address-less list record win over the detail. So the
+            # detail is stamped with the LIST record's last_modified_time --
+            # the list's, not the detail's own, because that is the instant
+            # the watermark is compared against: a detail time newer than the
+            # list's could carry the watermark past a customer not yet
+            # fetched, and that address would freeze unnoticed.
+            stamp = listed_customer.get(modified)
+            if stamp is not None:
+                record[modified] = stamp
             batch.append(record)
         if len(batch) >= batch_size:
             landed += land(batch)
