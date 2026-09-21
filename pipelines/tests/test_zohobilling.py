@@ -60,10 +60,26 @@ class TestCustomersNeedingDetail(unittest.TestCase):
         listed = [{"customer_id": "9", "last_modified_time": "2026-09-17T15:00:00-0400"}]
         self.assertEqual(ids(customers_needing_detail(listed, "2026-09-17T16:35:35+00:00")),
                          ["9"])
-        # And the same instant spelled two ways is NOT newer.
+        # And the same instant spelled two ways is recognised as the same
+        # instant: it is the watermark second, so it is re-fetched (below).
         listed = [{"customer_id": "9", "last_modified_time": "2026-09-17T12:35:35-0400"}]
         self.assertEqual(ids(customers_needing_detail(listed, "2026-09-17T16:35:35+00:00")),
-                         [])
+                         ["9"])
+
+    def test_a_customer_sharing_the_watermarks_second_is_not_skipped(self):
+        # A budgeted run stops mid-second. Run 30 (2026-09-21) landed one of
+        # two customers modified at 2025-12-10T16:13:49-05:00 and stopped;
+        # the watermark became that second. Keeping only customers STRICTLY
+        # newer would never fetch the other one: no error, no retry, its
+        # address frozen. The boundary second is re-fetched, and a customer a
+        # second older is still left alone.
+        listed = [
+            {"customer_id": "fetched", "last_modified_time": "2025-12-10T16:13:49-0500"},
+            {"customer_id": "skipped", "last_modified_time": "2025-12-10T16:13:49-0500"},
+            {"customer_id": "older", "last_modified_time": "2025-12-10T16:13:48-0500"},
+        ]
+        self.assertEqual(ids(customers_needing_detail(listed, "2025-12-10T21:13:49+00:00")),
+                         ["fetched", "skipped"])
 
 
 class TestDetailFetchOrder(unittest.TestCase):

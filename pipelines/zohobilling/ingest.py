@@ -104,7 +104,16 @@ def customers_needing_detail(listed, since):
     out = []
     for c in listed:
         ts = util.parse_ts(c.get(modified))
-        if ts is None or since_ts is None or ts > since_ts:
+        # AT the watermark counts too, not only after it. The watermark is
+        # the newest modification a budgeted run landed, and Zoho stamps to
+        # the second, so the run can stop between two customers modified in
+        # the same second: the first is landed and becomes the watermark, the
+        # second is not. Run 30 (2026-09-21) stopped exactly there -- two
+        # customers at 2025-12-10T16:13:49-05:00, one fetched, one not -- and
+        # a strict comparison would never have fetched the other: no error,
+        # no retry, one address frozen. Re-fetching the boundary second costs
+        # a handful of calls a night.
+        if ts is None or since_ts is None or ts >= since_ts:
             out.append(c)
     return out
 
