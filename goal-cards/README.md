@@ -9,8 +9,8 @@ One directory per client, one YAML file per card, named for its `kpi`.
 
 | Card | Mart | Status |
 |------|------|--------|
-| [livewire/sales_won_revenue.yaml](livewire/sales_won_revenue.yaml) | `kpi_sales_pipeline` | draft, no target |
-| [livewire/cash_ar_over_90.yaml](livewire/cash_ar_over_90.yaml) | `kpi_cash` | draft, no target |
+| [livewire/sales_won_revenue.yaml](livewire/sales_won_revenue.yaml) | `kpi_sales_pipeline` | active: $400,000 won a month |
+| [livewire/cash_ar_over_90.yaml](livewire/cash_ar_over_90.yaml) | `kpi_cash` | active: AR over 90 days at most $25,000 |
 | [livewire/subscription_leak.yaml](livewire/subscription_leak.yaml) | `kpi_subscription_audit` | draft, no target |
 
 ## Schema
