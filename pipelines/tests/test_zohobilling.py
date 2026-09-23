@@ -208,6 +208,27 @@ class TestFetchCustomerDetails(unittest.TestCase):
         with self.assertRaises(Exception):
             self.fetch(http, 1, refresh_token=lambda: "tok1")
 
+    def test_a_customer_merged_away_mid_run_is_skipped_not_fatal(self):
+        # Run 32 (2026-09-23) listed a customer at 11:30 that no longer
+        # existed at 15:03; Zoho answered 400 / code 3004 and the whole run
+        # died. The rest of the book must still be fetched.
+        class Merged(FakeHttp):
+            def get(self, url, headers, timeout):
+                if url.endswith("/2"):
+                    return FakeResponse(400, {"code": 3004, "message":
+                        "Please enter a valid reference for the customer"})
+                return super().get(url, headers, timeout)
+        (landed, finished), batches = self.fetch(Merged(), 3, batch_size=10)
+        self.assertTrue(finished)
+        self.assertEqual([r["customer_id"] for r in batches[0]], ["1", "3"])
+
+    def test_any_other_400_still_fails(self):
+        class BadRequest(FakeHttp):
+            def get(self, url, headers, timeout):
+                return FakeResponse(400, {"code": 2, "message": "Invalid value"})
+        with self.assertRaises(Exception):
+            self.fetch(BadRequest(), 1)
+
     def test_without_a_refresher_a_401_raises(self):
         with self.assertRaises(Exception):
             self.fetch(FakeHttp(expired_tokens={"tok0"}), 1)

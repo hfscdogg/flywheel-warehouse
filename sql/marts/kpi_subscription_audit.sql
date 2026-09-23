@@ -401,6 +401,18 @@ qbo_customers AS (
 -- collapsed them all onto one row, and a record with no parseable address
 -- could be matched to whichever customer happened to win that collapse. No
 -- vendor row has an empty key today, which is the only reason it never fired.
+--
+-- A PARTLY empty key is the same hazard, one field smaller, and it did fire.
+-- "Maple Ave" has no house number, so it keys as ||23226 -- ZIP only -- and
+-- so does a Billing street of "Greenway Lane", "Virginia" or blank: every
+-- such record in one ZIP matched every other. "514-3 Libbie Ave" loses its
+-- street to the hyphen and keys as 514||23226, the same as unit 514-6. On the
+-- 2026-09-23 build that put 6 vendor accounts on a customer whose name shared
+-- no word with theirs: 2 of them leak rows, 2 OK rows resting on someone
+-- else's subscription. So every address join below requires a COMPLETE key --
+-- house number, street and 5-digit ZIP -- and an account whose address is
+-- partial falls through to its other keys, or to BILLED_NO_MATCH, which is
+-- the honest answer. pipelines/tests/test_sql_address_key.py pins the guard.
 billing_direct AS (
   SELECT
     CONCAT(
@@ -435,7 +447,7 @@ billing_via_crm AS (
   FROM staging.stg_zoho__accounts a
   JOIN billing_by_name b
     ON LOWER(TRIM(a.account_name)) = b.name_key
-  WHERE a.address_key != '||' AND a.account_name IS NOT NULL
+  WHERE REGEXP_CONTAINS(a.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$') AND a.account_name IS NOT NULL
 ),
 -- A third address source, for properties Zoho CRM has no address for.
 -- QuickBooks has carried BillAddr all along and it was simply never
@@ -449,7 +461,7 @@ billing_via_qbo AS (
   FROM qbo_customers q
   JOIN billing_by_name b
     ON LOWER(TRIM(q.display_name)) = b.name_key
-  WHERE q.address_key != '||' AND q.display_name IS NOT NULL
+  WHERE REGEXP_CONTAINS(q.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$') AND q.display_name IS NOT NULL
 ),
 -- One customer per address. The ordering is deliberately conservative: a
 -- direct Billing address wins, then the CRM bridge exactly as before, and
@@ -462,7 +474,7 @@ billing_via_qbo AS (
 customer_by_address AS (
   SELECT address_key, customer_id, display_name, match_via
   FROM (
-    SELECT * FROM billing_direct WHERE address_key != '||'
+    SELECT * FROM billing_direct WHERE REGEXP_CONTAINS(address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
     UNION ALL
     SELECT * FROM billing_via_crm
     UNION ALL
@@ -672,7 +684,7 @@ qbo_by_address AS (
     ANY_VALUE(c.customer_id)  AS customer_id,
     ANY_VALUE(c.display_name) AS display_name
   FROM qbo_customers c
-  WHERE c.address_key != '||'
+  WHERE REGEXP_CONTAINS(c.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
   GROUP BY match_key
   -- Qualified for the reason billing_by_unique_name is: ANY_VALUE(...) AS
   -- customer_id shadows the column and the bare form is an aggregate of an
@@ -763,7 +775,7 @@ customer_by_qbo AS (
       END                                           AS match_via
     FROM accounts v
     LEFT JOIN qbo_by_address a
-      ON a.match_key = v.address_key AND v.address_key != '||'
+      ON a.match_key = v.address_key AND REGEXP_CONTAINS(v.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
     LEFT JOIN vendor_contact vc
       ON vc.vendor = v.vendor AND vc.account_no = v.account_no
     LEFT JOIN qbo_by_email e ON e.match_key = vc.email_key
@@ -937,7 +949,7 @@ billing_twins AS (
 sc_account_address AS (
   SELECT account_no, address_key
   FROM securitycentral
-  WHERE account_no IS NOT NULL AND address_key != '||'
+  WHERE account_no IS NOT NULL AND REGEXP_CONTAINS(address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY account_no ORDER BY address_key
   ) = 1
@@ -968,7 +980,7 @@ matched AS (
     END                                                   AS match_via
   FROM accounts v
   LEFT JOIN customer_by_address direct
-    ON v.address_key = direct.address_key AND v.address_key != '||'
+    ON v.address_key = direct.address_key AND REGEXP_CONTAINS(v.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
   LEFT JOIN sc_account_address bridge
     ON v.vendor = 'alarmdotcom' AND v.contract_no = bridge.account_no
   LEFT JOIN customer_by_address bridged

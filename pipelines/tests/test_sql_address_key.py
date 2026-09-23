@@ -33,6 +33,11 @@ _DIRECTIONALS = [
 ]
 
 
+# The only address key the audit joins on: house number, street, 5-digit ZIP.
+# BigQuery's RE2 and Python's re read this pattern the same way.
+_COMPLETE_KEY = r"r'^\d+\|[a-z0-9]+\|\d{5}$'"
+
+
 def models_with_address_key():
     return sorted(f for d in ("marts", "staging") for f in (SQL / d).glob("*.sql")
                   if "address_key" in f.read_text())
@@ -90,9 +95,26 @@ class AddressKey(unittest.TestCase):
         # test existed: every addressless record kept its empty key, they all
         # collapsed onto one row, and a record with no address could be
         # matched to whichever customer won that collapse.
+        # A partly empty key is the same hazard: "||23226" is a whole ZIP and
+        # "514||23226" a whole building, and both matched the wrong household
+        # on the 2026-09-23 build. So the guard is not "not empty" but
+        # "complete": house number, street and 5-digit ZIP.
         audit = (SQL / "marts" / "kpi_subscription_audit.sql").read_text()
-        self.assertNotIn("address_key != '|'", audit.replace("address_key != '||'", ""))
-        self.assertGreaterEqual(audit.count("address_key != '||'"), 4)
+        self.assertNotRegex(audit, r"address_key\s*!=\s*'\|+'",
+                            "an address guard that only rejects the empty key "
+                            "lets a ZIP-only key through")
+        # Every address join or dedup names a key: seven sites.
+        self.assertEqual(audit.count(f"address_key, {_COMPLETE_KEY})"), 7)
+
+    def test_the_complete_key_rejects_every_partial_key(self):
+        complete = re.compile(_COMPLETE_KEY[2:-1])
+        for key in ("||23226", "|greenway|23226", "514||23226", "885|kempston|",
+                    "||", "|", "", "514|libbie|2322"):
+            with self.subTest(key=key):
+                self.assertIsNone(complete.search(key))
+        for key in ("885|kempston|23103", "5|esquare|23238", "7007|lakewood|23229"):
+            with self.subTest(key=key):
+                self.assertIsNotNone(complete.search(key))
 
 
 class NameKey(unittest.TestCase):
