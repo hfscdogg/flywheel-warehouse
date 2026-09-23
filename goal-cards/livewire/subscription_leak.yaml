@@ -2,7 +2,7 @@
 # Schema and rules for every card: goal-cards/README.md.
 kpi: subscription_leak
 title: Monitoring we pay vendors for that no customer is paying us for
-status: draft            # draft until the owner sets a target
+status: active           # target set by the owner 2026-09-23
 owner: henry@getlivewire.com
 cadence: weekly          # after Monday's nightly build
 mart_table: livewire-dw.marts.kpi_subscription_audit
@@ -42,9 +42,26 @@ baseline:
     matches (2 of them leak rows, $33.46), and the Billing address backfill
     finishes around 2026-09-26. Re-baseline from the first build after both.
 
-target: null   # owner to set; duplicate-profile households should reach 0
+target: {leak_monthly_cost: 0, set_by: henry@getlivewire.com, set_on: 2026-09-23}
 
 rules:
+  - >
+    The target is $0 a month on BILLED_NO_SUBSCRIPTION. A row leaves the
+    leak only when the warehouse says so on a later build: a subscription
+    started on the matched profile, the vendor account deactivated, or
+    evidence landing (QuickBooks monitoring revenue, direct billing, a
+    duplicate profile found). Never report progress by excluding rows from
+    the query, and never count a row as resolved because someone said it
+    was; say it is pending until the build shows it.
+  - >
+    Separate movement the business caused from movement the warehouse did.
+    A matching fix or a backfill can move rows on or off the list with
+    nobody doing anything (#73 and the Billing address backfill both will,
+    in late September 2026). When the figure changes, say which it was, and
+    compare against the last figure you reported, not only the baseline.
+  - >
+    Duplicate-profile households are not the leak and not in the target,
+    but they should reach zero too: report them on their own line.
   - >
     Call get_table_schema on kpi_subscription_audit before every report. Its
     descriptions are rules; an answer that contradicts one is wrong.
