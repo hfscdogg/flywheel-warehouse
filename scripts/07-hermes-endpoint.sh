@@ -84,11 +84,38 @@ print_connection_info() {
 # cannot drift into shipping differently configured revisions. Everything it
 # needs is already true by the time either caller reaches it: the token secret
 # exists, hermes-reader can read it, and the build identity can build.
+#
+# The build source is a staging copy, not hermes-mcp/ itself. The goal cards
+# live in goal-cards/<client>/, outside the directory `--source` uploads, so
+# they are copied in beside server.py as goal_cards/ (hermes-mcp/goal_cards.py
+# reads them from there). Staging keeps the repo checkout untouched, and it
+# ships THIS client's cards only: one project per client, one set of goals.
+# A client with no cards yet ships an empty goal_cards/, and the endpoint
+# lists none.
+BUILD_DIR=""
+cleanup_build_dir() {
+  if [ -n "$BUILD_DIR" ]; then rm -rf "$BUILD_DIR"; fi
+}
+trap cleanup_build_dir EXIT
+
+stage_build_source() {
+  BUILD_DIR="$(mktemp -d)"
+  cp -R "$REPO_ROOT/hermes-mcp/." "$BUILD_DIR/"
+  rm -rf "$BUILD_DIR/__pycache__" "$BUILD_DIR/goal_cards"
+  mkdir "$BUILD_DIR/goal_cards"
+  local cards="$REPO_ROOT/goal-cards/$CLIENT_SLUG"
+  if [ -d "$cards" ] && ls "$cards"/*.yaml >/dev/null 2>&1; then
+    cp "$cards"/*.yaml "$BUILD_DIR/goal_cards/"
+  fi
+  log "  goal cards shipped: $(find "$BUILD_DIR/goal_cards" -name '*.yaml' | wc -l | tr -d ' ') from goal-cards/$CLIENT_SLUG/"
+}
+
 deploy_service() {
   info "Deploying $HERMES_MCP_SERVICE to Cloud Run ($RUN_REGION) as $SA_HERMES_READER_EMAIL"
+  stage_build_source
   run gcloud run deploy "$HERMES_MCP_SERVICE" \
     --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
-    --source "$REPO_ROOT/hermes-mcp" \
+    --source "$BUILD_DIR" \
     --service-account "$SA_HERMES_READER_EMAIL" \
     --allow-unauthenticated \
     --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \

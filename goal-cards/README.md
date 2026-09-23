@@ -32,6 +32,13 @@ One directory per client, one YAML file per card, named for its `kpi`.
 | `rules` | How to read the number without being wrong. Each one comes from something the data actually did. |
 | `drill_down` | Where the agent goes for the rows behind the number. |
 
+## How the agent gets them
+
+hermes-mcp serves the cards as two tools, `list_goal_cards` and
+`get_goal_card`. The deploy (`scripts/07-hermes-endpoint.sh`) ships this
+client's directory with the server, so a card edit reaches the agent at the
+next redeploy of the endpoint, not at the next transform.
+
 `pipelines/tests/test_goal_cards.py` fails if a card is missing a key,
 points at a mart that does not exist, lists a column the mart does not
 declare, reads anything but its own mart, or is `active` without a target.

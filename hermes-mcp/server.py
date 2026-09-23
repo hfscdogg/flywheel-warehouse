@@ -21,6 +21,9 @@ Env (set by the deploy script):
                     Listing only — IAM decides what is actually readable.
   MAX_BYTES_BILLED  per-query byte cap (default 1 GiB)
   MAX_ROWS          per-query returned-row cap (default 1000)
+  GOAL_CARDS_DIR    where the goal cards are (default goal_cards/ beside
+                    this file, which the deploy script fills from
+                    goal-cards/<client>/)
 """
 import os
 import re
@@ -32,6 +35,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+
+import goal_cards
 
 PROJECT = os.environ.get("GCP_PROJECT_ID") or None
 DATASET = os.environ.get("DATASET_MARTS", "marts")
@@ -175,6 +180,32 @@ def query(sql: str) -> dict:
             break
         rows.append({k: _json_safe(v) for k, v in row.items()})
     return {"rows": rows, "row_count": len(rows), "truncated": truncated}
+
+
+@mcp.tool()
+def list_goal_cards() -> list:
+    """List the goal cards: the KPIs the owner holds the agents accountable
+    to, each with its title, status, owner, cadence, mart table and target.
+
+    A card with status `active` has a target the owner set; `draft` has none
+    yet and is context only. When asked how the business is doing against
+    its goals, start here, then read the card with get_goal_card."""
+    return goal_cards.list_cards()
+
+
+@mcp.tool()
+def get_goal_card(kpi: str) -> dict:
+    """Get one goal card in full, by its kpi name (from list_goal_cards).
+
+    The card is the brief for reporting that KPI. Run its `query` as the
+    canonical figure; report the number, then the baseline, then the target
+    and the gap to it, then every caveat its `rules` name, in that order and
+    as part of the answer. The rules come from things the data has actually
+    done, and each one exists because the naive reading was wrong. Call
+    get_table_schema on the card's mart as well: the mart's descriptions
+    are rules too, and a card never overrides one. Never set, change or
+    invent a target; that is the owner's."""
+    return goal_cards.get_card(kpi)
 
 
 class BearerAuth(BaseHTTPMiddleware):
