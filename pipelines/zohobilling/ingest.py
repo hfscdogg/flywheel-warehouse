@@ -194,6 +194,14 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
             log.info("customers: token expired after %d details; refreshing", n - 1)
             token = refresh_token()
             resp = http.get(url, headers=_headers(token, org_id), timeout=60)
+        # Listed at the start of the run, gone by the time its turn comes:
+        # merged or deleted in Zoho mid-run. Run 32 (2026-09-23) died on one
+        # at hour three and a half, while duplicate profiles were being merged.
+        # It has no detail to land, and the next list pull drops it anyway.
+        if _customer_gone(resp):
+            log.warning("customers: %s was listed but no longer exists in Zoho "
+                        "(merged or deleted mid-run); skipped", customer_id)
+            continue
         util.raise_for_status(resp, f"Zoho Billing customer {customer_id}")
         record = resp.json().get("customer")
         if record:
@@ -228,6 +236,18 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
     if batch:
         landed += land(batch)
     return landed, True
+
+
+def _customer_gone(resp):
+    """Zoho's answer for a customer id that no longer exists: HTTP 400 with
+    code 3004, "Please enter a valid reference for the customer". Only that
+    code: any other 400 is a request we got wrong and must still fail."""
+    if resp.status_code != 400:
+        return False
+    try:
+        return (resp.json() or {}).get("code") == 3004
+    except ValueError:
+        return False
 
 
 def _headers(token, org_id):
