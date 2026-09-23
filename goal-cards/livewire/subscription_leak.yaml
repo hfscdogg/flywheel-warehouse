@@ -1,0 +1,70 @@
+# Goal card — the KPI one Hermes engine is accountable to.
+# Schema and rules for every card: goal-cards/README.md.
+kpi: subscription_leak
+title: Monitoring we pay vendors for that no customer is paying us for
+status: draft            # draft until the owner sets a target
+owner: henry@getlivewire.com
+cadence: weekly          # after Monday's nightly build
+mart_table: livewire-dw.marts.kpi_subscription_audit
+credential: impersonate hermes-reader@livewire-dw.iam.gserviceaccount.com
+
+definition: >
+  Vendor monthly cost on accounts whose finding is BILLED_NO_SUBSCRIPTION,
+  and the number of households (distinct matched Billing customers) behind
+  it. Secondary: households on BILLED_DUPLICATE_PROFILE, the merge queue in
+  Zoho Billing, which should fall to zero and stay there.
+
+query: |
+  SELECT finding,
+         COUNT(*) AS accounts,
+         COUNT(DISTINCT matched_customer_id) AS households,
+         ROUND(SUM(vendor_monthly_cost), 2) AS monthly_cost,
+         COUNTIF(vendor_monthly_cost IS NULL) AS accounts_cost_unknown,
+         COUNTIF(match_via = 'name') AS matched_by_name_only,
+         COUNTIF(NOT name_overlaps) AS name_does_not_overlap,
+         MAX(computed_at) AS built_at
+  FROM marts.kpi_subscription_audit
+  WHERE finding IN ('BILLED_NO_SUBSCRIPTION', 'BILLED_DUPLICATE_PROFILE')
+  GROUP BY finding
+
+columns: [finding, matched_customer_id, vendor_monthly_cost, match_via, name_overlaps, computed_at]
+
+baseline:
+  as_of: 2026-09-23            # the 12:38 UTC build
+  leak_accounts: 51
+  leak_households: 35
+  leak_monthly_cost: 647.73
+  leak_matched_by_name_only: 12
+  leak_name_does_not_overlap: 11
+  duplicate_profile_households: 15
+  expected_to_move: >
+    Two changes land in the next few builds: #73 removes 6 partial-address
+    matches (2 of them leak rows, $33.46), and the Billing address backfill
+    finishes around 2026-09-26. Re-baseline from the first build after both.
+
+target: null   # owner to set; duplicate-profile households should reach 0
+
+rules:
+  - >
+    Call get_table_schema on kpi_subscription_audit before every report. Its
+    descriptions are rules; an answer that contradicts one is wrong.
+  - >
+    The leak is an UPPER bound. Accounts that reached no QuickBooks customer
+    may be paid by check under another name. Report it as "up to".
+  - >
+    A NULL vendor_monthly_cost means the cost is unknown, never zero. Report
+    accounts_cost_unknown beside the dollar figure.
+  - >
+    Never dedupe across vendors: one property on Security Central, Alarm.com
+    and Parasol is three real costs.
+  - >
+    Rows matched by name only, or whose name does not overlap the matched
+    customer, need a person to confirm them before anyone acts. Count them in
+    the report; do not present them as confirmed.
+  - >
+    Rows name customers. Report counts and dollars. Name a customer only to
+    the owner, and never send a row to anyone the owner has not named.
+
+drill_down: >
+  The rows themselves, one per vendor account, are the worklist; the owner
+  decides who sees them.
