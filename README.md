@@ -34,7 +34,7 @@ One GCP project per client. The project is the namespace, so dataset names stay 
 | 1 | Warehouse scaffold: datasets, IAM, scoped read-only service account | ✅ this repo — [scripts/](scripts/) |
 | 2 | Ingestion: scheduled pulls from Zoho / D-Tools / QBO | ✅ live for Livewire — all three sources ingesting on the daily cron (QBO backfilled 110,656 rows 2026-08-21), [docs/phase-2-credentials.md](docs/phase-2-credentials.md) |
 | 3 | Staging + KPI mart SQL | ✅ live for Livewire — staging + marts building on the daily 07:00 UTC transform (first runs 2026-08-24/25), [sql/](sql/) |
-| 4 | Agent access: MCP endpoint + goal cards | 🚧 endpoint **live for Livewire** 2026-08-25 — Hermes Agent querying `marts` via Cloud Run, raw access verified denied from the agent's seat ([hermes-mcp/](hermes-mcp/), [docs/phase-4-hermes-endpoint.md](docs/phase-4-hermes-endpoint.md)); goal cards next — [goal-cards/](goal-cards/README.md) |
+| 4 | Agent access: MCP endpoint + goal cards | 🚧 endpoint **live for Livewire** 2026-08-25 — Hermes Agent querying `marts` via Cloud Run, raw access verified denied from the agent's seat ([hermes-mcp/](hermes-mcp/), [docs/phase-4-hermes-endpoint.md](docs/phase-4-hermes-endpoint.md)); first three goal cards drafted (sales won, AR over 90, subscription leak), targets pending — [goal-cards/](goal-cards/README.md) |
 | 5 | Productization: trust doc + onboarding runbook | drafted — [docs/trust.md](docs/trust.md), [docs/runbook-new-client.md](docs/runbook-new-client.md) |
 
 ## Quickstart (Livewire)
@@ -83,6 +83,6 @@ scripts/     Phase 1: idempotent gcloud/bq scripts, numbered in run order
 docs/        Phase 0 checklist, trust doc, operator runbook, conventions
 pipelines/   Phase 2: ingestion pipelines (GitHub Actions + WIF)
 sql/         Phase 3: staging + marts models (run via scripts/06-transform.sh)
-goal-cards/  Phase 4 placeholder: KPI goal cards for the agents
+goal-cards/  Phase 4: KPI goal cards for the agents, one dir per client
 zoho-reference/  Zoho Analytics dashboard extraction — reconciliation source of truth
 ```

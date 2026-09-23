@@ -1,0 +1,73 @@
+# Goal card — the KPI one Hermes engine is accountable to.
+# Schema and rules for every card: goal-cards/README.md.
+kpi: sales_won_revenue
+title: Revenue won per month, and the pipeline behind it
+status: draft            # draft until the owner sets a target
+owner: henry@getlivewire.com
+cadence: weekly          # report every Monday; the month's figure firms up as deals close
+mart_table: livewire-dw.marts.kpi_sales_pipeline
+credential: impersonate hermes-reader@livewire-dw.iam.gserviceaccount.com
+
+definition: >
+  Dollars of Zoho CRM deals closed-won in the calendar month (won_amount), and
+  the probability-weighted open pipeline expected to close in the current and
+  next two months (open_expected_closing), which is what next month's
+  won_amount has to come from.
+
+# The canonical query. The agent may drill deeper; it reports from this.
+query: |
+  SELECT month, won_amount, deals_won, lost_amount, open_expected_closing
+  FROM marts.kpi_sales_pipeline
+  WHERE month BETWEEN DATE_SUB(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 12 MONTH)
+                  AND DATE_ADD(DATE_TRUNC(CURRENT_DATE(), MONTH), INTERVAL 2 MONTH)
+  ORDER BY month
+
+# Every mart column the card reads. pipelines/tests/test_goal_cards.py fails
+# if one is renamed or dropped from the mart.
+columns: [month, won_amount, deals_won, lost_amount, open_expected_closing]
+
+baseline:
+  as_of: 2026-09-23
+  trailing_12_months_won: 2674304.76    # Sep 2025 – Aug 2026, complete months
+  monthly_average_12m: 222858.73
+  monthly_average_3m: 258407.71         # Jun – Aug 2026; August alone was 456,941.34
+  pipeline_next_3_months: 479892.18     # open_expected_closing, Sep + Oct + Nov 2026
+
+target: null   # owner to set, e.g. a monthly won_amount and a pipeline-coverage ratio
+
+rules:
+  - >
+    Measure dollars, not counts. 1,458 of the 1,737 deals won since
+    2025-09-01 were under $1,000 and 971 closed within a day of creation, so
+    deals_won, win_rate_pct and median_days_to_win describe small
+    transactional deals, not the project sales this card is about. Do not
+    report a win rate or a velocity from this table as a sales-performance
+    signal.
+  - >
+    A month is not final until it has ended: won_amount counts by closing
+    date, and deals are marked won after the fact. Compare complete months
+    only; report the current month as month-to-date.
+  - >
+    Future months can carry won deals (October 2026 shows one on 2026-09-23):
+    a deal won with a closing date still ahead. Treat those as data-entry
+    timing, not revenue already earned in that month.
+  - >
+    open_expected_closing is Zoho's probability-weighted figure, the one its
+    own dashboard plots. It is a forecast, not a commitment; say so when you
+    quote it.
+  - >
+    Count pipeline from the current month forward only. On a past month,
+    open_expected_closing is deals whose expected close date went by without
+    being marked won or lost: $1.92M across Sep 2025 – Aug 2026 on
+    2026-09-23, $561,722 of it dated May 2026. That is a CRM-hygiene figure
+    worth reporting on its own line, not pipeline.
+  - >
+    Do not read a loss rate from one month's lost_amount. September 2026
+    showed $2.92M lost month-to-date against $221,682 won; a spike like that
+    can be old deals being closed out in bulk. Check the deals'
+    created_at in staging before calling it a sales result.
+
+drill_down: >
+  Deal-level questions (which deals, whose, what stage) go to
+  staging.stg_zoho__deals, excluding is_test_record. Week-level questions go
+  to marts.kpi_sales_weekly.

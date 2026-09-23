@@ -1,0 +1,59 @@
+# Goal card — the KPI one Hermes engine is accountable to.
+# Schema and rules for every card: goal-cards/README.md.
+kpi: cash_ar_over_90
+title: Receivables more than 90 days past due, and the collection rate
+status: draft            # draft until the owner sets a target
+owner: henry@getlivewire.com
+cadence: weekly
+mart_table: livewire-dw.marts.kpi_cash
+credential: impersonate hermes-reader@livewire-dw.iam.gserviceaccount.com
+
+definition: >
+  Open QuickBooks invoice balance more than 90 days past its due date
+  (ar_over_90), with the share of the last 90 days' invoicing that has been
+  collected (collected_last_90d / invoiced_last_90d) as the rate that keeps
+  it from growing.
+
+query: |
+  SELECT as_of_date, ar_total, ar_over_90, ar_61_90,
+         ROUND(SAFE_DIVIDE(ar_over_90, ar_total) * 100, 1) AS ar_over_90_pct,
+         invoiced_last_90d, collected_last_90d,
+         ROUND(SAFE_DIVIDE(collected_last_90d, invoiced_last_90d) * 100, 1) AS collected_pct_90d
+  FROM marts.kpi_cash
+
+columns: [as_of_date, ar_total, ar_over_90, ar_61_90, invoiced_last_90d, collected_last_90d]
+
+baseline:
+  as_of: 2026-09-23
+  ar_total: 358015.87
+  ar_over_90: 158300.77       # 44.2% of AR
+  over_one_year: 85853        # 80 invoices, from staging.stg_qbo__invoices
+  collected_pct_90d: 75.2     # 1,101,624.56 collected of 1,464,650.62 invoiced
+
+target: null   # owner to set, e.g. an ar_over_90 ceiling and a collection-rate floor
+
+rules:
+  - >
+    kpi_cash is ONE row, today's snapshot, with no history. A trend cannot be
+    read from the warehouse: keep each weekly reading in your own report and
+    compare against the last one you gave, saying that is where the prior
+    number came from.
+  - >
+    Do not read ar_overdue_invoices as alarm. 234 of the 266 open invoices on
+    2026-09-23 fell due the day they were issued, so nearly every open
+    invoice is technically overdue the day after. The aging buckets past 30
+    days are the meaningful ones.
+  - >
+    Separate collectable from stale. $85,853 across 80 invoices was more than
+    a year past due on 2026-09-23. Whether those are collected, credited or
+    written off is a bookkeeping decision for the owner, not a collections
+    push; report them as their own line rather than blending them into the
+    over-90 figure's progress.
+  - >
+    invoiced and collected are by transaction date and are not matched to
+    each other: a payment this month may settle an invoice from last year.
+    collected_pct_90d is a rate, not proof that recent invoices are paid.
+
+drill_down: >
+  Which invoices and customers: staging.stg_qbo__invoices where balance > 0,
+  with the customer from staging.stg_qbo__customers.
