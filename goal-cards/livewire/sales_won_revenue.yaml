@@ -2,7 +2,7 @@
 # Schema and rules for every card: goal-cards/README.md.
 kpi: sales_won_revenue
 title: Revenue won per month, and the pipeline behind it
-status: draft            # draft until the owner sets a target
+status: active           # target set by the owner 2026-09-23
 owner: henry@getlivewire.com
 cadence: weekly          # report every Monday; the month's figure firms up as deals close
 mart_table: livewire-dw.marts.kpi_sales_pipeline
@@ -33,9 +33,15 @@ baseline:
   monthly_average_3m: 258407.71         # Jun – Aug 2026; August alone was 456,941.34
   pipeline_next_3_months: 479892.18     # open_expected_closing, Sep + Oct + Nov 2026
 
-target: null   # owner to set, e.g. a monthly won_amount and a pipeline-coverage ratio
+target: {won_amount_per_month: 400000, set_by: henry@getlivewire.com, set_on: 2026-09-23}
 
 rules:
+  - >
+    Report each complete month's won_amount against the $400,000 target and
+    the gap in dollars, and the current month as month-to-date against it.
+    For scale: in the 12 complete months to August 2026 only August
+    ($456,941.34) reached it; the 12-month average was $222,858.73. Do not
+    restate the target as a count of deals.
   - >
     Measure dollars, not counts. 1,458 of the 1,737 deals won since
     2025-09-01 were under $1,000 and 971 closed within a day of creation, so
