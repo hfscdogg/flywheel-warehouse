@@ -21,6 +21,21 @@ STATE_SCHEMA = [
     bigquery.SchemaField("recorded_at", "TIMESTAMP"),
 ]
 
+# One row per entity per run, written whether or not the pull found anything.
+# An incremental source's landing table only grows when a record changes, so
+# its newest _loaded_at says when something last CHANGED, not when the ingest
+# last RAN; a quiet entity (no purchase order edited for three days) reads as
+# stale while the ingest runs green every night. sql/checks/fresh.sql reads
+# this table for that. entity is the landing table's name, so the check can
+# join it to the raw table a staging model reads.
+RUNS_TABLE = "_flywheel_runs"
+RUNS_SCHEMA = [
+    bigquery.SchemaField("entity", "STRING"),
+    bigquery.SchemaField("run_id", "STRING"),
+    bigquery.SchemaField("rows_loaded", "INTEGER"),
+    bigquery.SchemaField("ran_at", "TIMESTAMP"),
+]
+
 
 def client_for(cfg):
     return bigquery.Client(project=cfg.project_id, location=cfg.bq_location)
@@ -77,3 +92,13 @@ def set_watermark(bq, cfg, dataset, entity, watermark_iso, run_id, recorded_at):
         "run_id": run_id,
         "recorded_at": recorded_at,
     }], STATE_SCHEMA)
+
+
+def record_run(bq, cfg, dataset, entity, run_id, rows_loaded, ran_at):
+    table_id = ensure_table(bq, cfg, dataset, RUNS_TABLE, RUNS_SCHEMA)
+    load_rows(bq, table_id, [{
+        "entity": entity,
+        "run_id": run_id,
+        "rows_loaded": rows_loaded,
+        "ran_at": ran_at,
+    }], RUNS_SCHEMA)

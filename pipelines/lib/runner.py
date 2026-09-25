@@ -41,18 +41,25 @@ def setup(source_name, entities):
 
 
 def land(bq_mod, bq, cfg, dataset, entity, records, id_field, modified_field, run_id):
-    """Wrap records, load them, advance the watermark. Returns rows loaded."""
+    """Wrap records, load them, advance the watermark. Returns rows loaded.
+
+    Records the run in the dataset's run log either way, AFTER the load: an
+    empty pull is still a pull, and a load that raised is not one.
+    """
     loaded_at = util.utcnow_iso()
     # Ensure the landing table even on an empty pull: staging models (Phase 3)
     # read every entity's table, so existence can't depend on data volume.
-    table_id = bq_mod.ensure_table(bq, cfg, dataset, entity.lower(), bq_mod.LANDING_SCHEMA)
+    name = entity.lower()
+    table_id = bq_mod.ensure_table(bq, cfg, dataset, name, bq_mod.LANDING_SCHEMA)
     if not records:
         log.info("%s: no new records", entity)
+        bq_mod.record_run(bq, cfg, dataset, name, run_id, 0, loaded_at)
         return 0
     rows = [util.build_row(r, id_field, modified_field, run_id, loaded_at) for r in records]
     n = bq_mod.load_rows(bq, table_id, rows, bq_mod.LANDING_SCHEMA)
     high = util.max_modified(records, modified_field)
     if high:
         bq_mod.set_watermark(bq, cfg, dataset, entity, high, run_id, loaded_at)
+    bq_mod.record_run(bq, cfg, dataset, name, run_id, n, loaded_at)
     log.info("%s: loaded %d rows into %s (watermark → %s)", entity, n, table_id, high)
     return n

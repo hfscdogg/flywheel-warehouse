@@ -25,6 +25,11 @@ the 07:00 transform), manually triggerable via `workflow_dispatch`, one
    (append-only; latest row wins). Zoho uses `If-Modified-Since`; QBO filters
    on `MetaData.LastUpdatedTime`; D-Tools full-pulls every run (small data).
    `--full-refresh` ignores watermarks.
+5. **Run log:** every landing writes one row to `raw_<source>._flywheel_runs`
+   (entity = landing table, run_id, rows_loaded, ran_at), empty pulls
+   included. An incremental table only grows when a record changes, so
+   `sql/checks/fresh.sql` reads this log to tell a quiet QBO or Zoho CRM
+   entity from an ingest that did not run.
 
 ## Sharp edges handled
 
