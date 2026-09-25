@@ -4,10 +4,14 @@ name: ingest-qbo-reports
 # columns, three years back) and budgets, into raw_qbo.reports,
 # raw_qbo.report_lines and raw_qbo.budgets. See pipelines/qbo/reports.py.
 #
-# MANUAL ONLY until the first run has been read: the report shapes are from
-# Intuit's documentation, not yet observed. A nightly schedule follows once a
-# dispatched run has landed and its totals have been checked.
+# Nightly since the first dispatched run (2026-09-25) was read: every section
+# of every month added up, and sql/checks/qbo_reports_tie.sql now fails the
+# transform if that stops. 06:25 UTC, before ingest-qbo at 06:40 (they share
+# a token and queue behind each other) and the transform at 07:00, which
+# freshness-checks what this lands at 3 days.
 on:
+  schedule:
+    - cron: "25 6 * * *"
   workflow_dispatch:
     inputs:
       client:
