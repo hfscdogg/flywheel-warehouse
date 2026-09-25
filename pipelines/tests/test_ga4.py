@@ -130,5 +130,28 @@ class TheSessions(unittest.TestCase):
                          {"staging.stg_ga4__sessions"})
 
 
+class TheLeads(unittest.TestCase):
+    """GA4's own standard names (form_submit, generate_lead) never fire on
+    Livewire's site. Leads are the property's key events as marked in GA4
+    Admin on 2026-09-25, so the mart counts exactly those."""
+
+    KEY_EVENTS = {"Chat", "email_link_click", "form_submission",
+                  "phone_call", "phone_link_click", "visit_bookings"}
+
+    def test_key_events_are_the_propertys(self):
+        sql = TRAFFIC.read_text()
+        block = re.search(r"WHERE n IN \(([^)]*)\)\) AS has_key_event", sql, re.S)
+        self.assertIsNotNone(block, "the key-event test has gone")
+        self.assertEqual(set(re.findall(r"'([^']+)'", block.group(1))), self.KEY_EVENTS)
+
+    def test_the_breakdown_names_real_events(self):
+        # Every event the mart counts by name must be a key event; a name
+        # the site never sends is a column that is always zero.
+        sql = TRAFFIC.read_text()
+        named = set(re.findall(r"'(\w+)' IN UNNEST\(event_names\)", sql))
+        self.assertTrue(named)
+        self.assertLessEqual(named, self.KEY_EVENTS)
+
+
 if __name__ == "__main__":
     unittest.main()
