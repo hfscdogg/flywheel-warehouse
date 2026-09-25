@@ -78,6 +78,49 @@ DTOOLS = {
     "page_size": 20,
 }
 
+DTOOLS_V2 = {
+    # D-Tools Cloud API v2 (https://dtools.mintlify.app, OpenAPI
+    # /api-reference/openapi.v2.json), read 2026-09-25. Separate from DTOOLS
+    # above: a different host, a different auth, and the only D-Tools API
+    # that exposes cost. v1's list endpoints carry no cost field at all, which
+    # is why kpi_project_margin has had no margin.
+    #
+    # Auth is Microsoft Entra External ID, DELEGATED ("DirectAPI" public
+    # client): a person signs in once as the D-Tools service user by device
+    # code (python -m pipelines.dtools.signin), the refresh token goes straight
+    # to Secret Manager, and each run trades it for an access token. Entra may
+    # hand back a new refresh token on any refresh; it is written back before
+    # anything else can fail, exactly as QBO's is. There is no client secret:
+    # the client id is D-Tools' public app id. Tenant, client id, scope and
+    # account id are per-environment values D-Tools issues; they are not
+    # secret and live in client.env (DTOOLS_V2_*), not here.
+    #
+    # VERIFY on the first live run: every shape below is from the spec, none
+    # observed. Staging models wait for that run's payloads (read by probe).
+    "base_url_default": "https://api.d-tools.cloud/api/v2",
+    "refresh_secret": "flywheel-dtools-v2-refresh-token",
+    "page_size": 100,
+    # Changed-since lists whose rows need a per-id GET for the fields that
+    # matter: a project's cost and margin sit on its proposal data, a purchase
+    # order's unitCost and projectId on its products.
+    "projects": {"list_path": "/projects", "list_key": "projects",
+                 "total_key": "totalProjects",
+                 "detail_path": "/projects/{id}/proposal/data",
+                 # IncludeSummary carries cost/margin; the labor summary
+                 # splits labor cost by labor type.
+                 "detail_params": {"IncludeSummary": "true",
+                                   "IncludeLaborSummary": "true"}},
+    "purchase_orders": {"list_path": "/purchase-orders",
+                        "list_key": "purchaseOrders",
+                        "total_key": "totalPurchaseOrders",
+                        "detail_path": "/purchase-orders/{id}"},
+    # Time entries carry no id and no modified date, so they cannot be pulled
+    # incrementally or deduplicated by key: every run pulls them all and
+    # staging reads the newest run.
+    "time_entries": {"list_path": "/time-entries", "list_key": "timeEntries",
+                     "total_key": "totalTimeEntries"},
+}
+
 ALARMDOTCOM = {
     # Alarm.com Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi).
     # Auth is an OAuth password grant against a *different* path on the same

@@ -1,0 +1,66 @@
+name: ingest-dtools-v2
+
+# D-Tools Cloud API v2: project cost and margin, purchase order costs, time
+# entry costs, into raw_dtools.v2_*. See pipelines/dtools/v2.py.
+#
+# MANUAL ONLY until the first run has been read. Needs, in this order: the
+# DTOOLS_V2_* values in clients/<slug>/client.env, the secret container from
+# scripts/05-ingestion-infra.sh, and one device-code sign-in
+# (python -m pipelines.dtools.signin). A nightly schedule is added once a
+# dispatched run has landed and its payloads have been checked.
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      full_refresh:
+        description: Ignore watermarks; re-fetch every project and purchase order
+        type: boolean
+        default: false
+      limit:
+        description: Stop each list after N records (0 = no limit; a smoke run)
+        default: "0"
+
+concurrency:
+  group: ingest-dtools-v2-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+  issues: write # alert.yml opens the failure issue; a called
+                # workflow cannot hold a permission its caller lacks
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipelines/requirements.txt
+      - name: Ingest D-Tools Cloud v2 → raw_dtools.v2_*
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+          FULL_REFRESH: ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
+          LIMIT: ${{ inputs.limit || '0' }}
+        run: >
+          python -m pipelines.dtools.v2
+          --client "$CLIENT" --limit "$LIMIT" $FULL_REFRESH
+
+  # Nothing told anyone when this broke. See .github/workflows/alert.yml.
+  alert:
+    needs: ingest
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      workflow: ingest-dtools-v2
+    permissions:
+      contents: read
+      issues: write

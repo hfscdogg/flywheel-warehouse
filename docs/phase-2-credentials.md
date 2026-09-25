@@ -116,6 +116,37 @@ refreshing rows that stopped changing.
 > against the API reference shown alongside your key. If an endpoint 404s,
 > fix the path in `sources.py` — that's the entire change.
 
+## 2a. D-Tools Cloud API v2 — cost and margin (~10 min)
+
+v2 is a separate API (`api.d-tools.cloud/api/v2`) and the only D-Tools API
+that returns cost. It authenticates through Microsoft Entra External ID as a
+**person**: there is no client secret. Someone signs in once as a dedicated
+D-Tools service user, and the pipeline keeps that sign-in alive with its
+refresh token, writing back any replacement Entra hands it (as QBO does).
+
+1. Get from D-Tools, for the production environment: the tenant id (or
+   authority URL), the DirectAPI public client id, and the API scope. None
+   is secret. Put them in `clients/<slug>/client.env` as
+   `DTOOLS_V2_TENANT_ID`, `DTOOLS_V2_CLIENT_ID`, `DTOOLS_V2_SCOPE`
+   (the commented block there lists them). The values in D-Tools' public
+   docs are for their demo environment.
+2. Run `scripts/05-ingestion-infra.sh <slug>` again (idempotent). It creates
+   `flywheel-dtools-v2-refresh-token` and lets ingest-writer read it and add
+   versions to it.
+3. Sign in, on your own machine with gcloud signed in as a project owner:
+   `python -m pipelines.dtools.signin --client <slug>`. Open the URL it
+   prints, enter the code, and sign in as the **service user**, not your own
+   account: the nightly ingest acts as whoever signs in here. The refresh
+   token goes to Secret Manager on stdin and is never shown. The script then
+   lists the D-Tools accounts that user reaches; if there is more than one,
+   set `DTOOLS_V2_ACCOUNT_ID` to Livewire's.
+4. Dispatch `ingest-dtools-v2` once with `limit` 5 as a smoke run, then with
+   no limit. It is manual-only until a run has landed and been read.
+
+The sign-in dies on a password change, a revoked session, or roughly 90 days
+unused (the nightly run keeps it alive). The ingest then fails with "refused
+the stored refresh token"; repeat step 3.
+
 ## 2b. Alarm.com Partner Portal (~10 min)
 
 The Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi) uses an
@@ -213,7 +244,7 @@ see it.
 > **Rotation is handled.** QBO invalidates and replaces refresh tokens over
 > time; the pipeline writes each new token back to Secret Manager
 > automatically (that's why `ingest-writer` holds `secretVersionAdder` on
-> that one secret). Never paste the refresh token anywhere else — a stale
+> that secret, and on the D-Tools v2 one, section 2a). Never paste the refresh token anywhere else — a stale
 > copy stops working.
 
 ## 3b. Vendor report drop bucket (no credentials)
