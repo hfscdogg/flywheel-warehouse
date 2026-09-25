@@ -25,7 +25,12 @@ the 07:00 transform), manually triggerable via `workflow_dispatch`, one
    (append-only; latest row wins). Zoho uses `If-Modified-Since`; QBO filters
    on `MetaData.LastUpdatedTime`; D-Tools full-pulls every run (small data).
    `--full-refresh` ignores watermarks.
-5. **Run log:** every landing writes one row to `raw_<source>._flywheel_runs`
+5. **Reports, not increments:** `qbo/reports.py` lands QuickBooks' own P&L,
+   Balance Sheet and Cash Flow (monthly columns, three years back) and its
+   budgets. A closed month can still change, so each run pulls the whole
+   window and staging reads the newest run. It shares ingest-qbo's rotating
+   token and its concurrency group.
+6. **Run log:** every landing writes one row to `raw_<source>._flywheel_runs`
    (entity = landing table, run_id, rows_loaded, ran_at), empty pulls
    included. An incremental table only grows when a record changes, so
    `sql/checks/fresh.sql` reads this log to tell a quiet QBO or Zoho CRM
