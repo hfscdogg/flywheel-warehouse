@@ -1,0 +1,66 @@
+# Goal card — the KPI one Hermes engine is accountable to.
+# Schema and rules for every card: goal-cards/README.md.
+kpi: net_income_vs_budget
+title: Net income each month against the QuickBooks budget
+status: draft            # the target is the owner's to set
+owner: henry@getlivewire.com
+cadence: monthly         # after the month is closed in QuickBooks
+mart_table: livewire-dw.marts.kpi_financial_monthly
+credential: impersonate hermes-reader@livewire-dw.iam.gserviceaccount.com
+
+definition: >
+  Net income for the calendar month from QuickBooks' own Profit and Loss,
+  accrual basis, against the active QuickBooks budget, with income, gross
+  profit and net operating income as the lines that explain the gap. These
+  are the figures the accountant's monthly package leads with.
+
+query: |
+  SELECT month, is_complete_month, income, budget_income, gross_profit, budget_gross_profit,
+         net_operating_income, budget_net_operating_income, net_income, budget_net_income
+  FROM marts.kpi_financial_monthly
+  WHERE month >= DATE_TRUNC(DATE_SUB(CURRENT_DATE(), INTERVAL 1 YEAR), YEAR)
+  ORDER BY month
+
+columns: [month, is_complete_month, income, budget_income, gross_profit, budget_gross_profit, net_operating_income, budget_net_operating_income, net_income, budget_net_income]
+
+# Measured on the first QuickBooks reports pull (2026-09-25 17:40 UTC). The
+# August figures match the accountant's updated August package to the dollar.
+baseline:
+  as_of: 2026-09-25
+  august_2026_net_income: 20944.89
+  august_2026_budget_net_income: -21578.38
+  august_2026_income: 334179.49
+  august_2026_budget_income: 258101.41
+  net_income_2026_to_august: -226154.77
+  net_income_2025: 116313.15
+
+target: null
+
+rules:
+  - >
+    The budget here is the active budget in QuickBooks ("Budget_FY26_P&L").
+    It is not the budget in the accountant's package: for August 2026 it
+    has income at $258,101, the package $276,588. Say which budget a
+    comparison uses, and do not present this one as the package's.
+  - >
+    Report variances in dollars. Several months are budgeted at a loss
+    (August 2026 net income budget -$21,578), and a percentage of a negative
+    budget reads backwards.
+  - >
+    The current month is month to date (is_complete_month = FALSE). Compare
+    complete months only, and a month is not final until it has been closed
+    in QuickBooks: entries posted after a pull change it. The accountant's
+    August balance-sheet pages were run before $3,140 of later entries and
+    disagreed with the P&L pages by that much.
+  - >
+    Every figure is a total QuickBooks printed. Do not re-add account lines
+    from kpi_financial_statements to reproduce one; read the total.
+  - >
+    Budgets exist from January 2026. Earlier months have NULL budget
+    columns, which means no budget, not a zero one.
+
+drill_down: >
+  Which accounts drove a variance: marts.kpi_financial_statements, report =
+  'ProfitAndLoss', line_type = 'account', amount against budget_amount for
+  the month. Mix, margins and balance-sheet position for the same month are
+  in the other columns of marts.kpi_financial_monthly.
