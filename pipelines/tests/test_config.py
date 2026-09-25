@@ -13,7 +13,7 @@ class TestClientConfig(unittest.TestCase):
         self.assertEqual(
             cfg.raw_datasets,
             ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo",
-             "raw_vendor", "raw_alarmdotcom"],
+             "raw_vendor", "raw_alarmdotcom", "raw_ga4"],
         )
 
     def test_source_enablement(self):
