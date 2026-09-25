@@ -138,3 +138,36 @@ class TheBudgetIsTheActivePlan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CATEGORIES = ROOT / "sql" / "marts" / "kpi_financial_categories.sql"
+
+
+class TheCategoriesAddUp(unittest.TestCase):
+    """kpi_financial_categories is what the package's Performance Summary
+    and budget pages are built from, so a category must be the sum of its
+    accounts and nothing else, and next month's budget must be in it."""
+
+    def setUp(self):
+        self.sql = flat(CATEGORIES.read_text())
+
+    def test_only_account_lines_are_added(self):
+        # Section totals already contain their accounts; adding both
+        # doubles every category.
+        self.assertIn("WHERE report = 'ProfitAndLoss' AND line_type = 'account'", self.sql)
+
+    def test_the_category_is_the_section_under_the_group(self):
+        self.assertIn("IF(depth <= 1, label, SPLIT(section_path, ' > ')[SAFE_OFFSET(1)]) AS category",
+                      self.sql)
+
+    def test_budget_only_months_are_kept(self):
+        # An inner join would drop every budgeted month without actuals,
+        # which is the rest of the year the package forecasts from.
+        self.assertIn("FROM actual AS a FULL OUTER JOIN budget AS b", self.sql)
+        self.assertIn("AND a.cat_key = b.cat_key AND a.sub_key = b.sub_key", self.sql)
+
+    def test_budget_is_the_active_plan(self):
+        self.assertIn("WHERE b.is_active AND b.budget_type = 'ProfitAndLoss'", self.sql)
+
+    def test_an_account_is_placed_where_it_prints_now(self):
+        self.assertIn("ORDER BY period_start DESC LIMIT 1)[OFFSET(0)] AS p", self.sql)
