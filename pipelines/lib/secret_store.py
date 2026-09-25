@@ -2,7 +2,8 @@
 
 All source credentials live in the client's own project — GitHub holds no
 client secrets (docs/trust.md). ingest-writer has secretAccessor on the
-flywheel-* secrets, and secretVersionAdder on the QBO refresh token only.
+flywheel-* secrets, and secretVersionAdder on the two rotating refresh
+tokens only (QBO, D-Tools v2).
 """
 
 from google.cloud import secretmanager

@@ -6,8 +6,8 @@
 # Credential model (docs/trust.md): ALL source credentials (Zoho, D-Tools,
 # QBO) live in Secret Manager inside the client's own project. GitHub holds
 # no client secrets — workflows authenticate via WIF (OIDC, no key files)
-# and read credentials at runtime as ingest-writer. The QBO refresh token
-# rotates; ingest-writer can add new versions of that one secret only.
+# and read credentials at runtime as ingest-writer. The QBO and D-Tools v2
+# refresh tokens rotate; ingest-writer can add new versions of those only.
 #
 # Requires GITHUB_REPO and WIF_POOL in client.env (the "Phase 2" block).
 # Idempotent: check-then-converge throughout. DRY_RUN=1 supported.
@@ -27,10 +27,12 @@ fi
 
 SECRET_NAMES="flywheel-zoho-client-id flywheel-zoho-client-secret flywheel-zoho-refresh-token \
 flywheel-zohobilling-client-id flywheel-zohobilling-client-secret flywheel-zohobilling-refresh-token \
-flywheel-dtools-api-key flywheel-dtools-auth-basic \
+flywheel-dtools-api-key flywheel-dtools-auth-basic flywheel-dtools-v2-refresh-token \
 flywheel-alarmdotcom-username flywheel-alarmdotcom-password flywheel-alarmdotcom-client-id \
 flywheel-qbo-client-id flywheel-qbo-client-secret flywheel-qbo-refresh-token flywheel-qbo-realm-id"
-ROTATING_SECRET="flywheel-qbo-refresh-token"
+# Refresh tokens the pipeline itself replaces: QBO rotates on use, and Entra
+# (D-Tools v2) may hand back a new one on any refresh.
+ROTATING_SECRETS="flywheel-qbo-refresh-token flywheel-dtools-v2-refresh-token"
 SECRET_LABELS="managed-by=$LABEL_MANAGED_BY,client=$CLIENT_SLUG,env=$LABEL_ENV"
 
 info "Phase 2 infra for '$CLIENT_SLUG' in $GCP_PROJECT_ID (repo: $GITHUB_REPO)"
@@ -92,11 +94,13 @@ for s in $SECRET_NAMES; do
     --role=roles/secretmanager.secretAccessor --format=none --quiet
 done
 
-# QBO rotates refresh tokens on use; the pipeline writes the new one back.
-info "Rotation writeback: ingest-writer may add versions of $ROTATING_SECRET only"
-run gcloud secrets add-iam-policy-binding "$ROTATING_SECRET" --project "$GCP_PROJECT_ID" \
-  --member="serviceAccount:$SA_INGEST_WRITER_EMAIL" \
-  --role=roles/secretmanager.secretVersionAdder --format=none --quiet
+# The pipeline writes a rotated refresh token back; these secrets only.
+for s in $ROTATING_SECRETS; do
+  info "Rotation writeback: ingest-writer may add versions of $s"
+  run gcloud secrets add-iam-policy-binding "$s" --project "$GCP_PROJECT_ID" \
+    --member="serviceAccount:$SA_INGEST_WRITER_EMAIL" \
+    --role=roles/secretmanager.secretVersionAdder --format=none --quiet
+done
 
 # ── Handoff ──────────────────────────────────────────────────────────────
 if is_dry_run; then

@@ -35,8 +35,9 @@ the 07:00 transform), manually triggerable via `workflow_dispatch`, one
 
 - **QBO rotates refresh tokens.** Each refresh can return a new token and
   kill the old one. `qbo/ingest.py` writes the new token back to Secret
-  Manager immediately (`ingest-writer` has `secretVersionAdder` on that one
-  secret). This is why credentials live in Secret Manager, not GitHub.
+  Manager immediately (`ingest-writer` has `secretVersionAdder` on that
+  secret and on D-Tools v2's, which Entra rotates the same way). This is why
+  credentials live in Secret Manager, not GitHub.
 - **Zoho data centers.** The token endpoint depends on the tenant's region
   (`ZOHO_ACCOUNTS_HOST`, default `accounts.zoho.com`); record calls follow
   the `api_domain` the token response returns.
