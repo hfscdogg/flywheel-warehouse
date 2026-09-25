@@ -26,12 +26,16 @@ query: |
 # if one is renamed or dropped from the mart.
 columns: [month, won_amount, deals_won, lost_amount, open_expected_closing]
 
+# Re-baselined 2026-09-25 when the won-stage list was corrected (Finish Out
+# Complete and Closed Won - Cash and Carry now count, RFP Sent does not). The
+# 2026-09-23 figures ($2,674,304.76 over twelve months, $222,858.73 a month)
+# were on the old list and are not comparable.
 baseline:
-  as_of: 2026-09-23
-  trailing_12_months_won: 2674304.76    # Sep 2025 – Aug 2026, complete months
-  monthly_average_12m: 222858.73
-  monthly_average_3m: 258407.71         # Jun – Aug 2026; August alone was 456,941.34
-  pipeline_next_3_months: 479892.18     # open_expected_closing, Sep + Oct + Nov 2026
+  as_of: 2026-09-25
+  trailing_12_months_won: 3667087.31    # Sep 2025 – Aug 2026, complete months
+  monthly_average_12m: 305590.61
+  monthly_average_3m: 327093.42         # Jun – Aug 2026; August alone was 423,230.41
+  pipeline_next_3_months: 501608.52     # open_expected_closing, Sep + Oct + Nov 2026
 
 target: {won_amount_per_month: 400000, set_by: henry@getlivewire.com, set_on: 2026-09-23}
 
@@ -39,12 +43,13 @@ rules:
   - >
     Report each complete month's won_amount against the $400,000 target and
     the gap in dollars, and the current month as month-to-date against it.
-    For scale: in the 12 complete months to August 2026 only August
-    ($456,941.34) reached it; the 12-month average was $222,858.73. Do not
-    restate the target as a count of deals.
+    For scale: in the 12 complete months to August 2026, three reached it:
+    January 2026 ($480,659.85), July ($405,785.78) and August ($423,230.41);
+    the 12-month average was $305,590.61. Do not restate the target as a
+    count of deals.
   - >
-    Measure dollars, not counts. 1,458 of the 1,737 deals won since
-    2025-09-01 were under $1,000 and 971 closed within a day of creation, so
+    Measure dollars, not counts. 1,567 of the 1,945 deals won since
+    2025-09-01 were under $1,000 and 1,053 closed within a day of creation, so
     deals_won, win_rate_pct and median_days_to_win describe small
     transactional deals, not the project sales this card is about. Do not
     report a win rate or a velocity from this table as a sales-performance
@@ -64,8 +69,8 @@ rules:
   - >
     Count pipeline from the current month forward only. On a past month,
     open_expected_closing is deals whose expected close date went by without
-    being marked won or lost: $1.92M across Sep 2025 – Aug 2026 on
-    2026-09-23, $561,722 of it dated May 2026. That is a CRM-hygiene figure
+    being marked won or lost: $838,571 across Sep 2025 – Aug 2026 on
+    2026-09-25, $305,911 of it dated May 2026. That is a CRM-hygiene figure
     worth reporting on its own line, not pipeline.
   - >
     Do not read a loss rate from one month's lost_amount. September 2026

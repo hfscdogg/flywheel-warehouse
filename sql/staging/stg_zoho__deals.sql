@@ -3,7 +3,7 @@
 -- Source: raw_zoho.deals (append-only; payload = full Zoho v2 record).
 CREATE OR REPLACE TABLE staging.stg_zoho__deals
 OPTIONS (description = """
-Zoho CRM deals, one row per deal: the sales pipeline. is_won and is_lost follow Zoho's Forecast Type stage lists, so they mean what the Zoho dashboard means; install stages count as won. Exclude is_test_record = TRUE from any revenue question. Amounts USD.
+Zoho CRM deals, one row per deal: the sales pipeline. is_won and is_lost follow Zoho's Forecast Type stage lists with four corrections (2026-09-25): 'Finish Out Complete' and 'Closed Won - Cash and Carry' count as won, which Zoho's lists missed, and 'RFP Sent' no longer does, since a proposal is not a sale. Install stages count as won. Won figures from before 2026-09-25 are not comparable: the change added about $1M to the twelve months to August 2026. Exclude is_test_record = TRUE from any revenue question. Amounts USD.
 """)
 AS
 WITH latest AS (
@@ -53,26 +53,38 @@ classified AS (
   SELECT
     *,
     -- Won/Lost/Open per the Zoho Analytics "Forecast Type" formula column on
-    -- Potentials (zoho-reference/formulas.md) — the org's authoritative stage
-    -- classification. Most Won stages don't contain the word "won" and two
-    -- Lost stages don't contain "lost", so explicit lists, not patterns.
-    -- A stage outside both lists (including a newly added picklist value)
-    -- classifies as Open, same as Zoho's formula.
+    -- Potentials (zoho-reference/formulas.md), with four corrections made
+    -- 2026-09-25. Most Won stages don't contain the word "won" and two Lost
+    -- stages don't contain "lost", so explicit lists, not patterns. A stage
+    -- outside both lists classifies as Open, same as Zoho's formula, which
+    -- is how the first three below went uncounted:
+    --   'Finish Out Complete'  a second spelling of 'Finish-Out Complete'
+    --                          still in use: 136 deals, $1.16M, all Open.
+    --   'Closed Won - Cash and Carry'  118 deals, $186k, all Open.
+    --   'Tentatively_Scheduled', 'Closed Lost'  old spellings, 3 deals.
+    --   'RFP Sent' leaves Won: a proposal sent is not a sale. $88,728 of
+    --   August 2026's won revenue was RFPs.
+    -- With these, deals created 2026-04-01 to 09-25 show $1,551,907 won
+    -- (714 deals) against the marketing attribution dashboard's $1,550,912
+    -- (709), the same $995 by which its pipeline trails this table's.
     CASE
       WHEN stage IN (
-        'RFP Sent', 'Closed Won', 'Closed Won - Service',
+        'Closed Won', 'Closed Won - Service',
         'Closed Won - Design Retainer', 'Closed Won - Not Ready',
-        'Change Order', 'Tentatively Scheduled',
+        'Closed Won - Cash and Carry',
+        'Change Order', 'Tentatively Scheduled', 'Tentatively_Scheduled',
         'Rough-In', 'Rough-In Scheduled', 'Rough-In Complete',
         'Trim-Out', 'Trim Out Scheduled', 'Trim-Out Complete',
         'Finish-Out', 'Finish Out Scheduled', 'Finish-Out Complete',
+        'Finish Out Complete',
         'Punch Out', 'Punch Out Scheduled',
         'Service Call Scheduled', 'Service Call Complete',
         'Installation Complete'
       ) THEN 'Won'
       WHEN stage IN (
         'Closed Lost to Competition', 'Client decided not to do work',
-        'Client in holding pattern', 'Closed Lost - Unable to Contact'
+        'Client in holding pattern', 'Closed Lost - Unable to Contact',
+        'Closed Lost'
       ) THEN 'Lost'
       ELSE 'Open'
     END AS forecast_type
@@ -154,7 +166,7 @@ ALTER TABLE staging.stg_zoho__deals ALTER COLUMN modified_at
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN loaded_at
   SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN forecast_type
-  SET OPTIONS (description = "Zoho Forecast Type of the current stage: Open, Closed Won, Closed Lost, or an install stage.");
+  SET OPTIONS (description = "Won, Lost or Open for the current stage: Zoho's Forecast Type lists, corrected 2026-09-25 (see the table description). A stage on neither list is Open.");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN is_won
   SET OPTIONS (description = "TRUE when the stage counts as won, per the Forecast Type lists.");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN is_lost
