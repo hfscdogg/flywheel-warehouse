@@ -2,7 +2,7 @@
 # Schema and rules for every card: goal-cards/README.md.
 kpi: net_income_vs_budget
 title: Net income each month against the QuickBooks budget
-status: draft            # the target is the owner's to set
+status: active           # target set by the owner 2026-09-25
 owner: henry@getlivewire.com
 cadence: monthly         # after the month is closed in QuickBooks
 mart_table: livewire-dw.marts.kpi_financial_monthly
@@ -34,9 +34,17 @@ baseline:
   net_income_2026_to_august: -226154.77
   net_income_2025: 116313.15
 
-target: null
+target: {net_income_at_least: monthly QuickBooks budget, set_by: henry@getlivewire.com, set_on: 2026-09-25}
 
 rules:
+  - >
+    The target is each month's own budget, not a fixed number, because the
+    budget is set for the seasonal cycle: it ranges from -$31,891 (March
+    2026) to +$77,630 (July 2026). A month meets the target when net_income
+    is at or above budget_net_income. Report each complete month as met or
+    missed with the gap in dollars, and the year to date as the sum of
+    net_income against the sum of budget_net_income. To August 2026 that was
+    -$226,154.77 against +$94,922.41; February, March and August met it.
   - >
     The budget here is the active budget in QuickBooks ("Budget_FY26_P&L").
     It is not the budget in the accountant's package: for August 2026 it
