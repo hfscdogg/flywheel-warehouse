@@ -122,6 +122,6 @@ ALTER TABLE staging.stg_ga4__sessions ALTER COLUMN page_views
 ALTER TABLE staging.stg_ga4__sessions ALTER COLUMN event_count
   SET OPTIONS (description = "Every GA4 event in the session, page views included.");
 ALTER TABLE staging.stg_ga4__sessions ALTER COLUMN event_names
-  SET OPTIONS (description = "Distinct GA4 event names that fired in the session, sorted, e.g. form_submit, page_view, scroll. Test for one with 'form_submit' IN UNNEST(event_names).");
+  SET OPTIONS (description = "Distinct GA4 event names that fired in the session, sorted, e.g. form_submission, page_view, phone_link_click. Test for one with 'form_submission' IN UNNEST(event_names).");
 ALTER TABLE staging.stg_ga4__sessions ALTER COLUMN loaded_at
   SET OPTIONS (description = "Time of the newest event in the GA4 export when this table was built (UTC), the same on every row. How current the export is: GA4 writes each day's table the next day.");
