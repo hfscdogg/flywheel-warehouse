@@ -99,6 +99,16 @@ WITH loaded AS (
          'raw_qbo.purchaseorder' AS raw_table
   FROM staging.stg_qbo__purchase_orders
   UNION ALL
+  SELECT 'stg_qbo__report_lines' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_qbo.report_lines' AS raw_table
+  FROM staging.stg_qbo__report_lines
+  UNION ALL
+  SELECT 'stg_qbo__budgets' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_qbo.budgets' AS raw_table
+  FROM staging.stg_qbo__budgets
+  UNION ALL
   SELECT 'stg_qbo__vendors' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_qbo.vendor' AS raw_table

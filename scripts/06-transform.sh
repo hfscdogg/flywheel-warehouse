@@ -361,6 +361,36 @@ check_fresh() {
   die "a stale source answers confidently and wrongly; this is why it is red"
 }
 
+# QuickBooks' three reports must agree with themselves and each other before
+# anything built on them is trusted: P&L arithmetic, the cash flow opening
+# with the P&L's net income, the balance sheet's net income equal to the
+# P&L's year to date, assets equal to liabilities and equity, every section's
+# accounts adding up to its total (sql/checks/qbo_reports_tie.sql). The
+# accountant's August 2026 package failed two of these; this run cannot.
+#
+# Runs BEFORE check_fresh, which is red whenever any feed is late: a
+# disagreement in the books must not hide behind an unrelated stale upload.
+# Skipped, and said so, for a client with no QuickBooks reports landed.
+check_reports_tie() {
+  local check="$REPO_ROOT/sql/checks/qbo_reports_tie.sql" broken
+  if is_dry_run; then
+    log "[dry-run] $BQ query --format=csv < ${check#"$REPO_ROOT"/}   # expect no rows"
+    return 0
+  fi
+  if ! table_present staging.stg_qbo__report_lines; then
+    info "skip the QuickBooks reports tie — no report lines built for this client"
+    return 0
+  fi
+  log "  \$ bq query < ${check#"$REPO_ROOT"/}"
+  # shellcheck disable=SC2086  # $BQ is intentionally word-split
+  broken="$($BQ query --use_legacy_sql=false --format=csv < "$check" | tail -n +2)"
+  [ -z "$broken" ] && { log "  QuickBooks' reports agree with each other in every month"; return 0; }
+  warn "QuickBooks' reports disagree (check, month, computed, printed, difference):"
+  printf '%s\n' "$broken" | sed 's/^/    /' >&2
+  warn "the statement marts were built, but a figure read from them can contradict another"
+  die "the books do not tie; fix the pull or the books before anyone reads these statements"
+}
+
 if [ $# -ge 1 ]; then
   if is_validate; then
     info "Validating selected models (no build) for '$CLIENT_SLUG'"
@@ -415,6 +445,8 @@ else
     info "Transform: every agent-readable table described"
     check_describe_failures
     check_described
+    info "Transform: QuickBooks' reports tie to each other"
+    check_reports_tie
     info "Transform: every source loaded recently enough to answer from"
     check_fresh
   fi
