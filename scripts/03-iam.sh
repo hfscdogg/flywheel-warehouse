@@ -92,6 +92,15 @@ for ds in $ALL_DATASETS; do
   grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
 done
 
+# The GA4 export is written by Google, outside DATASETS_RAW, and read only
+# through the view raw_ga4.events, which runs with the querying identity's
+# own access. ingest-writer builds staging from that view, so it reads the
+# export; nothing writes to it. hermes-reader gets no grant here, as on raw.
+if [ -n "$GA4_EXPORT_DATASET" ]; then
+  info "ingest-writer: read access on the GA4 export $GA4_EXPORT_DATASET"
+  grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataViewer "$GA4_EXPORT_DATASET"
+fi
+
 # Project Owner does NOT include token creation. This is what lets ADMIN_USER
 # impersonate hermes-reader — for 90-verify's smoke test, and for keyless
 # agent auth.

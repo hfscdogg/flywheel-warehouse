@@ -92,7 +92,7 @@ if [ "$AGENT_SCOPE" = "wide" ]; then
   fi
 fi
 # shellcheck disable=SC2086  # intentional word-split of the dataset lists
-for ds in $DATASETS_RAW $STAGING_EXPECTED_ABSENT; do
+for ds in $DATASETS_RAW $STAGING_EXPECTED_ABSENT $GA4_EXPORT_DATASET; do
   DS_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null || true)"
   if [ -z "$DS_ACCESS" ]; then
     record FAIL "policy: could not read access on $ds"

@@ -42,4 +42,31 @@ for ds in $DATASETS_RAW $DATASET_MARTS; do
   run $BQ query --use_legacy_sql=false --format=none "$SQL"
 done
 
+# Google Analytics 4 is not ingested. Google writes the property's export into
+# this project as one table per day (events_YYYYMMDD), and raw_ga4.events is
+# a view over those, so staging reads raw_<source>.<entity> like every other
+# source and the transform's missing-input and source-enabled checks apply
+# unchanged. The intraday tables (events_intraday_YYYYMMDD) are left out:
+# they are replaced by the day's final table and would count a day twice.
+# Explicit columns, so a field Google adds does not change the view.
+if [ -n "$GA4_EXPORT_DATASET" ]; then
+  info "View raw_ga4.events over $GA4_EXPORT_DATASET"
+  # shellcheck disable=SC2016  # backticks are BigQuery identifier quoting, not expansion
+  SQL="$(printf '%s' "CREATE OR REPLACE VIEW \`$GCP_PROJECT_ID.raw_ga4.events\`
+OPTIONS (description = 'Google Analytics 4 export for $CLIENT_DISPLAY_NAME, one row per event, from the daily tables in $GA4_EXPORT_DATASET. Managed by 01-datasets.sh.')
+AS
+SELECT
+  PARSE_DATE('%Y%m%d', event_date) AS event_date,
+  event_timestamp,
+  event_name,
+  event_params,
+  user_pseudo_id,
+  device.category AS device_category,
+  collected_traffic_source,
+  session_traffic_source_last_click
+FROM \`$GCP_PROJECT_ID.$GA4_EXPORT_DATASET.events_*\`
+WHERE REGEXP_CONTAINS(_TABLE_SUFFIX, r'^[0-9]{8}\$')")"
+  run $BQ query --use_legacy_sql=false --format=none "$SQL"
+fi
+
 info "Datasets done."

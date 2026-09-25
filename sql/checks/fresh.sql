@@ -99,6 +99,14 @@ WITH loaded AS (
          'raw_qbo.purchaseorder' AS raw_table
   FROM staging.stg_qbo__purchase_orders
   UNION ALL
+  -- GA4 is not ingested by us: Google writes the export daily, the next
+  -- day. loaded_at is the newest event in it, so 3 days means two missing
+  -- days, i.e. the export stopped (unlinked, or the property's quota hit).
+  SELECT 'stg_ga4__sessions' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_ga4__sessions
+  UNION ALL
   SELECT 'stg_qbo__report_lines' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_qbo.report_lines' AS raw_table
@@ -200,8 +208,11 @@ SELECT
   FORMAT_TIMESTAMP('%Y-%m-%d', newest) AS newest_load,
   DATE_DIFF(CURRENT_DATE(), DATE(newest), DAY) AS age_days,
   max_age_days,
-  IFNULL(CONCAT('upload to gs://<vendor-drop-bucket>/', drop_prefix, '/'),
-         'ingest workflow has not run') AS fix
+  CASE
+    WHEN drop_prefix IS NOT NULL THEN CONCAT('upload to gs://<vendor-drop-bucket>/', drop_prefix, '/')
+    WHEN STARTS_WITH(table_name, 'stg_ga4__') THEN 'GA4 export stopped: check the BigQuery link in GA4 Admin'
+    ELSE 'ingest workflow has not run'
+  END AS fix
 FROM checked
 WHERE newest IS NULL
    OR newest < TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL max_age_days DAY)

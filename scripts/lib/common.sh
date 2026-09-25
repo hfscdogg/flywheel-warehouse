@@ -128,6 +128,20 @@ load_client() {
     *) die "client.env for '$slug': AGENT_SCOPE must be narrow or wide (got '$AGENT_SCOPE')" ;;
   esac
 
+  # Google Analytics 4 is not ingested: Google writes the property's export
+  # into this project, and raw_ga4.events is a view over it. The two
+  # settings only make sense together, so a half-configured client stops
+  # here rather than building a view nobody reads or a model with no view.
+  GA4_EXPORT_DATASET="${GA4_EXPORT_DATASET:-}"
+  case " $DATASETS_RAW " in
+    *" raw_ga4 "*)
+      [ -n "$GA4_EXPORT_DATASET" ] \
+        || die "client.env for '$slug': raw_ga4 is in DATASETS_RAW but GA4_EXPORT_DATASET is not set" ;;
+    *)
+      [ -z "$GA4_EXPORT_DATASET" ] \
+        || die "client.env for '$slug': GA4_EXPORT_DATASET is set but raw_ga4 is not in DATASETS_RAW" ;;
+  esac
+
   # Always-explicit project, never interactive first-run init. Intentionally
   # word-split at call sites: run $BQ show ...
   BQ="bq --headless=true --project_id=$GCP_PROJECT_ID"
