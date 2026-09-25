@@ -111,6 +111,70 @@ class Freshness(unittest.TestCase):
         self.assertIn("upload to gs://", src)
 
 
+# Sources pulled incrementally: their landing tables grow only when a record
+# changes, so MAX(loaded_at) is when something last changed, not when the
+# ingest last ran. The check must read the run log for every one of these.
+INCREMENTAL = ("stg_qbo__", "stg_zoho__")
+
+
+def raw_tables_named():
+    """{staging table: raw_table} as fresh.sql names them."""
+    src = CHECK.read_text()
+    body = src[src.index("WITH loaded AS ("):src.index("\nran AS (")]
+    out = {}
+    for m in re.finditer(r"SELECT '(\w+)' AS table_name,.*?(?:'(raw_\w+\.\w+)'|NULL AS STRING\)) AS raw_table",
+                         body, re.S):
+        out[m.group(1)] = m.group(2)
+    return out
+
+
+def model_raw_input(table):
+    src = (STAGING / f"{table}.sql").read_text()
+    return sorted(set(re.findall(r"\braw_[a-z0-9_]+\.[a-z0-9_]+", src)))
+
+
+class AQuietIncrementalSourceIsNotStale(unittest.TestCase):
+    """2026-09-25: stg_qbo__purchase_orders failed the transform as "3 days
+    old, ingest workflow has not run" on the third green ingest-qbo in a row.
+    Nobody had edited a purchase order since 09-22, so nothing new landed.
+
+    Found by mutation: pointing one entry's raw_table at the wrong entity, or
+    dropping the join to the run log, fails the tests below.
+    """
+
+    def test_every_incremental_source_names_the_raw_table_it_reads(self):
+        named = raw_tables_named()
+        incremental = {t for t in checked_tables() if t.startswith(INCREMENTAL)}
+        self.assertGreater(len(incremental), 10)
+        for table in sorted(incremental):
+            with self.subTest(table=table):
+                self.assertEqual(
+                    [named.get(table)], model_raw_input(table),
+                    "the run log is joined on the raw table this staging "
+                    "model reads; a different name checks another entity's "
+                    "runs, or none")
+
+    def test_the_run_log_is_read_for_each_incremental_source(self):
+        src = " ".join(CHECK.read_text().split())
+        for ds in sorted({model_raw_input(t)[0].split(".")[0]
+                          for t in checked_tables() if t.startswith(INCREMENTAL)}):
+            with self.subTest(dataset=ds):
+                self.assertIn(f"FROM {ds}._flywheel_runs", src)
+
+    def test_the_verdict_is_taken_after_the_run_log_join(self):
+        src = " ".join(CHECK.read_text().split())
+        self.assertIn("LEFT JOIN ran AS r USING (raw_table)", src)
+        self.assertIn("GREATEST(l.newest, r.ran_at)", src)
+        final = src[src.rindex("SELECT table_name,"):]
+        self.assertIn("FROM checked WHERE", final,
+                      "the final SELECT reads the loads alone, so a quiet "
+                      "entity is still reported stale")
+
+    def test_the_run_log_table_name_matches_the_pipeline(self):
+        lib = (ROOT / "pipelines" / "lib" / "bq.py").read_text()
+        self.assertIn('RUNS_TABLE = "_flywheel_runs"', lib)
+
+
 class TheCheckIsActuallyRun(unittest.TestCase):
     """A check nothing calls is worse than no check: it reads as coverage.
 
