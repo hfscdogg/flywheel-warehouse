@@ -52,6 +52,15 @@ in step.
 | Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline; feeds `kpi_subscription_audit` alongside Security Central) |
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
+| GA4 | `stg_ga4__sessions` (one row per session; feeds `kpi_website_traffic`) |
+
+**GA4 is read through a view, not an ingest.** `scripts/01-datasets.sh`
+creates `raw_ga4.events` over the property's BigQuery export dataset, named
+by `GA4_EXPORT_DATASET` in `client.env`, so the model reads
+`raw_<source>.<entity>` like every other and the transform's skip rules
+apply. The view reads only the daily `events_YYYYMMDD` tables and leaves out
+`events_intraday_*`, which GA4 replaces with the day's final table, so no day
+is counted twice.
 
 **D-Tools field paths are best-effort** (same VERIFY-on-first-run posture as
 `pipelines/lib/sources.py`): the JSON paths were written from the API docs,
@@ -105,13 +114,7 @@ path (`match_via = 'billing'`) switches itself on as addresses land.
 
 ## Access
 
-Staging tables are readable by `ingest-writer` only; agents never see them
-(`hermes-reader` is scoped to `marts`).
-
-## Coming: GA4 (attribution)
-
-The GA4 → BigQuery native export lands Google-managed `events_YYYYMMDD` and
-`pseudonymous_users_YYYYMMDD` tables in an `analytics_<property_id>` dataset
-(linked 2026-08-24; first tables ~24h later). Once the property id is known,
-`stg_ga4__*` models go here — first-touch acquisition per visitor, joined to
-Zoho leads on captured `gclid`/UTM fields for end-to-end attribution.
+`ingest-writer` builds and reads staging. `hermes-reader` reads it only when
+the client's `client.env` sets `AGENT_SCOPE="wide"`
+([docs/access-tiers.md](../../docs/access-tiers.md), Tier 2b); under the
+default `narrow` it sees `marts` alone. `raw_*` stays locked either way.
