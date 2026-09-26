@@ -454,8 +454,10 @@ billing_via_crm AS (
 -- extracted; an address that is wrong there bounces an invoice, so it gets
 -- corrected, which is a forcing function the CRM's addresses do not have.
 -- Measured at 154 accounts and $2,143 a month no other path reaches, and it
--- is the only route to Parasol, whose subscriber names are absent from Zoho
--- almost entirely (7 of 125).
+-- was for a while the only route to Parasol. Its subscriber names looked
+-- absent from Zoho (7 of 125), but that was the name order, not the book:
+-- Parasol writes "Last, First" and Billing "First Last". See `inverted` in
+-- the matched CTE below.
 billing_via_qbo AS (
   SELECT q.address_key, b.customer_id, b.display_name, 'qbo' AS match_via
   FROM qbo_customers q
@@ -969,14 +971,15 @@ matched AS (
   SELECT
     v.*,
     COALESCE(direct.customer_id, bridged.customer_id, contact.customer_id,
-             named.customer_id)                           AS customer_id,
+             named.customer_id, inverted.customer_id)     AS customer_id,
     COALESCE(direct.display_name, bridged.display_name, contact.display_name,
-             named.display_name)                          AS display_name,
+             named.display_name, inverted.display_name)   AS display_name,
     CASE
       WHEN direct.customer_id IS NOT NULL THEN direct.match_via
       WHEN bridged.customer_id IS NOT NULL THEN 'sc_account'
       WHEN contact.customer_id IS NOT NULL THEN contact.match_via
       WHEN named.customer_id IS NOT NULL THEN 'name'
+      WHEN inverted.customer_id IS NOT NULL THEN 'name'
     END                                                   AS match_via
   FROM accounts v
   LEFT JOIN customer_by_address direct
@@ -1004,6 +1007,28 @@ matched AS (
          r'[^a-z0-9]+', ' '),
          r'\s+', ' ')) = named.name_key
    AND named.name_key != ''
+  -- The same name with Parasol's "Last, First" turned round: "Tilghman,
+  -- Richard" is "Richard Tilghman" in Billing, as it is in QuickBooks, and the
+  -- plain key above compares "tilghman richard" to "richard tilghman" and
+  -- misses. Measured on the 2026-09-26 build: 37 of the 76 Parasol
+  -- BILLED_NO_MATCH rows, $737.63 a month, have exactly one Billing customer
+  -- under the inverted name, 36 of them subscribed. Still an exact, unique
+  -- full name; no surname or partial matching.
+  --
+  -- A second join, not a change to the one above, so it is purely ADDITIVE:
+  -- the as-written name wins, and every account that matched before keeps
+  -- its customer. "Acme Holdings, LLC" inverts to "llc acme holdings", which
+  -- no Billing customer is called, so a comma that is not a name order costs
+  -- nothing. Spelled exactly as the QuickBooks tier's vendor-side key, and
+  -- pinned to it by pipelines/tests/test_sql_address_key.py.
+  LEFT JOIN billing_by_unique_name inverted
+    ON TRIM(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+         LOWER(COALESCE(v.subscriber_name, '')),
+         r'\([^)]*\)', ' '),
+         r'^\s*([^,]+?)\s*,\s*(.+)$', r'\2 \1'),
+         r'[^a-z0-9]+', ' '),
+         r'\s+', ' ')) = inverted.name_key
+   AND inverted.name_key != ''
 )
 SELECT
   v.vendor,
@@ -1167,7 +1192,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
   SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
-  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, via Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by name), qbo (vendor address to a QuickBooks billing address, then to Billing by name), email (the account's own email matched exactly one Billing customer; Alarm.com only, the one export carrying one), phone (the same by contact phone, last ten digits; Security Central only), name (the subscriber name matched exactly one Billing customer, where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm one against the property before acting on it. Because email and phone outrank name, an account that once matched by name may now match by contact, to a different customer.");
+  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, via Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by name), qbo (vendor address to a QuickBooks billing address, then to Billing by name), email (the account's own email matched exactly one Billing customer; Alarm.com only, the one export carrying one), phone (the same by contact phone, last ten digits; Security Central only), name (the subscriber name, as written or turned from 'Last, First', matched exactly one Billing customer, where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm one against the property before acting on it. Because email and phone outrank name, an account that once matched by name may now match by contact, to a different customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
   SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions

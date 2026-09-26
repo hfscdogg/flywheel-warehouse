@@ -166,20 +166,35 @@ class NameKey(unittest.TestCase):
         flat = " ".join(self.AUDIT.read_text().split())
         self.assertIn("WHERE name_key != ''", flat)
         self.assertIn("AND named.name_key != ''", flat)
+        self.assertIn("AND inverted.name_key != ''", flat)
 
     def test_the_name_match_is_ranked_last(self):
-        # Address paths must win, then the contact keys, then the name.
-        # Reordering this COALESCE would let a name override an address match
-        # without anything failing.
+        # Address paths must win, then the contact keys, then the name as
+        # written, then the name turned from "Last, First". Reordering this
+        # COALESCE would let a name override an address match without
+        # anything failing, and putting the inverted name ahead of the plain
+        # one would move accounts that already matched.
         flat = " ".join(self.AUDIT.read_text().split())
         self.assertIn(
             "COALESCE(direct.customer_id, bridged.customer_id, "
-            "contact.customer_id, named.customer_id)", flat)
+            "contact.customer_id, named.customer_id, inverted.customer_id)",
+            flat)
         order = [flat.index(f"{w}.customer_id IS NOT NULL")
-                 for w in ("direct", "bridged", "contact", "named")]
+                 for w in ("direct", "bridged", "contact", "named", "inverted")]
         self.assertEqual(order, sorted(order),
                          "match_via is decided in a different order than the "
                          "customer id is chosen")
+
+    def test_the_inverted_name_reaches_only_a_unique_name(self):
+        # Parasol writes "Tilghman, Richard"; Billing writes "Richard
+        # Tilghman". The inverted join is the same exact-name tier with the
+        # order turned round, so it must read the unique-name list: a name two
+        # customers share identifies neither, whichever way round it is
+        # written. billing_by_name keeps the lowest id instead, which is right
+        # only where an address has already pinned the property.
+        flat = " ".join(self.AUDIT.read_text().split())
+        self.assertIn("LEFT JOIN billing_by_unique_name inverted", flat)
+        self.assertNotIn("JOIN billing_by_name inverted", flat)
 
 
 class ContactKeyTest(unittest.TestCase):
@@ -379,15 +394,19 @@ class QboCustomerPathTest(unittest.TestCase):
         # Tilghman", so this key inverts on the first comma. Written on the
         # book side and the vendor side; they must agree or the tier — which
         # reaches more leak rows than the other three combined — silently
-        # matches nobody.
+        # matches nobody. The third copy is the Billing name tier's inverted
+        # join, which turns the vendor's name round the same way; it is
+        # compared too, so the two tiers cannot read one name differently.
         keys = re.findall(
             r"TRIM\(REGEXP_REPLACE\(REGEXP_REPLACE\(REGEXP_REPLACE\("
             r"REGEXP_REPLACE\( LOWER\(COALESCE\([\w.]+, ''\)\), (.*?' '\)\))",
             self.flat())
-        self.assertEqual(len(keys), 2,
-                         "expected exactly two copies of the QuickBooks name key")
-        self.assertEqual(keys[0], keys[1],
-                         "the QuickBooks side and the vendor side reduce names "
+        self.assertEqual(len(keys), 3,
+                         "expected three copies of the inverted name key: the "
+                         "QuickBooks book side, its vendor side, and the "
+                         "Billing name tier's inverted join")
+        self.assertEqual(len(set(keys)), 1,
+                         "the copies of the inverted name key reduce names "
                          "differently, so equal names produce unequal keys")
         self.assertIn(r"r'^\s*([^,]+?)\s*,\s*(.+)$', r'\2 \1'", keys[0],
                       "the comma inversion is missing; without it Parasol's "
