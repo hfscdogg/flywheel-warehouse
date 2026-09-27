@@ -69,4 +69,38 @@ WHERE REGEXP_CONTAINS(_TABLE_SUFFIX, r'^[0-9]{8}\$')")"
   run $BQ query --use_legacy_sql=false --format=none "$SQL"
 fi
 
+# Google Ads is not ingested either. BigQuery's Google Ads transfer writes
+# raw_google_ads.p_ads_<Report>_<customer id>, a name the transform cannot
+# find a model's input by (it reads lower-case raw_<source>.<table>) and
+# that differs per client. So each report staging reads gets a view with a
+# plain name, as GA4 does. The transfer creates its tables on its first
+# run; before that there is nothing to put a view over, so a missing report
+# is skipped with a warning and this script is re-run after the first load.
+# Explicit columns, so a field Google adds does not change the view.
+# _PARTITIONTIME is the day each row was reported for.
+ads_view() {  # ads_view <view> <report> <description> <columns>
+  local table="p_ads_$2_$GOOGLE_ADS_CUSTOMER_ID"
+  if ! is_dry_run && ! probe $BQ show --format=none "$GCP_PROJECT_ID:raw_google_ads.$table"; then
+    warn "raw_google_ads.$table does not exist yet (the transfer has not run): view raw_google_ads.$1 skipped; re-run this script after the first transfer run"
+    return 0
+  fi
+  info "View raw_google_ads.$1 over $table"
+  # shellcheck disable=SC2016  # backticks are BigQuery identifier quoting, not expansion
+  SQL="$(printf '%s' "CREATE OR REPLACE VIEW \`$GCP_PROJECT_ID.raw_google_ads.$1\`
+OPTIONS (description = '$3 Managed by 01-datasets.sh.')
+AS
+SELECT _PARTITIONTIME AS partition_time, $4
+FROM \`$GCP_PROJECT_ID.raw_google_ads.$table\`")"
+  run $BQ query --use_legacy_sql=false --format=none "$SQL"
+}
+
+if [ -n "$GOOGLE_ADS_CUSTOMER_ID" ]; then
+  ads_view campaign_basic_stats CampaignBasicStats \
+    "Google Ads campaign performance for $CLIENT_DISPLAY_NAME, one row per day, campaign, device and network, from the Google Ads transfer." \
+    "segments_date, campaign_id, customer_id, segments_device, segments_ad_network_type, metrics_cost_micros, metrics_clicks, metrics_impressions, metrics_interactions, metrics_conversions, metrics_conversions_value"
+  ads_view campaigns Campaign \
+    "Google Ads campaigns for $CLIENT_DISPLAY_NAME, one row per campaign per day the transfer ran, from the Google Ads transfer." \
+    "campaign_id, customer_id, campaign_name, campaign_status, campaign_serving_status, campaign_advertising_channel_type, campaign_advertising_channel_sub_type, campaign_bidding_strategy_type, campaign_budget_amount_micros, campaign_start_date_time, campaign_end_date_time"
+fi
+
 info "Datasets done."

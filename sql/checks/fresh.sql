@@ -107,6 +107,16 @@ WITH loaded AS (
          CAST(NULL AS STRING) AS raw_table
   FROM staging.stg_ga4__sessions
   UNION ALL
+  SELECT 'stg_google_ads__campaign_daily' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_google_ads__campaign_daily
+  UNION ALL
+  SELECT 'stg_google_ads__campaigns' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_google_ads__campaigns
+  UNION ALL
   SELECT 'stg_qbo__report_lines' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_qbo.report_lines' AS raw_table
@@ -211,6 +221,7 @@ SELECT
   CASE
     WHEN drop_prefix IS NOT NULL THEN CONCAT('upload to gs://<vendor-drop-bucket>/', drop_prefix, '/')
     WHEN STARTS_WITH(table_name, 'stg_ga4__') THEN 'GA4 export stopped: check the BigQuery link in GA4 Admin'
+    WHEN STARTS_WITH(table_name, 'stg_google_ads__') THEN 'Google Ads transfer stopped: check its run history in BigQuery > Data transfers'
     ELSE 'ingest workflow has not run'
   END AS fix
 FROM checked

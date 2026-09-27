@@ -53,6 +53,7 @@ in step.
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
 | GA4 | `stg_ga4__sessions` (one row per session; feeds `kpi_website_traffic`) |
+| Google Ads | `stg_google_ads__campaign_daily` (spend and results per campaign per day), `stg_google_ads__campaigns` (one row per campaign); feed `kpi_paid_media` |
 
 **GA4 is read through a view, not an ingest.** `scripts/01-datasets.sh`
 creates `raw_ga4.events` over the property's BigQuery export dataset, named
@@ -61,6 +62,14 @@ by `GA4_EXPORT_DATASET` in `client.env`, so the model reads
 apply. The view reads only the daily `events_YYYYMMDD` tables and leaves out
 `events_intraday_*`, which GA4 replaces with the day's final table, so no day
 is counted twice.
+
+**Google Ads is read through views too.** BigQuery's Google Ads transfer
+writes `raw_google_ads.p_ads_<Report>_<customer id>`, which the transform
+cannot find as an input, so `scripts/01-datasets.sh` puts plain-named views
+over the two reports staging reads (`campaign_basic_stats`, `campaigns`),
+using `GOOGLE_ADS_CUSTOMER_ID` from `client.env`. Spend comes from the basic
+report: the full CampaignStats report is split by click type and counts an
+impression once per click type.
 
 **D-Tools field paths are best-effort** (same VERIFY-on-first-run posture as
 `pipelines/lib/sources.py`): the JSON paths were written from the API docs,
