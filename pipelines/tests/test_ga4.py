@@ -41,6 +41,9 @@ def load_client(raw, export):
         env = re.sub(r'^CLIENT_SLUG=.*$', 'CLIENT_SLUG="t"', env, flags=re.M)
         env = re.sub(r'^DATASETS_RAW=.*$', f'DATASETS_RAW="{raw}"', env, flags=re.M)
         env = re.sub(r'^GA4_EXPORT_DATASET=.*$', f'GA4_EXPORT_DATASET="{export}"', env, flags=re.M)
+        # Google Ads has its own paired setting (test_google_ads.py); these
+        # clients have no raw_google_ads, so it goes too.
+        env = re.sub(r'^GOOGLE_ADS_CUSTOMER_ID=.*$', '', env, flags=re.M)
         (tmp / "clients" / "t").mkdir(parents=True)
         (tmp / "clients" / "t" / "client.env").write_text(env)
         r = subprocess.run(

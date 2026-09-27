@@ -142,6 +142,23 @@ load_client() {
         || die "client.env for '$slug': GA4_EXPORT_DATASET is set but raw_ga4 is not in DATASETS_RAW" ;;
   esac
 
+  # Google Ads is not ingested either: BigQuery's own Data Transfer writes
+  # raw_google_ads.p_ads_<Report>_<customer id>, and 01-datasets.sh puts
+  # views with plain names over the reports staging reads. The views need
+  # the customer id, so the two settings travel together, as GA4's do.
+  GOOGLE_ADS_CUSTOMER_ID="${GOOGLE_ADS_CUSTOMER_ID:-}"
+  case " $DATASETS_RAW " in
+    *" raw_google_ads "*)
+      [ -n "$GOOGLE_ADS_CUSTOMER_ID" ] \
+        || die "client.env for '$slug': raw_google_ads is in DATASETS_RAW but GOOGLE_ADS_CUSTOMER_ID is not set" ;;
+    *)
+      [ -z "$GOOGLE_ADS_CUSTOMER_ID" ] \
+        || die "client.env for '$slug': GOOGLE_ADS_CUSTOMER_ID is set but raw_google_ads is not in DATASETS_RAW" ;;
+  esac
+  case "$GOOGLE_ADS_CUSTOMER_ID" in
+    *[!0-9]*) die "client.env for '$slug': GOOGLE_ADS_CUSTOMER_ID is digits only, no dashes (got '$GOOGLE_ADS_CUSTOMER_ID')" ;;
+  esac
+
   # Always-explicit project, never interactive first-run init. Intentionally
   # word-split at call sites: run $BQ show ...
   BQ="bq --headless=true --project_id=$GCP_PROJECT_ID"

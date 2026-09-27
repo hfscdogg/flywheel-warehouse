@@ -79,6 +79,17 @@ email/newsletter, website inquiry, direct), so "what did marketing bring in"
 means the same thing here as in Zoho. Deals with no channel set appear as
 `(unset)` — a high share there means CRM data entry, not a data bug.
 
+## kpi_paid_media — Google Ads spend per campaign per day (Google Ads)
+
+One row per (date, campaign): cost in USD, clicks, impressions,
+interactions, and Google Ads' own conversions, with the campaign's name,
+type and current status. Conversions are Google's count, not CRM leads.
+Cost per deal needs the caveat the table description carries: the CRM's
+Marketing Channel records most paid-search leads as Website inquiry, not
+Google Ads (paid), so compare spend with the Marketing & website group in
+`kpi_deal_attribution` and GA4's Paid Search sessions in
+`kpi_website_traffic`.
+
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 
 One row per D-Tools project: quoted price/cost/margin, plus invoiced-to-date,
