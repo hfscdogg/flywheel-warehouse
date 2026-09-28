@@ -17,10 +17,12 @@ detail someone could "tidy up" without realising what it was holding:
                             secrets; `redeploy` does neither.
 """
 
+import json
 import os
 import pathlib
 import re
 import subprocess
+import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -122,6 +124,46 @@ class DeployerGrants(unittest.TestCase):
             self.assertNotIn(forbidden, code,
                              f"the deployer account is granted {forbidden}; "
                              f"it is meant to ship a container and nothing else")
+
+
+class LiveRevisionCheck(unittest.TestCase):
+    """The post-deploy check must read DATASETS_AGENT, not a word near it.
+
+    It first ran on 2026-09-28 (run 9, the first deploy ever to get past the
+    build) and failed a correct deploy: `live revision has: value`. The text
+    form of the env list reads {'name': 'DATASETS_AGENT', 'value': '...'},
+    and a sed that skipped punctuation captured the key `value`. The check now
+    reads JSON by name; this runs the workflow's own snippet against the
+    shape gcloud returns.
+    """
+
+    def snippet(self):
+        found = re.search(r"python3 -c '([^']+)'", DEPLOY.read_text())
+        self.assertIsNotNone(found, "the check no longer reads JSON with python3")
+        return found.group(1)
+
+    def read(self, env):
+        described = {"spec": {"template": {"spec": {"containers": [{"env": env}]}}}}
+        done = subprocess.run([sys.executable, "-c", self.snippet()],
+                              input=json.dumps(described), capture_output=True,
+                              text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout.strip()
+
+    def test_it_reads_the_value_of_datasets_agent(self):
+        env = [{"name": "GCP_PROJECT_ID", "value": "livewire-dw"},
+               {"name": "DATASET_MARTS", "value": "marts"},
+               {"name": "DATASETS_AGENT", "value": "marts,staging"},
+               {"name": "HERMES_TOKEN", "valueFrom": {"secretKeyRef": {
+                   "key": "latest", "name": "hermes-endpoint-token"}}}]
+        self.assertEqual(self.read(env), "marts,staging")
+
+    def test_a_revision_without_it_reads_empty_and_fails_the_comparison(self):
+        self.assertEqual(self.read([{"name": "DATASET_MARTS", "value": "marts"}]), "")
+
+    def test_the_text_parse_is_gone(self):
+        self.assertNotIn("value(spec.template.spec.containers[0].env)",
+                         DEPLOY.read_text())
 
 
 class BuildIdentity(unittest.TestCase):

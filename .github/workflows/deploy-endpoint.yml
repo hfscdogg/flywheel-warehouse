@@ -90,10 +90,15 @@ jobs:
           . ./scripts/lib/common.sh
           load_client "$CLIENT"
           want="${DATASETS_AGENT// /,}"
+          # JSON, read by name. The text form prints each variable as
+          # {'name': 'DATASETS_AGENT', 'value': 'marts,staging'}, and the sed
+          # that read it skipped the punctuation and captured the next word,
+          # the key `value` itself. The first deploy ever to reach this step
+          # (run 9, 2026-09-28) shipped correctly and failed here on that.
           got="$(gcloud run services describe "${HERMES_MCP_SERVICE:-hermes-mcp}" \
                    --project "$GCP_PROJECT_ID" --region "${RUN_REGION:-us-east4}" \
-                   --format='value(spec.template.spec.containers[0].env)' \
-                 | tr ';' '\n' | sed -n "s/.*DATASETS_AGENT[^a-z]*\([a-z,]*\).*/\1/p" | head -1)"
+                   --format=json \
+                 | python3 -c 'import json, sys; env = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env", []); print(next((e.get("value", "") for e in env if e.get("name") == "DATASETS_AGENT"), ""))')"
           printf 'client.env wants : %s\n' "$want"
           printf 'live revision has: %s\n' "$got"
           [ "$got" = "$want" ] || {
