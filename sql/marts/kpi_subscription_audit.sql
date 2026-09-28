@@ -967,20 +967,31 @@ sc_account_address AS (
 --
 -- `v.*` is safe here where the UNION above lists every column: this selects
 -- from one source, so there is no positional hazard to guard against.
-matched AS (
+matched_candidates AS (
   SELECT
     v.*,
     COALESCE(direct.customer_id, bridged.customer_id, contact.customer_id,
-             named.customer_id, inverted.customer_id)     AS customer_id,
+             named.customer_id, inverted.customer_id)     AS ranked_customer_id,
     COALESCE(direct.display_name, bridged.display_name, contact.display_name,
-             named.display_name, inverted.display_name)   AS display_name,
+             named.display_name, inverted.display_name)   AS ranked_display_name,
     CASE
       WHEN direct.customer_id IS NOT NULL THEN direct.match_via
       WHEN bridged.customer_id IS NOT NULL THEN 'sc_account'
       WHEN contact.customer_id IS NOT NULL THEN contact.match_via
       WHEN named.customer_id IS NOT NULL THEN 'name'
       WHEN inverted.customer_id IS NOT NULL THEN 'name'
-    END                                                   AS match_via
+    END                                                   AS ranked_match_via,
+    -- Whether an address path won, and what the email/phone path found,
+    -- kept apart so matched can compare the two customers' names.
+    COALESCE(direct.customer_id, bridged.customer_id) IS NOT NULL
+                                                          AS ranked_by_address,
+    contact.customer_id  AS contact_customer_id,
+    contact.display_name AS contact_display_name,
+    contact.match_via    AS contact_match_via,
+    -- The subscriber name's words, as name_overlaps below reads them.
+    ARRAY(SELECT t FROM UNNEST(SPLIT(LOWER(REGEXP_REPLACE(
+      COALESCE(v.subscriber_name, ''), r'[^a-zA-Z ]', '')), ' ')) AS t
+      WHERE LENGTH(t) >= 3)                               AS name_words
   FROM accounts v
   LEFT JOIN customer_by_address direct
     ON v.address_key = direct.address_key AND REGEXP_CONTAINS(v.address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
@@ -1029,6 +1040,55 @@ matched AS (
          r'[^a-z0-9]+', ' '),
          r'\s+', ' ')) = inverted.name_key
    AND inverted.name_key != ''
+),
+-- AN ADDRESS NAMES A PROPERTY, NOT A PERSON. Two households can live at one
+-- address: a previous owner and the current one, a spouse on one profile and
+-- the other on another, a business run from a home. The address tiers above
+-- pick whichever Billing customer holds that address, and when it is the
+-- wrong one the account reads as a leak on somebody else's empty profile.
+-- On the 2026-09-28 build 12 of the 45 leak accounts matched a customer whose
+-- name shares no word with the subscriber's: Thomas Leonard at 3630 John
+-- Latane Ln matched Richard Turner, while his own phone and email reach
+-- Patricia & Allen Leonard, who are subscribed.
+--
+-- So where an address path won AND its customer's name shares no word with
+-- the subscriber's AND the account's own email or phone reaches a customer
+-- whose name does, the account takes that customer. Nothing else moves: an
+-- address match whose name agrees keeps its customer, and one with no
+-- agreeing email/phone customer keeps it too, with name_overlaps = FALSE, for
+-- a person to check. The comparison is the one name_overlaps makes (a word of
+-- three or more letters of the subscriber name inside the customer's name).
+--
+-- Deliberately NOT the name tier as well. Measured on the same build it
+-- would move 24 more accounts, resolve no leak, pull businesses whose vendor
+-- record names the contact person onto personal profiles ("Walker, Kayla"
+-- at Downtown Pups), and turn one OK account into a false leak. An email or
+-- phone belongs to the account; a name shared with a Billing customer does
+-- not.
+-- Measured: 33 accounts move, 4 leak accounts ($43.12 a month) resolve to
+-- OK, and none becomes a leak.
+matched AS (
+  SELECT
+    c.* EXCEPT (ranked_customer_id, ranked_display_name, ranked_match_via,
+                ranked_by_address, contact_customer_id, contact_display_name,
+                contact_match_via, name_words, takes_contact),
+    IF(c.takes_contact, c.contact_customer_id, c.ranked_customer_id)
+                                                          AS customer_id,
+    IF(c.takes_contact, c.contact_display_name, c.ranked_display_name)
+                                                          AS display_name,
+    IF(c.takes_contact, c.contact_match_via, c.ranked_match_via)
+                                                          AS match_via
+  FROM (
+    SELECT
+      mc.*,
+      COALESCE(mc.ranked_by_address
+        AND NOT EXISTS (SELECT 1 FROM UNNEST(mc.name_words) AS w
+                        WHERE STRPOS(LOWER(mc.ranked_display_name), w) > 0)
+        AND EXISTS (SELECT 1 FROM UNNEST(mc.name_words) AS w
+                    WHERE STRPOS(LOWER(mc.contact_display_name), w) > 0),
+        FALSE)                                            AS takes_contact
+    FROM matched_candidates mc
+  ) c
 )
 SELECT
   v.vendor,
@@ -1194,7 +1254,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
   SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, via Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by name), qbo (vendor address to a QuickBooks billing address, then to Billing by name), email (the account's own email matched exactly one Billing customer; Alarm.com only, the one export carrying one), phone (the same by contact phone, last ten digits; Security Central only), name (the subscriber name, as written or turned from 'Last, First', matched exactly one Billing customer, where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm one against the property before acting on it. Because email and phone outrank name, an account that once matched by name may now match by contact, to a different customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
-  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
+  SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. An address match like that is replaced by the customer the account's own email or phone reaches wherever that customer's name DOES agree, so a FALSE that remains had no better match. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions
   SET OPTIONS (description = "Number of live Zoho Billing subscriptions for the matched customer. 0 when unmatched.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscription_amount
