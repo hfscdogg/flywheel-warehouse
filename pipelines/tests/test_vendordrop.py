@@ -85,5 +85,89 @@ class TestPendingBlobs(unittest.TestCase):
             ingest.pending_blobs(bucket, "parasol/invoice", "livewire"), [])
 
 
+class UploadBlob:
+    def __init__(self, name, data):
+        self.name, self.data, self.deleted = name, data, False
+
+    def download_as_bytes(self):
+        return self.data
+
+    def delete(self):
+        self.deleted = True
+
+
+class ArchiveBucket:
+    name = "livewire-dw-vendor-drops"
+
+    def __init__(self):
+        self.copies = []
+
+    def copy_blob(self, blob, bucket, new_name):
+        self.copies.append(new_name)
+
+
+# The Customer Count as Manitou sends it, and the same report after someone
+# opened it in TextEdit and saved it: what actually happened on 2026-09-28.
+CUSTOMERCOUNT = (
+    "sep=,\r\n"
+    '2311636,"William Goodrum (Cottage) [A1651/1857]",Active,3/14/2019\r\n'
+    "0,1,520,67\r\n"
+).encode("utf-8")
+AS_RTF = (b"{\\rtf1\\ansi\\ansicpg1252\\cocoartf2822\n"
+          b"\\f0\\fs24 \\cf0 sep=,\\\n2311636,William Goodrum,Active,3/14/2019\\\n}")
+
+
+class TestHandleUpload(unittest.TestCase):
+    KEY = "securitycentral/customercount"
+
+    def run_one(self, name, data):
+        bucket, blob, landed = ArchiveBucket(), UploadBlob(name, data), []
+        result = ingest.handle_upload(
+            bucket, blob, self.KEY, lambda recs: landed.append(recs) or len(recs))
+        return result, bucket, blob, landed
+
+    def test_a_real_report_lands_and_is_archived_as_processed(self):
+        (rows, dest, error), _, blob, landed = self.run_one(
+            f"{self.KEY}/45779342.CSV", CUSTOMERCOUNT)
+        self.assertIsNone(error)
+        self.assertEqual(rows, 1)
+        self.assertEqual(len(landed), 1)
+        self.assertTrue(dest.startswith(f"processed/{self.KEY}/"))
+        self.assertTrue(blob.deleted)
+
+    def test_a_file_with_no_records_is_rejected_not_processed(self):
+        (rows, dest, error), bucket, blob, landed = self.run_one(
+            f"{self.KEY}/customer count livewire.rtf", AS_RTF)
+        self.assertEqual(rows, 0)
+        self.assertEqual(landed, [], "nothing may be landed from a rejected file")
+        self.assertTrue(dest.startswith(f"rejected/{self.KEY}/"), dest)
+        self.assertEqual(bucket.copies, [dest])
+        self.assertTrue(blob.deleted, "the folder must be clear for the re-upload")
+        self.assertIsNotNone(error)
+
+    def test_the_rejection_names_rich_text(self):
+        (_, _, error), *_ = self.run_one(f"{self.KEY}/x.rtf", b"  " + AS_RTF)
+        self.assertIn(".rtf", error)
+        self.assertIn("exactly as the vendor sent it", error)
+
+    def test_any_other_empty_file_names_the_layout(self):
+        (_, _, error), *_ = self.run_one(f"{self.KEY}/notes.csv", b"a,b\r\nc,d\r\n")
+        self.assertIn(self.KEY, error)
+        self.assertNotIn("rich-text", error)
+
+
+class TestRunFails(unittest.TestCase):
+    """main() must end red when anything was rejected, after loading the rest."""
+
+    def test_main_exits_nonzero_listing_rejected_files(self):
+        src = open(ingest.__file__).read()
+        body = src[src.index("def main():"):]
+        self.assertIn("if rejected:", body)
+        tail = body[body.index("if rejected:"):]
+        self.assertIn("raise SystemExit(", tail)
+        self.assertLess(body.index('log.info("done:'), body.index("if rejected:"),
+                        "the run must finish every other upload before failing")
+
+
 if __name__ == "__main__":
     unittest.main()

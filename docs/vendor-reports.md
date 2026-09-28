@@ -128,6 +128,11 @@ project. Revoke by removing those two bindings on the bucket.
 >
 > That's the whole job. Each file disappears from its folder within a day
 > once the warehouse has read it.
+>
+> Upload the attachment exactly as the vendor sent it; don't open and re-save
+> it first. A file the warehouse can't read a single record from (a report
+> re-saved as .rtf, say) moves to `rejected/` instead of `processed/`, and the
+> run fails and opens an issue saying why.
 
 The file name doesn't matter; the folder does. Re-uploading the same file is
 harmless (landing tables are append-only and staging keeps the latest row per
