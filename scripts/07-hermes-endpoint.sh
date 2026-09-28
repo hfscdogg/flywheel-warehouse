@@ -117,6 +117,7 @@ deploy_service() {
     --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
     --source "$BUILD_DIR" \
     --service-account "$SA_HERMES_READER_EMAIL" \
+    --build-service-account "projects/$GCP_PROJECT_ID/serviceAccounts/$SA_ENDPOINT_BUILDER_EMAIL" \
     --allow-unauthenticated \
     --set-secrets "HERMES_TOKEN=${TOKEN_SECRET}:latest" \
     --set-env-vars "^@^GCP_PROJECT_ID=${GCP_PROJECT_ID}@DATASET_MARTS=${DATASET_MARTS}@DATASETS_AGENT=${DATASETS_AGENT// /,}" \
@@ -170,22 +171,14 @@ case "$ACTION" in
       --member "serviceAccount:$SA_HERMES_READER_EMAIL" \
       --role roles/secretmanager.secretAccessor --format=none --quiet
 
-    # 'gcloud run deploy --source' builds with the project's default COMPUTE
-    # service account, which on newer projects has no build permissions —
-    # the deploy then dies at "Uploading sources" with PERMISSION_DENIED
-    # (hit on livewire-dw's first deploy, 2026-08-25). builds.builder is
-    # Google's documented remediation; it touches only the build identity,
-    # never hermes-reader.
-    info "Cloud Build default SA: builder role (required for source deploys)"
-    if is_dry_run; then
-      log "[dry-run] gcloud projects add-iam-policy-binding $GCP_PROJECT_ID --member serviceAccount:<project-number>-compute@developer.gserviceaccount.com --role roles/cloudbuild.builds.builder"
-    else
-      PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')"
-      [ -n "$PROJECT_NUMBER" ] || die "could not resolve project number for $GCP_PROJECT_ID"
-      run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
-        --member "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-        --role roles/cloudbuild.builds.builder --format=none --quiet
-    fi
+    # The source build runs as endpoint-builder, not the project's default
+    # compute account (see converge_endpoint_builder in lib/common.sh). Until
+    # 2026-09-28 this step granted the compute account
+    # roles/cloudbuild.builds.builder instead, which let an admin deploy but
+    # left CI needing actAs on an account that usually holds project Editor.
+    # That older grant is not removed here; it is harmless to the build and
+    # removing IAM this script did not create is not its job.
+    converge_endpoint_builder
 
     deploy_service
     print_connection_info
