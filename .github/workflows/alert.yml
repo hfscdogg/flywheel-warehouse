@@ -43,7 +43,7 @@ jobs:
   report:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           # Passed through the environment rather than interpolated into the
           # script body. `${{ inputs.workflow }}` written into JavaScript is

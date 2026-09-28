@@ -31,12 +31,12 @@ jobs:
   transform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
+      - uses: actions/checkout@v5
+      - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v2 # provides bq
+      - uses: google-github-actions/setup-gcloud@v3 # provides bq
       # VALIDATE=1 makes 06-transform.sh dry-run every model (bq query
       # --dry_run: full semantic validation, zero bytes processed, nothing
       # created) and exit non-zero if any model is invalid. On a schedule
