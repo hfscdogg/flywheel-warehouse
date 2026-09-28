@@ -39,11 +39,16 @@ DRY_RUN=1 ./scripts/07-hermes-endpoint.sh <client>   # see the plan
 
 The script enables the Cloud Run/Build/Secret Manager APIs, generates a
 bearer token into the client's own Secret Manager (`hermes-endpoint-token`),
-grants the project's default compute service account the
-`cloudbuild.builds.builder` role (source deploys build as that account, and
-newer projects don't grant it build permissions — without this the deploy
-fails at "Uploading sources" with PERMISSION_DENIED), builds `hermes-mcp/`
-from source, and deploys it with `--service-account hermes-reader`. It ends
+creates the `endpoint-builder` service account with `roles/run.builder` and
+nothing else, builds `hermes-mcp/` from source as that account
+(`--build-service-account`), and deploys it with `--service-account
+hermes-reader`. The build does not run as the project's default compute
+account, which usually holds Editor: whoever deploys must be allowed to act
+as the build account, and for the CI deployer that must not mean acting as
+a project editor. `10-endpoint-deployer.sh` grants the CI deployer exactly
+that (act as `endpoint-builder`) plus a one-permission custom role,
+`flywheelSourceBucketLister` (`storage.buckets.list`), which the source
+upload needs to find its staging bucket. It ends
 by printing the MCP URL and how to read the token.
 `./scripts/07-hermes-endpoint.sh <client> url` reprints that at any time.
 

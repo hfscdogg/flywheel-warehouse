@@ -17,8 +17,10 @@ detail someone could "tidy up" without realising what it was holding:
                             secrets; `redeploy` does neither.
 """
 
+import os
 import pathlib
 import re
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -120,6 +122,87 @@ class DeployerGrants(unittest.TestCase):
             self.assertNotIn(forbidden, code,
                              f"the deployer account is granted {forbidden}; "
                              f"it is meant to ship a container and nothing else")
+
+
+class BuildIdentity(unittest.TestCase):
+    """The source build runs as endpoint-builder, never the compute account.
+
+    `gcloud run deploy --source` runs its Cloud Build as the project's default
+    compute account unless told otherwise, and the deployer must be allowed to
+    act as whichever account that is. The compute account usually holds
+    Editor on the project, so acting as it makes the narrow deployer a
+    project editor. Every CI deploy from 2026-09-16 to 2026-09-28 failed short
+    of that grant; these tests keep the way round it from quietly becoming
+    the grant itself.
+    """
+
+    COMMON = ROOT / "scripts" / "lib" / "common.sh"
+    SETUP = ROOT / "scripts" / "10-endpoint-deployer.sh"
+
+    @staticmethod
+    def code(path):
+        return "\n".join(l for l in path.read_text().splitlines()
+                         if not l.lstrip().startswith("#"))
+
+    def builder_fn(self):
+        src = self.code(self.COMMON)
+        start = src.index("converge_endpoint_builder() {")
+        return src[start:src.index("\n}", start)]
+
+    def test_the_deploy_names_the_build_account(self):
+        # One `gcloud run deploy` serves both deploy and redeploy, so this
+        # covers the admin path and the CI path at once.
+        self.assertIn('--build-service-account "projects/$GCP_PROJECT_ID/'
+                      'serviceAccounts/$SA_ENDPOINT_BUILDER_EMAIL"',
+                      self.code(SCRIPT))
+
+    def test_nothing_touches_the_default_compute_account(self):
+        for path in (SCRIPT, self.SETUP, self.COMMON):
+            with self.subTest(script=path.name):
+                self.assertNotIn("compute@developer", self.code(path),
+                                 "a grant on or as the default compute "
+                                 "account is back")
+
+    def test_the_build_account_holds_run_builder_and_nothing_else(self):
+        roles = re.findall(r"--role=(\S+)", self.builder_fn())
+        self.assertEqual(roles, ["roles/run.builder"])
+
+    def test_the_deployer_may_act_as_the_build_account(self):
+        code = self.code(self.SETUP)
+        self.assertRegex(
+            code,
+            r'service-accounts add-iam-policy-binding "\$SA_ENDPOINT_BUILDER_EMAIL"'
+            r'[^\n]*\n[^\n]*\n\s*--member="serviceAccount:\$SA_ENDPOINT_DEPLOYER_EMAIL"'
+            r'[^\n]*\n\s*--role=roles/iam.serviceAccountUser')
+        self.assertIn("converge_endpoint_builder", code,
+                      "the deployer script must create the build account it "
+                      "grants on, or it fails for a client deployed before it "
+                      "existed")
+
+    def test_bucket_listing_is_one_permission_not_a_storage_role(self):
+        code = self.code(self.SETUP)
+        perms = re.findall(r"--permissions=(\S+)", code)
+        self.assertTrue(perms, "no custom role is defined")
+        self.assertEqual(set(perms), {"storage.buckets.list"})
+        # And no predefined storage role at project level, which is what a
+        # "just make it work" fix would reach for.
+        for block in re.findall(r'projects add-iam-policy-binding[^\n]*(?:\n\s+--[^\n]*)+',
+                                code):
+            with self.subTest(binding=block.split("--role=")[-1][:60]):
+                self.assertNotRegex(block, r"--role=roles/storage\.")
+
+    def test_the_plan_runs_without_gcloud(self):
+        env = dict(os.environ, DRY_RUN="1")
+        done = subprocess.run(["bash", str(self.SETUP), "livewire"],
+                              capture_output=True, text=True, env=env, cwd=ROOT)
+        out = done.stdout + done.stderr
+        self.assertEqual(done.returncode, 0, out)
+        for needle in ("--role=roles/run.builder",
+                       "endpoint-builder@livewire-dw.iam.gserviceaccount.com "
+                       "--project livewire-dw --member=serviceAccount:endpoint-deployer",
+                       "roles/flywheelSourceBucketLister"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, out)
 
 
 class RedeployAction(unittest.TestCase):

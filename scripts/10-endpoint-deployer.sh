@@ -31,6 +31,16 @@
 #   cloudbuild.builds.editor \ `gcloud run deploy --source` builds the image
 #   artifactregistry.writer  / with Cloud Build and pushes it. Project-level,
 #                            because both are project resources.
+#   iam.serviceAccountUser   on endpoint-builder ONLY. The source build runs
+#                            as that account (lib/common.sh), and starting a
+#                            build that runs as an account needs actAs on it.
+#                            Never on the default compute account, which
+#                            usually holds project Editor.
+#   storage.buckets.list     at project level, through a custom role holding
+#                            that one permission. `gcloud run deploy --source`
+#                            lists buckets to find its staging bucket before
+#                            it uploads; the list shows bucket names and
+#                            metadata, never contents.
 #   storage.admin            on the ONE bucket Cloud Run stages source uploads
 #                            through (run-sources-<project>-<region>), never
 #                            the project. objectAdmin is NOT enough: the
@@ -115,6 +125,45 @@ for role in roles/cloudbuild.builds.editor roles/artifactregistry.writer; do
     --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \
     --role="$role" --condition=None --format=none --quiet
 done
+
+# THE BUILD RUNS AS endpoint-builder, AND THIS ACCOUNT MAY ACT AS IT ONLY.
+# Before 2026-09-28 the build ran as the project's default compute account,
+# which usually holds Editor on the project; allowing this account to act as
+# that one would have made it a project editor. converge_endpoint_builder
+# (lib/common.sh) creates the build account with roles/run.builder and
+# nothing else, and is idempotent, so running this script alone is enough
+# for a client whose endpoint was first deployed before the build account
+# existed.
+converge_endpoint_builder
+
+info "serviceAccountUser on $SA_ENDPOINT_BUILDER (start a build that runs as it)"
+run gcloud iam service-accounts add-iam-policy-binding "$SA_ENDPOINT_BUILDER_EMAIL" \
+  --project "$GCP_PROJECT_ID" \
+  --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \
+  --role=roles/iam.serviceAccountUser --format=none --quiet
+
+# storage.buckets.list IS A PROJECT PERMISSION, SO IT CANNOT BE BUCKET-SCOPED.
+# `gcloud run deploy --source` lists the project's buckets to find its
+# staging bucket before uploading, and the run on 2026-09-28 failed on it:
+#   ERROR: ... does not have storage.buckets.list access to the Google Cloud
+#   project. Permission 'storage.buckets.list' denied ...
+# No predefined role holds only that permission, so a custom role carries
+# exactly that one: it shows bucket names and metadata, never contents.
+BUCKET_LISTER_ROLE="flywheelSourceBucketLister"
+info "custom role $BUCKET_LISTER_ROLE: storage.buckets.list only (project)"
+if probe gcloud iam roles describe "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID"; then
+  run gcloud iam roles update "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID" \
+    --permissions=storage.buckets.list --quiet --format=none
+else
+  run gcloud iam roles create "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID" \
+    --title="Flywheel source-deploy bucket lister" \
+    --description="storage.buckets.list only: lets gcloud run deploy --source find its staging bucket." \
+    --permissions=storage.buckets.list --stage=GA --quiet --format=none
+fi
+run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:$SA_ENDPOINT_DEPLOYER_EMAIL" \
+  --role="projects/$GCP_PROJECT_ID/roles/$BUCKET_LISTER_ROLE" \
+  --condition=None --format=none --quiet
 
 # THE STAGING BUCKET NEEDS storage.admin, NOT objectAdmin, AND THE DIFFERENCE
 # IS NOT COSMETIC. `gcloud run deploy --source` stages the upload through a

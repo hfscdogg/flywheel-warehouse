@@ -117,6 +117,10 @@ load_client() {
 
   SA_HERMES_READER_EMAIL="${SA_HERMES_READER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   SA_INGEST_WRITER_EMAIL="${SA_INGEST_WRITER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  # The identity Cloud Build runs as when the agent endpoint is built from
+  # source (converge_endpoint_builder below). Optional in client.env.
+  SA_ENDPOINT_BUILDER="${SA_ENDPOINT_BUILDER:-endpoint-builder}"
+  SA_ENDPOINT_BUILDER_EMAIL="${SA_ENDPOINT_BUILDER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   ALL_DATASETS="$DATASETS_RAW $DATASET_STAGING $DATASET_MARTS"
 
   # What hermes-reader may read (docs/access-tiers.md). Optional in
@@ -169,4 +173,41 @@ load_client() {
   BQ_UPDATE_LABELS="--set_label managed-by:$LABEL_MANAGED_BY --set_label client:$CLIENT_SLUG --set_label env:$LABEL_ENV"
 
   export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+}
+
+# The build identity for `gcloud run deploy --source` of the agent endpoint.
+#
+# Without one named, Cloud Build runs the build as the project's DEFAULT
+# COMPUTE service account, and whoever deploys must be allowed to act as it.
+# That account commonly holds Editor on the whole project, so acting as it
+# makes the deployer a project editor in all but name -- the opposite of the
+# narrow CI identity 10-endpoint-deployer.sh exists to build. Every CI deploy
+# from 2026-09-16 to 2026-09-28 failed one permission short of that grant.
+#
+# So the build runs as this account instead, holding roles/run.builder,
+# Google's role for exactly this job (read the uploaded source, write the
+# image to Artifact Registry, write build logs) and nothing else: no
+# BigQuery, no Secret Manager, no IAM. The deployer is allowed to act as
+# THIS account only (10-endpoint-deployer.sh). Called from both
+# 07-hermes-endpoint.sh deploy and 10-endpoint-deployer.sh, so either one
+# leaves a client able to build; both are idempotent.
+converge_endpoint_builder() {
+  info "Build service account: $SA_ENDPOINT_BUILDER_EMAIL (runs the source build)"
+  if probe gcloud iam service-accounts describe "$SA_ENDPOINT_BUILDER_EMAIL" --project "$GCP_PROJECT_ID"; then
+    log "  exists"
+  else
+    run gcloud iam service-accounts create "$SA_ENDPOINT_BUILDER" \
+      --project "$GCP_PROJECT_ID" \
+      --display-name="Flywheel agent-endpoint builder" \
+      --description="Cloud Build identity for hermes-mcp source deploys. run.builder only."
+    # A new service account is not immediately visible to IAM policy calls.
+    if ! is_dry_run; then
+      retry 12 5 probe gcloud iam service-accounts describe "$SA_ENDPOINT_BUILDER_EMAIL" \
+        --project "$GCP_PROJECT_ID" \
+        || die "service account $SA_ENDPOINT_BUILDER_EMAIL not visible after creation"
+    fi
+  fi
+  run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:$SA_ENDPOINT_BUILDER_EMAIL" \
+    --role=roles/run.builder --condition=None --format=none --quiet
 }
