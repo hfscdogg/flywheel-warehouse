@@ -11,6 +11,7 @@ import pathlib
 import unittest
 
 from pipelines.dtools import signin, v2
+from pipelines.lib import config
 from pipelines.lib.sources import DTOOLS_V2
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -84,6 +85,29 @@ class Settings(unittest.TestCase):
                          "https://tenant-1.ciamlogin.com/tenant-1/oauth2/v2.0/token")
         self.assertEqual(s["base_url"], "https://api.d-tools.cloud/api/v2")
         self.assertIsNone(s["account_id"])
+
+
+class Livewire(unittest.TestCase):
+    """Production values from D-Tools (Dave Kirn, 2026-09-30). The docs site
+    shows the demo environment's, and D-Tools' MCP client ids get a token the
+    data endpoints refuse."""
+
+    def setUp(self):
+        self.s = v2.settings(config.load_client("livewire").env)
+
+    def test_it_signs_in_to_production(self):
+        tenant = "fb1ad9bb-9bd2-45fe-a065-c8a0370c2913"
+        self.assertEqual(self.s["authority"],
+                         f"https://{tenant}.ciamlogin.com/{tenant}")
+        self.assertEqual(self.s["client_id"], "6ccf1cdf-d7f7-4aa4-a292-16ac4c1d6504")
+
+    def test_it_asks_for_the_data_api_scope(self):
+        self.assertEqual(self.s["scope"],
+                         "api://0d607d3e-ee5d-4992-a722-9f5be9c67a17/access_as_user")
+
+    def test_pages_stay_within_the_apis_maximum(self):
+        # D-Tools caps pageSize at 500.
+        self.assertLessEqual(DTOOLS_V2["page_size"], 500)
 
 
 class TokenRefresh(unittest.TestCase):
