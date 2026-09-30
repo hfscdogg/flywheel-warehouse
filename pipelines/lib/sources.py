@@ -99,6 +99,10 @@ DTOOLS_V2 = {
     # observed. Staging models wait for that run's payloads (read by probe).
     "base_url_default": "https://api.d-tools.cloud/api/v2",
     "refresh_secret": "flywheel-dtools-v2-refresh-token",
+    # D-Tools (2026-09-30): pageSize tops out at 500; no rate limit on reads
+    # yet but one is coming, so stay under 4-5 concurrent requests and back
+    # off on 429. The ingest makes one request at a time, and web.session()
+    # retries 429 with backoff and honors Retry-After.
     "page_size": 100,
     # Changed-since lists whose rows need a per-id GET for the fields that
     # matter: a project's cost and margin sit on its proposal data, a purchase
