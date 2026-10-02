@@ -1,7 +1,7 @@
 name: ingest-dtools-v2
 
-# D-Tools Cloud API v2: project cost and margin, purchase order costs, time
-# entry costs, into raw_dtools.v2_*. See pipelines/dtools/v2.py.
+# D-Tools Cloud API v2: project cost, margin and quote number, and purchase
+# order costs, into raw_dtools.v2_*. See pipelines/dtools/v2.py.
 #
 # MANUAL ONLY until the first run has been read. Needs, in this order: the
 # DTOOLS_V2_* values in clients/<slug>/client.env, the secret container from

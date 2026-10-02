@@ -12,7 +12,7 @@ import unittest
 
 from pipelines.dtools import signin, v2
 from pipelines.lib import config
-from pipelines.lib.sources import DTOOLS_V2
+from pipelines.lib.sources import DTOOLS_V2, ZOHO
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -220,15 +220,19 @@ class Recorder:
         return len(records)
 
 
-def projects_api(listed, missing=()):
+def projects_api(listed, missing=(), no_info=()):
     def get(url, params):
         if url.endswith("/projects"):
             return Resp(200, {"projects": listed, "totalProjects": len(listed)})
         pid = url.split("/projects/")[1].split("/")[0]
         if pid in missing:
             return Resp(404)
+        if url.endswith("/proposal"):
+            if pid in no_info:
+                return Resp(404)
+            return Resp(200, {"quoteNumber": f"Q{pid}", "projectNumber": f"P{pid}"})
         return Resp(200, {"summary": {"cost": 10.0, "price": 15.0}})
-    return api_with(get)[0]
+    return api_with(get)
 
 
 class RunProjects(unittest.TestCase):
@@ -240,7 +244,7 @@ class RunProjects(unittest.TestCase):
         land = Recorder()
         v2.BATCH_SIZE, saved = 2, v2.BATCH_SIZE
         try:
-            v2.run_projects(projects_api(self.LISTED), land, None)
+            v2.run_projects(projects_api(self.LISTED)[0], land, None)
         finally:
             v2.BATCH_SIZE = saved
         self.assertEqual([e for e, _ in land.calls],
@@ -253,7 +257,7 @@ class RunProjects(unittest.TestCase):
         v2.BATCH_SIZE, saved = 2, v2.BATCH_SIZE
         try:
             with self.assertRaises(RuntimeError):
-                v2.run_projects(projects_api(self.LISTED), land, None)
+                v2.run_projects(projects_api(self.LISTED)[0], land, None)
         finally:
             v2.BATCH_SIZE = saved
         self.assertEqual(land.calls, [(v2.PROPOSALS, ["1", "2"]), (v2.PROJECTS, ["1", "2"])])
@@ -267,7 +271,7 @@ class RunProjects(unittest.TestCase):
             if entity == v2.PROPOSALS:
                 seen.extend(records)
             return orig(entity, records, id_field, modified_field)
-        v2.run_projects(projects_api(self.LISTED, missing={"2"}), spy, None)
+        v2.run_projects(projects_api(self.LISTED, missing={"2"})[0], spy, None)
         self.assertEqual([r["project_id"] for r in seen], ["1", "3"])
         self.assertEqual(seen[0]["project_modified_date"], "2026-09-01T00:00:00Z")
         self.assertEqual(seen[0]["proposal"]["summary"]["cost"], 10.0)
@@ -276,19 +280,50 @@ class RunProjects(unittest.TestCase):
         # An empty pull must still reach runner.land: it creates the tables
         # and writes the run log the freshness check reads.
         land = Recorder()
-        v2.run_projects(projects_api([]), land, None)
+        v2.run_projects(projects_api([])[0], land, None)
         self.assertEqual(land.calls, [(v2.PROPOSALS, []), (v2.PROJECTS, [])])
 
 
-class RunTimeEntries(unittest.TestCase):
-    def test_time_entries_land_whole_with_no_key(self):
-        rows = [{"totalCost": 50.0, "projectId": "p"}]
+class QuoteNumber(unittest.TestCase):
+    """A project's quote number is the only key D-Tools shares with Zoho
+    CRM, where hours worked live (a deal's QB_Estimate_Num). It appears
+    only in the project's proposal info, so that lands with the cost."""
 
-        def get(url, params):
-            return Resp(200, {"timeEntries": rows, "totalTimeEntries": 1})
-        land = Recorder()
-        v2.run_time_entries(api_with(get)[0], land)
-        self.assertEqual(land.calls, [(v2.TIME_ENTRIES, [None])])
+    LISTED = [rec(i, f"2026-09-0{i}T00:00:00Z") for i in range(1, 3)]
+
+    def landed(self, **kw):
+        seen = []
+
+        def land(entity, records, id_field, modified_field):
+            if entity == v2.PROPOSALS:
+                seen.extend(records)
+            return len(records)
+        api, http, _ = projects_api(self.LISTED, **kw)
+        v2.run_projects(api, land, None)
+        return seen, http
+
+    def test_each_proposal_lands_with_its_quote_number(self):
+        seen, http = self.landed()
+        self.assertEqual([r["proposal_info"]["quoteNumber"] for r in seen], ["Q1", "Q2"])
+        self.assertIn("https://api.d-tools.cloud/api/v2/projects/1/proposal",
+                      [g[0] for g in http.gets])
+
+    def test_a_missing_info_still_lands_the_cost(self):
+        seen, _ = self.landed(no_info={"1"})
+        self.assertEqual([r["project_id"] for r in seen], ["1", "2"])
+        self.assertIsNone(seen[0]["proposal_info"])
+        self.assertEqual(seen[0]["proposal"]["summary"]["cost"], 10.0)
+
+    def test_time_entries_are_not_pulled(self):
+        # D-Tools records hours sold; hours worked are Zoho CRM meetings.
+        self.assertNotIn("time_entries", DTOOLS_V2)
+        self.assertEqual(v2.ENTITIES, [v2.PROJECTS, v2.PROPOSALS, v2.PURCHASE_ORDERS])
+
+
+class ZohoMeetings(unittest.TestCase):
+    def test_the_zoho_ingest_pulls_meetings(self):
+        # Events is the API name of Meetings, where technicians log hours.
+        self.assertIn("Events", ZOHO["modules"])
 
 
 class SignIn(unittest.TestCase):

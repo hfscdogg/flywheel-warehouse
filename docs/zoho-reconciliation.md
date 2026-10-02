@@ -28,6 +28,13 @@ mechanism), **Meetings** (hours-billed rollup), and **Sales Trackers**
 retroactively, so if weekly pipeline metrics should ever come from the
 warehouse, Stage History ingestion should start sooner rather than later.
 
+**Meetings: ingested from 2026-10-01** as `raw_zoho.events` (Events is its
+API name). Hours worked are the meetings' `Duration (Man Hrs)` on a deal;
+the dashboard counts Event Types "Install - Warranty / Punchout" and
+"Finish-Out" with status "Ready to Bill" or "Complete". A deal reaches its
+D-Tools project through `QB_Estimate_Num` = the project's quote number,
+which `raw_dtools.v2_project_proposals` carries in `proposal_info`.
+
 ### S3 — Grain: Zoho is weekly (Saturday, `Weekday = 7`), `kpi_sales_pipeline` is monthly. **MEDIUM**
 Not wrong, but totals only reconcile at month boundaries that contain whole
 Zoho weeks; compare monthly aggregates of the Zoho weekly rows, tolerating
