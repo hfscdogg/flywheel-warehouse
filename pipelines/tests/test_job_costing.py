@@ -125,6 +125,15 @@ class TheLink(unittest.TestCase):
                       build_half(PROPOSALS))
 
 
+class SuspectProposals(unittest.TestCase):
+    def test_a_cost_above_price_is_flagged_not_dropped(self):
+        # 21 proposals since 2025 carried $1.5M more cost than price; they
+        # stay in the table, marked, so totals can be taken with and without.
+        cols = output_columns(build_half(MART))
+        self.assertEqual(cols["cost_above_price"], "sold_cost > sold_price")
+        self.assertNotIn("WHERE sold_cost", build_half(MART))
+
+
 class EquipmentCost(unittest.TestCase):
     def test_a_line_costs_quantity_times_unit_cost(self):
         self.assertIn("ROUND(quantity * unit_cost, 2) AS line_cost", build_half(PO_LINES))

@@ -15,6 +15,7 @@ OPTIONS (description = """
 Job costing, one row per D-Tools project: what the job was sold for and expected to cost (D-Tools proposal), what its equipment actually cost (D-Tools purchase orders), and hours sold versus hours worked (Zoho CRM).
 The hours columns are filled only where zoho_link = 'linked'. A project reaches its Zoho deal through the deal's estimate number, which is typed in by hand and missing on most deals, so on 2026-10-03 only about a third of projects with a proposal linked. Unlinked projects still carry the D-Tools figures. Report the linked share alongside any hours total, and never treat a missing link as zero hours.
 actual_equipment_cost counts purchase-order lines tagged to the project; stock pulled from the shelf is not in it. Amounts USD.
+Check cost_above_price before totaling sold figures: on 2026-10-04, 21 proposals since 2025 had sold cost above sold price, $1.5M of excess cost, enough to pull that year's sold margin from about 42% to 10%. They look like entry errors in D-Tools; report totals with and without them.
 """)
 AS
 WITH projects AS (
@@ -99,6 +100,7 @@ SELECT
   sold_cost,
   sold_margin,
   sold_margin_pct,
+  sold_cost > sold_price                                      AS cost_above_price,
   sold_product_cost,
   sold_labor_cost,
   actual_equipment_cost,
@@ -143,6 +145,8 @@ ALTER TABLE marts.kpi_project_job_costing ALTER COLUMN sold_margin
   SET OPTIONS (description = "sold_price minus sold_cost, USD: gross margin as sold.");
 ALTER TABLE marts.kpi_project_job_costing ALTER COLUMN sold_margin_pct
   SET OPTIONS (description = "sold_margin as a percent of sold_price, one decimal.");
+ALTER TABLE marts.kpi_project_job_costing ALTER COLUMN cost_above_price
+  SET OPTIONS (description = "TRUE when the proposal's sold cost exceeds its sold price. Almost always an entry error in D-Tools; a few such projects distort any total, so exclude or check them before summing sold figures.");
 ALTER TABLE marts.kpi_project_job_costing ALTER COLUMN sold_product_cost
   SET OPTIONS (description = "Equipment cost estimated when sold, USD; compare actual_equipment_cost.");
 ALTER TABLE marts.kpi_project_job_costing ALTER COLUMN sold_labor_cost
