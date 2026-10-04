@@ -90,9 +90,23 @@ Google Ads (paid), so compare spend with the Marketing & website group in
 `kpi_deal_attribution` and GA4's Paid Search sessions in
 `kpi_website_traffic`.
 
+## kpi_project_job_costing — sold vs. actual per project (D-Tools v2 + Zoho CRM)
+
+One row per D-Tools project: sold price, cost and margin from its proposal;
+actual equipment cost from the purchase-order lines tagged to it; and, from
+Zoho CRM, hours sold (`FO_Hours_Sold`) against hours worked (man-hours on
+the deal's install and finish-out meetings marked Ready to Bill or
+Complete, as Zoho's Actual vs Billed Hours report counts them).
+
+The Zoho half rides on one hand-typed key: a deal's estimate number must
+equal the proposal's quote number. On 2026-10-03 only 550 of 1,733 deals
+closed since 2025 carried one, so `zoho_link` says, per project, whether it
+linked and if not why. Never fill the gap by matching names.
+
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 
-One row per D-Tools project: quoted price/cost/margin, plus invoiced-to-date,
+One row per D-Tools project: quoted price (no cost: the v1 endpoint carries
+none; see `kpi_project_job_costing`), plus invoiced-to-date,
 collected-to-date, and AR balance from QBO. The QBO figures are matched on
 normalized client name ↔ customer display name (the systems share no key)
 and are **customer-level**: `customer_project_count > 1` means they're

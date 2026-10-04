@@ -3,12 +3,14 @@ name: ingest-dtools-v2
 # D-Tools Cloud API v2: project cost, margin and quote number, and purchase
 # order costs, into raw_dtools.v2_*. See pipelines/dtools/v2.py.
 #
-# MANUAL ONLY until the first run has been read. Needs, in this order: the
-# DTOOLS_V2_* values in clients/<slug>/client.env, the secret container from
-# scripts/05-ingestion-infra.sh, and one device-code sign-in
-# (python -m pipelines.dtools.signin). A nightly schedule is added once a
-# dispatched run has landed and its payloads have been checked.
+# Nightly from 2026-10-04: the first full load (2026-10-03) was read and the
+# job-costing models built on it. Before the 07:00 UTC transform, after the
+# other ingests. Needs the DTOOLS_V2_* values in clients/<slug>/client.env,
+# the secret from scripts/05-ingestion-infra.sh (ingest-writer may read it and
+# add versions), and one device-code sign-in (python -m pipelines.dtools.signin).
 on:
+  schedule:
+    - cron: "50 6 * * *"
   workflow_dispatch:
     inputs:
       client:
