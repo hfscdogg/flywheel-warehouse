@@ -38,6 +38,12 @@ fields AS (
     JSON_VALUE(payload, '$.Alarm_Monitoring_Plan')             AS alarm_monitoring_plan,
     JSON_VALUE(payload, '$.Pick_Service_Plan')                 AS pick_service_plan,
     JSON_VALUE(payload, '$.Marketing_Channel')                 AS marketing_channel,
+    -- The D-Tools quote number, typed in by hand: the only key the two
+    -- systems share (verified 2026-10-03: matched projects' dates agree
+    -- within 60 days for 177 of 196). Blank on about two deals in three.
+    NULLIF(TRIM(JSON_VALUE(payload, '$.QB_Estimate_Num')), '') AS estimate_number,
+    SAFE_CAST(JSON_VALUE(payload, '$.FO_Hours_Sold') AS NUMERIC)    AS fo_hours_sold,
+    SAFE_CAST(JSON_VALUE(payload, '$.Total_Hours_Sold') AS NUMERIC) AS total_hours_sold,
     JSON_VALUE(payload, '$.Account_Name.id')                   AS account_id,
     JSON_VALUE(payload, '$.Account_Name.name')                 AS account_name,
     JSON_VALUE(payload, '$.Contact_Name.id')                   AS contact_id,
@@ -105,6 +111,9 @@ SELECT
   alarm_monitoring_plan,
   pick_service_plan,
   marketing_channel,
+  estimate_number,
+  fo_hours_sold,
+  total_hours_sold,
   account_id,
   account_name,
   contact_id,
@@ -147,6 +156,12 @@ ALTER TABLE staging.stg_zoho__deals ALTER COLUMN pick_service_plan
   SET OPTIONS (description = "Service plan chosen on the deal, when any.");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN marketing_channel
   SET OPTIONS (description = "Marketing channel the sales team attributed the deal to.");
+ALTER TABLE staging.stg_zoho__deals ALTER COLUMN estimate_number
+  SET OPTIONS (description = "QB Estimate Num as typed on the deal: the D-Tools quote number, and the only link to D-Tools (stg_dtools__v2_project_proposals.quote_number). Blank on most deals.");
+ALTER TABLE staging.stg_zoho__deals ALTER COLUMN fo_hours_sold
+  SET OPTIONS (description = "FO Hours Sold: finish-out labor hours sold on the deal, the figure Zoho's Actual vs Billed Hours report compares against hours worked.");
+ALTER TABLE staging.stg_zoho__deals ALTER COLUMN total_hours_sold
+  SET OPTIONS (description = "Total Hours Sold: all labor hours sold on the deal, every phase.");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN account_id
   SET OPTIONS (description = "CRM account on the deal; joins to stg_zoho__accounts.");
 ALTER TABLE staging.stg_zoho__deals ALTER COLUMN account_name

@@ -46,11 +46,11 @@ in step.
 
 | Source | Models |
 |--------|--------|
-| Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals` |
+| Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals`, `stg_zoho__meetings` (hours worked) |
 | Zoho Billing | `stg_zohobilling__subscriptions`, `stg_zohobilling__customers` |
 | Monitoring vendors | `stg_vendor__securitycentral_accounts` (address roster), `stg_vendor__securitycentral_status` (weekly status feed), `stg_vendor__alarmdotcom_accounts` (dealer-site Custom List export), `stg_vendor__parasol_accounts` (monthly invoice, which is the roster) — all from uploaded files, see [docs/vendor-reports.md](../../docs/vendor-reports.md) |
 | Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline; feeds `kpi_subscription_audit` alongside Security Central) |
-| D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` |
+| D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` (v1 API, no cost); `stg_dtools__v2_projects`, `stg_dtools__v2_project_proposals` (sold price, cost, quote number), `stg_dtools__v2_po_lines` (actual equipment cost); feed `kpi_project_job_costing` |
 | QuickBooks Online | `stg_qbo__customers`, `stg_qbo__vendors`, `stg_qbo__items`, `stg_qbo__accounts`, `stg_qbo__estimates`, `stg_qbo__invoices`, `stg_qbo__bills`, `stg_qbo__payments`, `stg_qbo__purchase_orders` |
 | GA4 | `stg_ga4__sessions` (one row per session; feeds `kpi_website_traffic`) |
 | Google Ads | `stg_google_ads__campaign_daily` (spend and results per campaign per day), `stg_google_ads__campaigns` (one row per campaign); feed `kpi_paid_media` |
