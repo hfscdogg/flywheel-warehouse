@@ -9,8 +9,8 @@ each test below breaks when one of them is edited away:
 
 - the two client settings agree, or the transform either skips the model
   forever or runs it against a view that was never created;
-- ingest-writer can read the export and hermes-reader cannot, the same
-  boundary raw_* has;
+- the transform (which builds staging from the view) and the probe can read
+  the export and hermes-reader cannot, the same boundary raw_* has;
 - the view leaves out the intraday tables, which duplicate a day.
 """
 
@@ -98,10 +98,14 @@ class TheView(unittest.TestCase):
 
 
 class WhoCanReadTheExport(unittest.TestCase):
-    def test_ingest_writer_reads_it(self):
-        self.assertIn(
-            'grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataViewer "$GA4_EXPORT_DATASET"',
-            IAM.read_text())
+    def test_the_transform_and_the_probe_read_it(self):
+        # The view runs with the querying identity's own access, so the
+        # account that builds staging from it must read the export itself.
+        src = IAM.read_text()
+        self.assertIn('for ds in $DATASETS_RAW $GA4_EXPORT_DATASET; do\n'
+                      '  grant_dataset_role "$SA_TRANSFORM_EMAIL" roles/bigquery.dataViewer "$ds"', src)
+        self.assertIn('for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do\n'
+                      '  grant_dataset_role "$SA_PROBE_EMAIL" roles/bigquery.dataViewer "$ds"', src)
 
     def test_hermes_reader_never_does(self):
         for line in IAM.read_text().splitlines():

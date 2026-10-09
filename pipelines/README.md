@@ -10,12 +10,13 @@ the 07:00 transform), manually triggerable via `workflow_dispatch`, one
 ## How a run works
 
 1. **Auth to GCP:** Workload Identity Federation — the workflow's GitHub OIDC
-   token is exchanged for `ingest-writer` credentials
-   (`google-github-actions/auth@v2`). No key files anywhere.
+   token is exchanged for the source's own `ingest-<source>` credentials
+   (`google-github-actions/auth`), which read that source's secrets and
+   write its `raw_<source>` dataset only. No key files anywhere.
 2. **Source credentials:** read at runtime from **Secret Manager in the
    client's project** (`flywheel-*` secrets). GitHub holds no client secrets
-   — only two non-sensitive repo *variables* (`WIF_PROVIDER`,
-   `WIF_SERVICE_ACCOUNT`). Setup: `scripts/05-ingestion-infra.sh`, then
+   — only non-sensitive repo *variables* (`WIF_PROVIDER` and one
+   `WIF_SA_*` per job). Setup: `scripts/05-ingestion-infra.sh`, then
    [docs/phase-2-credentials.md](../docs/phase-2-credentials.md).
 3. **Load pattern:** append-only landing tables, one per source entity, full
    record as a JSON `payload` column plus `_source_id`, `_modified_at`,
@@ -40,8 +41,9 @@ the 07:00 transform), manually triggerable via `workflow_dispatch`, one
 
 - **QBO rotates refresh tokens.** Each refresh can return a new token and
   kill the old one. `qbo/ingest.py` writes the new token back to Secret
-  Manager immediately (`ingest-writer` has `secretVersionAdder` on that
-  secret and on D-Tools v2's, which Entra rotates the same way). This is why
+  Manager immediately (`ingest-qbo` has `secretVersionAdder` on that
+  secret, as `ingest-dtools` does on D-Tools v2's, which Entra rotates the
+  same way). This is why
   credentials live in Secret Manager, not GitHub.
 - **Zoho data centers.** The token endpoint depends on the tenant's region
   (`ZOHO_ACCOUNTS_HOST`, default `accounts.zoho.com`); record calls follow
@@ -77,7 +79,7 @@ tests/            stdlib-only unit tests (run in CI without pip installs)
 
 ```sh
 pip install -r pipelines/requirements.txt
-gcloud auth application-default login   # or impersonate ingest-writer
+gcloud auth application-default login   # or impersonate ingest-<source>
 python -m pipelines.zoho.ingest --client livewire --dry-run   # plan only
 python -m pipelines.zoho.ingest --client livewire --limit 25  # smoke run
 ```

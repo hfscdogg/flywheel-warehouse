@@ -6,7 +6,7 @@ name: ingest-dtools-v2
 # Nightly from 2026-10-04: the first full load (2026-10-03) was read and the
 # job-costing models built on it. Before the 07:00 UTC transform, after the
 # other ingests. Needs the DTOOLS_V2_* values in clients/<slug>/client.env,
-# the secret from scripts/05-ingestion-infra.sh (ingest-writer may read it and
+# the secret from scripts/05-ingestion-infra.sh (ingest-dtools may read it and
 # add versions), and one device-code sign-in (python -m pipelines.dtools.signin).
 on:
   schedule:
@@ -42,7 +42,10 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          # This job's own account (scripts/lib/common.sh). Until the variable
+          # is set it falls back to the retired ingest-writer, so merging this
+          # changes nothing; 11-retire-ingest-writer.sh ends the fallback.
+          service_account: ${{ vars.WIF_SA_INGEST_DTOOLS || vars.WIF_SERVICE_ACCOUNT }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"

@@ -73,19 +73,42 @@ SA_ENDPOINT_DEPLOYER_EMAIL="${SA_ENDPOINT_DEPLOYER}@${GCP_PROJECT_ID}.iam.gservi
 RUN_REGION="${RUN_REGION:-us-east4}"
 HERMES_MCP_SERVICE="${HERMES_MCP_SERVICE:-hermes-mcp}"
 
-POOL_NAME="$(gcloud iam workload-identity-pools describe "$WIF_POOL" \
-  --project "$GCP_PROJECT_ID" --location=global --format='value(name)' 2>/dev/null || true)"
-[ -n "$POOL_NAME" ] || is_dry_run || die "workload identity pool '$WIF_POOL' not found — run 05-ingestion-infra.sh first"
+if is_dry_run; then
+  POOL_NAME="projects/<project-number>/locations/global/workloadIdentityPools/$WIF_POOL"
+else
+  POOL_NAME="$(gcloud iam workload-identity-pools describe "$WIF_POOL" \
+    --project "$GCP_PROJECT_ID" --location=global --format='value(name)' 2>/dev/null || true)"
+  [ -n "$POOL_NAME" ] || die "workload identity pool '$WIF_POOL' not found — run 05-ingestion-infra.sh first"
+fi
+
+# Only deploy-endpoint.yml, on WIF_ALLOWED_REF, may act as this account. That
+# file is the one with `environment: endpoint`, so the approval gate cannot be
+# stepped around by a different workflow, or this one on another branch.
+DEPLOY_MEMBER="$(wif_workflow_member "$POOL_NAME" deploy-endpoint.yml)"
+# What this script bound before 2026-10-09: any workflow, any branch.
+LEGACY_MEMBER="$(wif_repo_member "$POOL_NAME")"
 
 if [ "$ACTION" = "revoke" ]; then
   info "Revoking GitHub's ability to impersonate $SA_ENDPOINT_DEPLOYER"
-  run gcloud iam service-accounts remove-iam-policy-binding "$SA_ENDPOINT_DEPLOYER_EMAIL" \
-    --project "$GCP_PROJECT_ID" \
-    --role=roles/iam.workloadIdentityUser \
-    --member="principalSet://iam.googleapis.com/$POOL_NAME/attribute.repository/$GITHUB_REPO" \
-    --format=none --quiet
+  for member in "$DEPLOY_MEMBER" "$LEGACY_MEMBER"; do
+    remove_resource_binding "iam service-accounts" "$SA_ENDPOINT_DEPLOYER_EMAIL" \
+      "$member" roles/iam.workloadIdentityUser
+  done
   log "  the account and its grants remain; re-run without 'revoke' to restore"
   exit 0
+fi
+
+# The pinned binding matches on attribute.job_workflow_ref, which a provider
+# made before 2026-10-09 does not map. Binding to it there would match
+# nothing, and removing the repo-wide binding below would then break deploys.
+if ! is_dry_run; then
+  MAPPING="$(gcloud iam workload-identity-pools providers describe github \
+    --project "$GCP_PROJECT_ID" --location=global --workload-identity-pool="$WIF_POOL" \
+    --format='value(attributeMapping)' 2>/dev/null || true)"
+  case "$MAPPING" in
+    *job_workflow_ref*) : ;;
+    *) die "the WIF provider does not map job_workflow_ref yet — run 05-ingestion-infra.sh $CLIENT_SLUG first" ;;
+  esac
 fi
 
 info "Service account: $SA_ENDPOINT_DEPLOYER_EMAIL"
@@ -195,12 +218,15 @@ elif ! is_dry_run; then
   warn "from an admin session once, then re-run this script to grant on it."
 fi
 
-info "Binding: this repo's workflows may impersonate $SA_ENDPOINT_DEPLOYER"
+info "Binding: deploy-endpoint.yml on $WIF_ALLOWED_REF may impersonate $SA_ENDPOINT_DEPLOYER"
 run gcloud iam service-accounts add-iam-policy-binding "$SA_ENDPOINT_DEPLOYER_EMAIL" \
   --project "$GCP_PROJECT_ID" \
   --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/$POOL_NAME/attribute.repository/$GITHUB_REPO" \
+  --member="$DEPLOY_MEMBER" \
   --format=none --quiet
+info "Removing the repo-wide binding (any workflow, any branch), if present"
+remove_resource_binding "iam service-accounts" "$SA_ENDPOINT_DEPLOYER_EMAIL" \
+  "$LEGACY_MEMBER" roles/iam.workloadIdentityUser
 
 log ""
 info "Done. Set this as a GitHub Actions repository variable:"

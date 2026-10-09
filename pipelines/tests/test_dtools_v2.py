@@ -8,6 +8,7 @@ records that never landed, with nothing reporting it).
 """
 
 import pathlib
+import re
 import unittest
 
 from pipelines.dtools import signin, v2
@@ -364,17 +365,24 @@ class SignIn(unittest.TestCase):
 
 
 class InfraKnowsTheSecret(unittest.TestCase):
-    def test_the_secret_exists_and_ingest_writer_may_replace_it(self):
+    def test_the_secret_exists_and_the_dtools_account_may_replace_it(self):
         # A rotated token the pipeline may not write back is lost the first
-        # night Entra rotates it; the ingest dies the next night.
+        # night Entra rotates it; the ingest dies the next night. The secret
+        # belongs to the D-Tools ingest account (scripts/lib/common.sh), and
+        # 05-ingestion-infra.sh grants each source's rotating secrets to it.
+        common = (ROOT / "scripts" / "lib" / "common.sh").read_text()
         src = (ROOT / "scripts" / "05-ingestion-infra.sh").read_text()
         name = DTOOLS_V2["refresh_secret"]
-        names = src[src.index("SECRET_NAMES="):src.index("ROTATING_SECRETS=")]
-        rotating = src[src.index("ROTATING_SECRETS="):].splitlines()[0]
-        self.assertIn(name, names)
-        self.assertIn(name, rotating)
-        self.assertIn("for s in $ROTATING_SECRETS", src)
 
+        def entry(fn):
+            body = common[common.index(f"{fn}() {{"):]
+            body = body[:body.index("\n}\n")]
+            return re.search(r"^\s*dtools\)\s+echo \"([^\"]*)\"", body, re.M).group(1).split()
+
+        self.assertIn(name, entry("source_secrets"))
+        self.assertIn(name, entry("source_rotating_secrets"))
+        self.assertIn('for s in $(source_rotating_secrets "$src")', src)
+        self.assertIn("roles/secretmanager.secretVersionAdder", src)
 
 if __name__ == "__main__":
     unittest.main()
