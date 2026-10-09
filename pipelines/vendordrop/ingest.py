@@ -46,7 +46,7 @@ def pending_blobs(bucket, fmt_key, slug):
     browser upload can leave one behind too.
 
     The bucket is not probed with exists() first. That calls buckets.get,
-    which `roles/storage.objectAdmin` — what ingest-writer is granted — does
+    which `roles/storage.objectAdmin` — what ingest-vendor is granted — does
     not include, so the readiness check would fail on a bucket the pipeline
     can read perfectly well. Listing is the real test; a missing bucket
     surfaces here instead.
@@ -61,7 +61,7 @@ def pending_blobs(bucket, fmt_key, slug):
         return None
     except gexc.Forbidden:
         log.warning("no access to gs://%s — no uploads to read. Re-run "
-                    "./scripts/09-vendor-drop.sh %s to grant ingest-writer.",
+                    "./scripts/09-vendor-drop.sh %s to grant ingest-vendor.",
                     bucket.name, slug)
         return None
     return sorted((b for b in blobs if not b.name.endswith("/") and b.size),

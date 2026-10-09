@@ -5,8 +5,9 @@ name: probe
 # deliberately never raw_*, so a "what shape is this payload" question has
 # meant a human pasting a query into Cloud Shell and pasting the answer back.
 # This closes that loop without widening the agent's own seat: the query runs
-# HERE, in GitHub Actions, as the existing ingest-writer identity by workload
-# identity federation. No key exists, and nothing new was granted.
+# HERE, in GitHub Actions, as warehouse-reader by workload identity
+# federation. That account reads every dataset and can write none, and no key
+# for it exists (scripts/03-iam.sh).
 #
 # RESULTS GO TO THIS JOB'S LOG, which anyone who can read the repository can
 # read, and they outlive the run. raw_* payloads carry customer names,
@@ -53,51 +54,30 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3 # provides bq
+          # This job's own account (scripts/lib/common.sh). Until the variable
+          # is set it falls back to the retired ingest-writer, so merging this
+          # changes nothing; 11-retire-ingest-writer.sh ends the fallback.
+          service_account: ${{ vars.WIF_SA_PROBE || vars.WIF_SERVICE_ACCOUNT }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipelines/requirements.txt
 
       # The statement is read through the environment, never interpolated into
       # a shell line: `${{ inputs.sql }}` written into a `run:` script would be
       # pasted in verbatim before bash ever saw it, so a query containing a
       # quote and a semicolon would run as a command on the runner. The runner
       # holds a live WIF credential, so that is not a theoretical concern.
-      # Same reason the checks below read "$SQL" rather than the expression.
-      - name: Reject anything but a single read-only statement
-        env:
-          SQL: ${{ inputs.sql }}
-        run: |
-          python3 - <<'PY'
-          import os, re, sys
-          sql = os.environ["SQL"]
-          # Comments stripped first: "-- DELETE" is not a delete, but
-          # "/* x */ DROP" would sail past a naive prefix check.
-          bare = re.sub(r"--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).strip().rstrip(";").strip()
-          if not bare:
-              sys.exit("empty query")
-          if ";" in bare:
-              sys.exit("one statement per probe")
-          if not re.match(r"(?is)^(select|with)\b", bare):
-              sys.exit("read-only probe: SELECT/WITH statements only")
-          print("statement accepted")
-          PY
-
-      # ingest-writer holds dataEditor, so BigQuery would happily run a DDL
-      # statement this workflow let through -- the guard above is the only
-      # thing standing between this input and a dropped table, which is why it
-      # runs as its own step and fails the job rather than warning.
-      # --maximum_bytes_billed caps a runaway scan; --dry_run first so a bad
-      # query fails before processing anything.
-      - name: Run it
+      #
+      # Before anything runs, BigQuery dry-runs the statement and says what it
+      # is, and anything but a single SELECT stops the job
+      # (pipelines/lib/readonly_sql.py). That replaced a regex on 2026-10-09:
+      # it stripped comments without knowing about string literals, so
+      # SELECT '/*'; DROP TABLE x; SELECT '*/' read as one SELECT and ran as
+      # three statements. The account cannot write either way.
+      - name: Run it, if BigQuery reads it as a single SELECT
         env:
           SQL: ${{ inputs.sql }}
           MAX_ROWS: ${{ inputs.max_rows || '20' }}
           CLIENT: ${{ inputs.client || 'livewire' }}
-        run: |
-          set -euo pipefail
-          PROJECT="$(sed -n 's/^GCP_PROJECT_ID="\(.*\)"$/\1/p' "clients/$CLIENT/client.env")"
-          echo "project: $PROJECT"
-          printf '%s' "$SQL" | bq query --project_id="$PROJECT" \
-            --use_legacy_sql=false --dry_run --format=none
-          printf '%s' "$SQL" | bq query --project_id="$PROJECT" \
-            --use_legacy_sql=false --max_rows="$MAX_ROWS" \
-            --maximum_bytes_billed=1073741824 --format=prettyjson
+        run: python -m pipelines.probe --client "$CLIENT" --max-rows "$MAX_ROWS"

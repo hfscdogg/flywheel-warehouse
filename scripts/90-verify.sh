@@ -3,7 +3,7 @@
 #
 # Checks, in order:
 #   1. All datasets exist in the configured location
-#   2. Both service accounts exist
+#   2. Every service account exists (agent + one per pipeline job)
 #   3. IAM policy assertions (reader on DATASETS_AGENT; reader ABSENT from
 #      raw, and from staging unless AGENT_SCOPE=wide)
 #   4. Impersonated smoke test via the BigQuery REST API:
@@ -24,10 +24,19 @@ load_client "$1"
 
 FIRST_RAW="$(set -- $DATASETS_RAW; printf '%s' "$1")"
 
+# The agent's account and one per pipeline job (lib/common.sh).
+pipeline_and_agent_sas() {
+  local src
+  printf '%s\n' "$SA_HERMES_READER_EMAIL"
+  for src in $INGEST_SOURCES; do ingest_sa_email "$src"; printf '\n'; done
+  printf '%s\n%s\n' "$SA_TRANSFORM_EMAIL" "$SA_PROBE_EMAIL"
+}
+
 if is_dry_run; then
   info "[dry-run] verify is read-only; a real run asserts:"
   log "  - datasets ($ALL_DATASETS) exist in $BQ_LOCATION"
-  log "  - SAs $SA_HERMES_READER_EMAIL and $SA_INGEST_WRITER_EMAIL exist"
+  log "  - SAs exist: $(pipeline_and_agent_sas | tr '\n' ' ')"
+  log "  - no ingest account is bound on $DATASET_STAGING or $DATASET_MARTS"
   log "  - $SA_HERMES_READER has dataViewer on $DATASETS_AGENT and nothing else (AGENT_SCOPE=$AGENT_SCOPE)"
   log "  - impersonated query on $DATASET_MARTS._flywheel_canary → HTTP 200"
   log "  - impersonated query on $FIRST_RAW._flywheel_canary → HTTP 403"
@@ -58,7 +67,7 @@ for ds in $ALL_DATASETS; do
 done
 
 # 2. Service accounts exist
-for email in "$SA_HERMES_READER_EMAIL" "$SA_INGEST_WRITER_EMAIL"; do
+for email in $(pipeline_and_agent_sas); do
   if probe gcloud iam service-accounts describe "$email" --project "$GCP_PROJECT_ID"; then
     record PASS "service account $email exists"
   else
@@ -103,11 +112,28 @@ for ds in $DATASETS_RAW $STAGING_EXPECTED_ABSENT $GA4_EXPORT_DATASET; do
   fi
 done
 
+# An ingest account writes its own raw dataset only (03-iam.sh). Bound on
+# staging or marts means it can rewrite what the agent reads.
+for ds in $DATASET_STAGING $DATASET_MARTS; do
+  DS_ACCESS="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null || true)"
+  for src in $INGEST_SOURCES; do
+    email="$(ingest_sa_email "$src")"
+    if [ -z "$DS_ACCESS" ]; then
+      record FAIL "policy: could not read access on $ds"
+      break
+    elif printf '%s' "$DS_ACCESS" | grep -q "$email"; then
+      record FAIL "policy: $email UNEXPECTEDLY bound on $ds"
+    else
+      record PASS "policy: $email has no grant on $ds"
+    fi
+  done
+done
+
 PROJECT_JOBUSERS="$(gcloud projects get-iam-policy "$GCP_PROJECT_ID" \
   --flatten='bindings[].members' \
   --filter='bindings.role=roles/bigquery.jobUser' \
   --format='value(bindings.members)' 2>/dev/null || true)"
-for email in "$SA_HERMES_READER_EMAIL" "$SA_INGEST_WRITER_EMAIL"; do
+for email in $(pipeline_and_agent_sas); do
   if printf '%s\n' "$PROJECT_JOBUSERS" | grep -q "serviceAccount:$email"; then
     record PASS "policy: $email has project-level jobUser"
   else

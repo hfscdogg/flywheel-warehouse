@@ -4,8 +4,16 @@
 # The trust surface (docs/trust.md) is defined here:
 #   hermes-reader : jobUser (project) + dataViewer on marts — and on staging
 #                   too when the client's AGENT_SCOPE is "wide" (Tier 2b)
-#   ingest-writer : jobUser (project) + dataEditor (each dataset, dataset-level)
+#   ingest-<src>  : jobUser (project) + dataEditor on raw_<src> ONLY
+#   transform-writer : jobUser (project) + dataViewer on every raw dataset
+#                   (and the GA4 export) + dataEditor on staging and marts
+#   warehouse-reader : jobUser (project) + dataViewer on every dataset (and
+#                   the GA4 export). Writes nothing; probe.yml runs as it.
 #   ADMIN_USER    : serviceAccountTokenCreator on the hermes-reader SA
+#
+# Connector secrets and which workflow may act as which account are
+# 05-ingestion-infra.sh. The retired single ingest-writer gets nothing here;
+# 11-retire-ingest-writer.sh strips what it still holds.
 #
 # hermes-reader deliberately gets NOTHING on raw_*, ever. Staging is the
 # client's call (AGENT_SCOPE); raw is not.
@@ -23,52 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 load_client "$1"
 require_cmd gcloud bq python3
 
-# grant_dataset_role <sa-email> <role> <dataset>
-# Dataset-level grants via dataset access entries (bq show → append → bq
-# update --source). 'bq add-iam-policy-binding' on a DATASET needs Google
-# allowlisting; access entries are the GA mechanism for the same grant.
-# Check-then-converge: no-op when the entry already exists.
-grant_dataset_role() {
-  ds_email="$1"; ds_role="$2"; ds_name="$3"
-  if is_dry_run; then
-    log "[dry-run] bq update --source <access+={\"role\":\"$ds_role\",\"userByEmail\":\"$ds_email\"}> $GCP_PROJECT_ID:$ds_name"
-    return 0
-  fi
-  ds_tmp="$(mktemp)"
-  $BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds_name" > "$ds_tmp"
-  if DS_EMAIL="$ds_email" DS_ROLE="$ds_role" python3 - "$ds_tmp" <<'PYEOF'
-import json, os, sys
-path = sys.argv[1]
-email, role = os.environ["DS_EMAIL"], os.environ["DS_ROLE"]
-# BigQuery stores premium role strings as legacy names in the access array.
-LEGACY = {"roles/bigquery.dataViewer": "READER",
-          "roles/bigquery.dataEditor": "WRITER",
-          "roles/bigquery.dataOwner": "OWNER"}
-wanted = {role, LEGACY.get(role, role)}
-with open(path) as f:
-    ds = json.load(f)
-access = ds.get("access", [])
-if any(e.get("userByEmail") == email and e.get("role") in wanted for e in access):
-    sys.exit(3)  # already present — converged
-access.append({"role": role, "userByEmail": email})
-with open(path, "w") as f:
-    json.dump({"access": access}, f)
-sys.exit(0)
-PYEOF
-  then
-    run $BQ update --source "$ds_tmp" "$GCP_PROJECT_ID:$ds_name"
-    log "  granted $ds_role to $ds_email on $ds_name"
-  else
-    rc=$?
-    if [ "$rc" -eq 3 ]; then
-      log "  $ds_email already has $ds_role on $ds_name — converging"
-    else
-      rm -f "$ds_tmp"
-      die "failed to compute access entries for $GCP_PROJECT_ID:$ds_name"
-    fi
-  fi
-  rm -f "$ds_tmp"
-}
+# grant_dataset_role lives in lib/common.sh.
 
 info "IAM bindings for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
 
@@ -82,24 +45,44 @@ for ds in $DATASETS_AGENT; do
   grant_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$ds"
 done
 
-info "ingest-writer: query jobs at project level"
-run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
-  --member="serviceAccount:$SA_INGEST_WRITER_EMAIL" \
-  --role=roles/bigquery.jobUser --condition=None --format=none --quiet
+grant_job_user() {
+  run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:$1" \
+    --role=roles/bigquery.jobUser --condition=None --format=none --quiet
+}
 
-info "ingest-writer: dataset-level write access (not project-level)"
-for ds in $ALL_DATASETS; do
-  grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
+# Each ingest account writes its own raw dataset and nothing else. A bug or a
+# compromise in the Zoho connector cannot touch QuickBooks' tables, staging or
+# marts.
+for src in $INGEST_SOURCES; do
+  email="$(ingest_sa_email "$src")"
+  info "$(ingest_sa_name "$src"): query jobs + write raw_$src only"
+  grant_job_user "$email"
+  grant_dataset_role "$email" roles/bigquery.dataEditor "raw_$src"
 done
 
-# The GA4 export is written by Google, outside DATASETS_RAW, and read only
-# through the view raw_ga4.events, which runs with the querying identity's
-# own access. ingest-writer builds staging from that view, so it reads the
-# export; nothing writes to it. hermes-reader gets no grant here, as on raw.
-if [ -n "$GA4_EXPORT_DATASET" ]; then
-  info "ingest-writer: read access on the GA4 export $GA4_EXPORT_DATASET"
-  grant_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataViewer "$GA4_EXPORT_DATASET"
-fi
+# The transform reads every raw dataset and rebuilds staging and marts. The
+# GA4 export is written by Google, outside DATASETS_RAW, and read only through
+# the view raw_ga4.events, which runs with the querying identity's own access,
+# so the transform needs to read the export too. hermes-reader gets no grant
+# there, as on raw.
+info "$SA_TRANSFORM: read raw, write $DATASET_STAGING and $DATASET_MARTS"
+grant_job_user "$SA_TRANSFORM_EMAIL"
+for ds in $DATASETS_RAW $GA4_EXPORT_DATASET; do
+  grant_dataset_role "$SA_TRANSFORM_EMAIL" roles/bigquery.dataViewer "$ds"
+done
+for ds in $DATASET_STAGING $DATASET_MARTS; do
+  grant_dataset_role "$SA_TRANSFORM_EMAIL" roles/bigquery.dataEditor "$ds"
+done
+
+# probe.yml answers the questions the agent cannot (raw payload shapes), so
+# it reads everything. It writes nothing: a statement that slipped past the
+# probe's own check would still be refused by BigQuery.
+info "$SA_PROBE: read every dataset, write none"
+grant_job_user "$SA_PROBE_EMAIL"
+for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+  grant_dataset_role "$SA_PROBE_EMAIL" roles/bigquery.dataViewer "$ds"
+done
 
 # Project Owner does NOT include token creation. This is what lets ADMIN_USER
 # impersonate hermes-reader — for 90-verify's smoke test, and for keyless

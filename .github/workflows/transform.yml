@@ -35,7 +35,10 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          # This job's own account (scripts/lib/common.sh). Until the variable
+          # is set it falls back to the retired ingest-writer, so merging this
+          # changes nothing; 11-retire-ingest-writer.sh ends the fallback.
+          service_account: ${{ vars.WIF_SA_TRANSFORM || vars.WIF_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v3 # provides bq
       # VALIDATE=1 makes 06-transform.sh dry-run every model (bq query
       # --dry_run: full semantic validation, zero bytes processed, nothing
@@ -45,7 +48,8 @@ jobs:
       - name: Build staging + marts
         env:
           VALIDATE: ${{ inputs.validate && '1' || '0' }}
-        run: ./scripts/06-transform.sh "${{ inputs.client || 'livewire' }}"
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: ./scripts/06-transform.sh "$CLIENT"
 
   # Nothing told anyone when this broke. See .github/workflows/alert.yml.
   alert:

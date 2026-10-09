@@ -31,16 +31,21 @@ jobs:
       - uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+          # This job's own account (scripts/lib/common.sh). Until the variable
+          # is set it falls back to the retired ingest-writer, so merging this
+          # changes nothing; 11-retire-ingest-writer.sh ends the fallback.
+          service_account: ${{ vars.WIF_SA_INGEST_ZOHO || vars.WIF_SERVICE_ACCOUNT }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -r pipelines/requirements.txt
       - name: Ingest Zoho CRM → raw_zoho
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+          FULL_REFRESH: ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
         run: >
           python -m pipelines.zoho.ingest
-          --client "${{ inputs.client || 'livewire' }}"
-          ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
+          --client "$CLIENT" $FULL_REFRESH
 
   # Nothing told anyone when this broke. See .github/workflows/alert.yml.
   alert:
