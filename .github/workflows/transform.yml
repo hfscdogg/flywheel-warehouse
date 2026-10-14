@@ -31,15 +31,15 @@ jobs:
   transform:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1 — provides bq
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
-          # This job's own account (scripts/lib/common.sh). Until the variable
-          # is set it falls back to the retired ingest-writer, so merging this
-          # changes nothing; 11-retire-ingest-writer.sh ends the fallback.
-          service_account: ${{ vars.WIF_SA_TRANSFORM || vars.WIF_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3 # provides bq
+          # This job's own account (scripts/lib/common.sh). No fallback: the
+          # retired ingest-writer is gone, and an unset variable should fail
+          # here rather than borrow some other account.
+          service_account: ${{ vars.WIF_SA_TRANSFORM }}
       # VALIDATE=1 makes 06-transform.sh dry-run every model (bq query
       # --dry_run: full semantic validation, zero bytes processed, nothing
       # created) and exit non-zero if any model is invalid. On a schedule

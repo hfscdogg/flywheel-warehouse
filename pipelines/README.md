@@ -78,7 +78,7 @@ tests/            stdlib-only unit tests (run in CI without pip installs)
 ## Running locally
 
 ```sh
-pip install -r pipelines/requirements.txt
+pip install --require-hashes -r pipelines/requirements.txt
 gcloud auth application-default login   # or impersonate ingest-<source>
 python -m pipelines.zoho.ingest --client livewire --dry-run   # plan only
 python -m pipelines.zoho.ingest --client livewire --limit 25  # smoke run
