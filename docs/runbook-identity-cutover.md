@@ -125,9 +125,23 @@ gh variable delete WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse
 The script refuses to run until every new account exists and the provider
 maps `job_workflow_ref`. It then asks you to confirm the variables are set.
 It removes the old repo-wide binding, every secret grant, every dataset
-grant, project `jobUser` and drop-bucket access, then disables the account.
-Disabling is reversible (`gcloud iam service-accounts enable`); the grants
-have to be re-added by hand.
+grant, project `jobUser` and drop-bucket access. Then it reads every policy in
+the project (project, every dataset under any role, secrets, accounts,
+buckets, Cloud Run) and removes anything else that still names the account,
+and disables it. The second pass closes grants no script listed, such as a
+write grant on `marts` held under a legacy role, as an `iamMember` entry, or
+on a dataset `client.env` does not name.
+
+It also removes the cutover rehearsal: the hand-made `wif-rehearsal` account
+(stripped, then deleted), every WIF provider other than
+`flywheel-github/github` that accepts GitHub tokens (with any pool that
+leaves empty), and every federated binding on any account that is not one
+workflow file on `main`.
+
+Disabling ingest-writer is reversible (`gcloud iam service-accounts enable`);
+the grants have to be re-added by hand. A deleted provider or pool can be
+undeleted for 30 days; a deleted account for 30 days with
+`gcloud iam service-accounts undelete`.
 
 ## 9. Verify, and keep the evidence
 
@@ -137,6 +151,21 @@ have to be re-added by hand.
 
 That checks every account exists and has `jobUser`, that no ingest account is
 bound on `staging` or `marts`, and that the agent's 200/403 boundary holds.
+It also checks what must be absent, read from the live policies: nothing
+anywhere names `ingest-writer` or `wif-rehearsal`, `wif-rehearsal` does not
+exist, `hermes-reader` holds nothing outside its scope on any dataset in the
+project, the only provider accepting GitHub tokens is `flywheel-github/github`
+pinned to `main`, and every federated binding names one workflow file.
+
+For a before/after record of the whole project's IAM, run this before the
+first change and again after the last, and diff the two:
+
+```sh
+./scripts/92-iam-snapshot.sh livewire evidence/before
+# ... the changes ...
+./scripts/92-iam-snapshot.sh livewire evidence/after
+diff -u evidence/before/grants.txt evidence/after/grants.txt
+```
 
 For the re-verification, also save the output of:
 

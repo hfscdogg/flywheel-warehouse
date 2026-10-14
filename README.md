@@ -17,7 +17,8 @@ QuickBooks     │     raw_qbo / raw_alarmdotcom / raw_vendor                   
 Alarm.com      │         (ingest-<source> SA, one each)                         │
 vendor files ──┘                                                                 ▼
  (drop bucket)                                              Hermes agents (hermes-reader SA:
-                                                            read-only, marts only, revocable)
+                                                            read-only, marts + staging under
+                                                            wide scope, never raw, revocable)
 ```
 
 Most sources are scheduled API pulls. Monitoring vendors expose no account
