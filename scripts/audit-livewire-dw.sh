@@ -2,7 +2,9 @@
 # audit-livewire-dw.sh — READ-ONLY inventory of who can do what in livewire-dw.
 #
 # Run in Cloud Shell as henry@getlivewire.com:  bash audit-livewire-dw.sh
-# It writes audit-livewire-dw.txt next to itself and changes nothing.
+# It writes ~/.flywheel/audit/audit-livewire-dw-<date>.txt and changes nothing.
+# The output goes outside the repo on purpose: it is the project's full IAM
+# inventory, and a file next to this script is one `git add` from a commit.
 #
 # Every command here is a list/describe/get-iam-policy. It never reads a
 # secret's VALUE (no `secrets versions access`), only who may read it.
@@ -11,7 +13,11 @@
 set -uo pipefail
 P=livewire-dw
 REGION=us-east4
-OUT="$(dirname "$0")/audit-livewire-dw.txt"
+# BigQuery location of the project's data transfers (client.env BQ_LOCATION).
+TRANSFER_LOCATION=us
+OUT_DIR="$HOME/.flywheel/audit"
+OUT="$OUT_DIR/audit-livewire-dw-$(date +%Y%m%d).txt"
+mkdir -p "$OUT_DIR"
 exec > >(tee "$OUT") 2>&1
 h() { printf '\n===== %s =====\n' "$*"; }
 
@@ -95,7 +101,7 @@ for r in $(gcloud iam roles list --project "$P" --format="value(name.basename())
 done
 
 h "BigQuery Data Transfer configs (Google Ads) and who owns them"
-bq ls --transfer_config --transfer_location=us --project_id="$P" --format=prettyjson 2>/dev/null \
+bq ls --transfer_config --transfer_location="$TRANSFER_LOCATION" --project_id="$P" --format=prettyjson 2>/dev/null \
   | python3 -c 'import json,sys
 try:
   for t in json.load(sys.stdin): print(" ", t.get("displayName"), "|", t.get("dataSourceId"), "| dest:", t.get("destinationDatasetId"), "| owner:", t.get("ownerInfo",{}).get("email"))
