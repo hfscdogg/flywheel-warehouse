@@ -122,6 +122,12 @@ load_client() {
   # and 99-teardown.sh can strip a client that still has it.
   SA_INGEST_WRITER="${SA_INGEST_WRITER:-ingest-writer}"
   SA_INGEST_WRITER_EMAIL="${SA_INGEST_WRITER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  # Made by hand in the sandbox to rehearse the 2026-10 cutover, beside a
+  # second WIF provider that trusted the whole repository. Never part of the
+  # design; named only so 11-retire-ingest-writer.sh can delete it and
+  # 90-verify.sh can prove it is gone.
+  SA_WIF_REHEARSAL="${SA_WIF_REHEARSAL:-wif-rehearsal}"
+  SA_WIF_REHEARSAL_EMAIL="${SA_WIF_REHEARSAL}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
   # One identity per job (docs/trust.md, "Pipeline identities"). Optional in
   # client.env. The ingest identities are one per connector, named
@@ -479,4 +485,259 @@ revoke_sa() { # <sa-email> <label>  — bindings assumed already removed
     run gcloud iam service-accounts disable "$email" --project "$GCP_PROJECT_ID" --quiet
     info "$label disabled (reversible: gcloud iam service-accounts enable $email)"
   fi
+}
+
+# ── Removing an account from everything ────────────────────────────────────
+# revoke_dataset_role and remove_project_binding above remove one named grant.
+# Retiring an account needs the opposite: whatever it holds, wherever it is,
+# in whatever form. A dataset access entry can name it as userByEmail or as
+# iamMember, under a legacy role (WRITER, OWNER) or a premium one, and once
+# the account is deleted IAM rewrites it as deleted:serviceAccount:<email>?uid=.
+# Removing only the grants a script once made is how a retired account can
+# keep write access to a dataset after 11-retire-ingest-writer.sh has run.
+
+# policy_members_of <email>: reads an IAM policy (JSON) on stdin and prints
+# "<role><TAB><member>" for every binding that names <email>, live or deleted.
+policy_members_of() {
+  POLICY_EMAIL="$1" python3 -c '
+import json, os, sys
+email = os.environ["POLICY_EMAIL"].lower()
+try:
+    policy = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for b in policy.get("bindings", []):
+    for m in b.get("members", []):
+        bare = m.split("?", 1)[0].lower()
+        if bare in ("serviceaccount:" + email, "deleted:serviceaccount:" + email):
+            print(b["role"] + "\t" + m)
+'
+}
+
+# dataset_entries_of <email>: reads a dataset (bq show JSON) on stdin and
+# prints the role of every access entry that names <email>, in any form.
+dataset_entries_of() {
+  DS_EMAIL="$1" python3 -c '
+import json, os, sys
+email = os.environ["DS_EMAIL"].lower()
+try:
+    ds = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for e in ds.get("access", []):
+    bare = (e.get("iamMember") or "").split("?", 1)[0].lower()
+    if (e.get("userByEmail") or "").lower() == email or \
+            bare in ("serviceaccount:" + email, "deleted:serviceaccount:" + email):
+        print(e.get("role", ""))
+'
+}
+
+# revoke_dataset_member <email> <dataset>: drop every access entry on the
+# dataset that names <email>, whatever the role or form. No-op when absent.
+# shellcheck disable=SC2086  # $BQ is intentionally word-split
+revoke_dataset_member() {
+  dm_email="$1"; dm_name="$2"
+  if is_dry_run; then
+    log "[dry-run] bq update --source <access-=every entry naming $dm_email> $GCP_PROJECT_ID:$dm_name"
+    return 0
+  fi
+  dm_tmp="$(mktemp)"
+  if ! $BQ show --format=prettyjson "$GCP_PROJECT_ID:$dm_name" > "$dm_tmp" 2>/dev/null; then
+    rm -f "$dm_tmp"
+    info "dataset $dm_name absent — nothing to revoke"
+    return 0
+  fi
+  if [ -z "$(dataset_entries_of "$dm_email" < "$dm_tmp")" ]; then
+    rm -f "$dm_tmp"
+    return 0
+  fi
+  DS_EMAIL="$dm_email" python3 - "$dm_tmp" <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+email = os.environ["DS_EMAIL"].lower()
+def names(e):
+    if (e.get("userByEmail") or "").lower() == email:
+        return True
+    bare = (e.get("iamMember") or "").split("?", 1)[0].lower()
+    return bare in ("serviceaccount:" + email, "deleted:serviceaccount:" + email)
+with open(path) as f:
+    ds = json.load(f)
+access = ds.get("access", [])
+for e in access:
+    if names(e):
+        print("  dropping %s for %s" % (e.get("role"), email))
+with open(path, "w") as f:
+    json.dump({"access": [e for e in access if not names(e)]}, f)
+PYEOF
+  run $BQ update --source "$dm_tmp" "$GCP_PROJECT_ID:$dm_name"
+  rm -f "$dm_tmp"
+}
+
+# project_datasets: every dataset in the project, not only the ones client.env
+# names. A grant on a dataset nobody listed is still a grant.
+# shellcheck disable=SC2086  # $BQ is intentionally word-split
+project_datasets() {
+  $BQ ls --format=json --max_results=10000 2>/dev/null | python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    rows = []
+for d in rows or []:
+    print(d["datasetReference"]["datasetId"])
+'
+}
+
+# strip_member_everywhere <email>: remove <email> from the project policy,
+# every dataset, every secret, every service account's policy, every bucket
+# and every Cloud Run service in RUN_REGION. Re-runnable.
+strip_member_everywhere() {
+  local email="$1" role member res ds
+  if is_dry_run; then
+    log "[dry-run] remove every binding naming $email: project, all datasets, secrets, service accounts, buckets, Cloud Run"
+    return 0
+  fi
+  info "Removing $email from every policy in $GCP_PROJECT_ID"
+  gcloud projects get-iam-policy "$GCP_PROJECT_ID" --format=json \
+    | policy_members_of "$email" | while IFS="$(printf '\t')" read -r role member; do
+      # --all: a conditional binding is still a binding.
+      run gcloud projects remove-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member="$member" --role="$role" --all --format=none --quiet </dev/null
+    done
+  for ds in $(project_datasets); do
+    revoke_dataset_member "$email" "$ds"
+  done
+  for res in $(gcloud secrets list --project "$GCP_PROJECT_ID" --format='value(name.basename())' 2>/dev/null); do
+    gcloud secrets get-iam-policy "$res" --project "$GCP_PROJECT_ID" --format=json 2>/dev/null \
+      | policy_members_of "$email" | while IFS="$(printf '\t')" read -r role member; do
+        run gcloud secrets remove-iam-policy-binding "$res" --project "$GCP_PROJECT_ID" \
+          --member="$member" --role="$role" --format=none --quiet </dev/null
+      done
+  done
+  for res in $(gcloud iam service-accounts list --project "$GCP_PROJECT_ID" --format='value(email)' 2>/dev/null); do
+    gcloud iam service-accounts get-iam-policy "$res" --project "$GCP_PROJECT_ID" --format=json 2>/dev/null \
+      | policy_members_of "$email" | while IFS="$(printf '\t')" read -r role member; do
+        run gcloud iam service-accounts remove-iam-policy-binding "$res" --project "$GCP_PROJECT_ID" \
+          --member="$member" --role="$role" --format=none --quiet </dev/null
+      done
+  done
+  for res in $(gcloud storage buckets list --project "$GCP_PROJECT_ID" --format='value(name)' 2>/dev/null); do
+    gcloud storage buckets get-iam-policy "gs://$res" --format=json 2>/dev/null \
+      | policy_members_of "$email" | while IFS="$(printf '\t')" read -r role member; do
+        run gcloud storage buckets remove-iam-policy-binding "gs://$res" \
+          --member="$member" --role="$role" --format=none --quiet </dev/null
+      done
+  done
+  if [ -n "${RUN_REGION:-}" ]; then
+    for res in $(gcloud run services list --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
+        --format='value(metadata.name)' 2>/dev/null); do
+      gcloud run services get-iam-policy "$res" --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
+          --format=json 2>/dev/null \
+        | policy_members_of "$email" | while IFS="$(printf '\t')" read -r role member; do
+          run gcloud run services remove-iam-policy-binding "$res" --project "$GCP_PROJECT_ID" \
+            --region "$RUN_REGION" --member="$member" --role="$role" --format=none --quiet </dev/null
+        done
+    done
+  fi
+}
+
+# ── Workload identity federation: one way in ───────────────────────────────
+# The design has one pool (WIF_POOL), one provider in it (github), and
+# bindings that each name one workflow file on WIF_ALLOWED_REF. Anything else
+# that lets a GitHub token into the project is a second way in.
+
+GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com"
+
+# wif_providers: "<pool><TAB><provider><TAB><issuer>" for every active
+# provider in every pool of the project.
+wif_providers() {
+  local pool
+  for pool in $(gcloud iam workload-identity-pools list --project "$GCP_PROJECT_ID" \
+      --location=global --format='value(name.basename())' 2>/dev/null); do
+    gcloud iam workload-identity-pools providers list --project "$GCP_PROJECT_ID" \
+        --location=global --workload-identity-pool="$pool" --format=json 2>/dev/null \
+      | POOL="$pool" python3 -c '
+import json, os, sys
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    rows = []
+for p in rows or []:
+    if p.get("state", "ACTIVE") != "ACTIVE":
+        continue
+    print("\t".join([os.environ["POOL"], p["name"].rsplit("/", 1)[1],
+                     (p.get("oidc") or {}).get("issuerUri", "")]))
+'
+  done
+}
+
+# stray_wif_providers: "<pool><TAB><provider>" for each second way in: every
+# other provider in WIF_POOL, and any provider elsewhere in the project that
+# accepts GitHub Actions tokens.
+stray_wif_providers() {
+  local pool provider issuer
+  wif_providers | while IFS="$(printf '\t')" read -r pool provider issuer; do
+    if [ "$pool" = "$WIF_POOL" ]; then
+      [ "$provider" = "github" ] || printf '%s\t%s\n' "$pool" "$provider"
+    elif [ "$issuer" = "$GITHUB_OIDC_ISSUER" ]; then
+      printf '%s\t%s\n' "$pool" "$provider"
+    fi
+  done
+}
+
+# delete_stray_wif_providers: delete them, and any pool other than WIF_POOL
+# that this leaves with no provider. Deletion is soft for 30 days
+# ('gcloud iam workload-identity-pools providers undelete').
+delete_stray_wif_providers() {
+  local pool provider left
+  if is_dry_run; then
+    log "[dry-run] delete every WIF provider but $WIF_POOL/github that accepts GitHub tokens"
+    return 0
+  fi
+  local stray
+  stray="$(stray_wif_providers)"
+  printf '%s\n' "$stray" | while IFS="$(printf '\t')" read -r pool provider; do
+    [ -n "$pool" ] || continue
+    info "Deleting WIF provider $pool/$provider (a second way in for GitHub tokens)"
+    run gcloud iam workload-identity-pools providers delete "$provider" \
+      --project "$GCP_PROJECT_ID" --location=global --workload-identity-pool="$pool" --quiet </dev/null
+    if [ "$pool" != "$WIF_POOL" ]; then
+      left="$(gcloud iam workload-identity-pools providers list --project "$GCP_PROJECT_ID" \
+        --location=global --workload-identity-pool="$pool" --format='value(name)' 2>/dev/null || true)"
+      if [ -z "$left" ]; then
+        info "Deleting the now-empty pool $pool"
+        run gcloud iam workload-identity-pools delete "$pool" \
+          --project "$GCP_PROJECT_ID" --location=global --quiet </dev/null
+      fi
+    fi
+  done
+}
+
+# loose_wif_bindings <pool-name>: "<sa><TAB><role><TAB><member>" for every
+# federated principal bound on any service account that is not one workflow
+# file on WIF_ALLOWED_REF in WIF_POOL: the repo-wide principalSet, another
+# branch, a principal from another pool.
+loose_wif_bindings() {
+  local pool_name="$1" sa
+  for sa in $(gcloud iam service-accounts list --project "$GCP_PROJECT_ID" --format='value(email)' 2>/dev/null); do
+    gcloud iam service-accounts get-iam-policy "$sa" --project "$GCP_PROJECT_ID" --format=json 2>/dev/null \
+      | SA="$sa" POOL_NAME="$pool_name" REPO="$GITHUB_REPO" REF="$WIF_ALLOWED_REF" python3 -c '
+import json, os, sys
+try:
+    policy = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+pinned = "principalSet://iam.googleapis.com/%s/attribute.job_workflow_ref/%s/.github/workflows/" % (
+    os.environ["POOL_NAME"], os.environ["REPO"])
+suffix = "@" + os.environ["REF"]
+for b in policy.get("bindings", []):
+    for m in b.get("members", []):
+        if not m.startswith(("principal://", "principalSet://")):
+            continue
+        wf = m[len(pinned):] if m.startswith(pinned) else ""
+        name = wf[: -len(suffix)] if wf.endswith(suffix) else ""
+        if not (name.endswith((".yml", ".yaml")) and "/" not in name):
+            print("\t".join([os.environ["SA"], b["role"], m]))
+'
+  done
 }

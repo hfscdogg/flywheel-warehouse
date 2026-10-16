@@ -60,7 +60,8 @@ command (every step is idempotent).
 The service accepts unauthenticated *transport* (`--allow-unauthenticated`)
 because agents can't do Google IAM auth; the app returns 401 to every
 request without the bearer token, and the runtime identity can read `marts`
-and nothing else regardless of what reaches it.
+(and `staging` under `AGENT_SCOPE=wide`) and nothing else regardless of what
+reaches it.
 
 ## Connect an agent
 
@@ -142,7 +143,7 @@ scope checks below are the right first question.
 Mirrors `90-verify.sh`, but through the endpoint:
 
 1. `query`: `SELECT month, deals_won FROM kpi_sales_pipeline ORDER BY month DESC LIMIT 3` → rows.
-2. `query`: `` SELECT COUNT(*) FROM `<project>.raw_zoho.deals` `` → **Access Denied**. That denial is the product working: the endpoint physically cannot read raw or staging data.
+2. `query`: `` SELECT COUNT(*) FROM `<project>.raw_zoho.deals` `` → **Access Denied**. That denial is the product working: the endpoint physically cannot read raw data, nor staging under the narrow scope. Under `AGENT_SCOPE=wide` (Livewire) `SELECT COUNT(*) FROM staging.<table>` returns rows; that is the wide scope working, not a leak.
 
 ## Rotate / revoke
 
