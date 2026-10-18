@@ -41,4 +41,23 @@ of scope until one green nightly cycle.
   On the real run `hermes-reader` already exists, so 02 only updates its display
   name.
 
-_Pending: real run of 02._
+## Decision: Hermes is out (Henry, 14:55)
+
+Hermes is not to be used for anything Flywheel-related. Consequences for this
+cutover:
+
+- `03-iam.sh` re-applies three `hermes-reader` grants (project `jobUser`,
+  `dataViewer` on the agent datasets, Henry's `serviceAccountTokenCreator`).
+  It runs only if a read-only check shows all three already exist, so it adds
+  nothing new for Hermes.
+- `05` and `09` don't reference Hermes and run as written.
+- Not running: `10-endpoint-deployer.sh` (grants `endpoint-deployer` rights on
+  `hermes-mcp` and `hermes-reader`) and step 5 `deploy-endpoint` (redeploys
+  `hermes-mcp`).
+- Left open as a result: the endpoint half of finding 1 (the new read-only
+  check in `hermes-mcp`'s `server.py`), and `endpoint-deployer`'s repo-wide
+  WIF binding (finding 3), which `10` would have pinned. Both go away when
+  `hermes-mcp`, `hermes-reader` and `endpoint-deployer` are decommissioned. That
+  is a revoke/delete and is not part of today's scope.
+
+_Pending: real run of 02 confirmed, top of 03 dry run, Hermes grant check._
