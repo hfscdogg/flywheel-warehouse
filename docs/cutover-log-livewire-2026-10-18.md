@@ -280,12 +280,14 @@ Provider in every auth step:
 | 39158203642 | ingest-qbo-reports | success | `ingest-qbo@…` | `done: 14586 rows total (2023-01-01 to 2026-10-18, Accrual)` |
 | 39158205378 | ingest-alarmdotcom | success | `ingest-alarmdotcom@…` | `ALARMDOTCOM_DEALER_ID is not set ... nothing to pull` (no load) |
 | 39158207121 | ingest-vendordrop | success | `ingest-vendor@…` | `no new files in gs://livewire-dw-vendor-drops — nothing to do` |
-| 39158197918 | ingest-dtools | running | auth step passed | normal runtime ~27 min |
+| 39158197918 | ingest-dtools | success (19:45:52Z) | `ingest-dtools@…` | `done: 7713 rows total` (opportunities 2778, quotes 3285, projects 1650) |
 
 Caveat: alarmdotcom and vendordrop authenticated but wrote nothing, so their
 write and secret-read grants are not yet proven by a real load.
 
-_Pending: ingest-dtools, then transform, then the 3 probes._
+All 8 ingests green on their own accounts. transform dispatched 19:50Z (run 39160563424).
+
+_Pending: transform, then the 3 probes._
 
 ## Decisions (Henry, about 19:30Z)
 
