@@ -93,4 +93,6 @@ gets `jobUser` + `dataEditor` on its own `raw_<source>`; `transform-writer`
 gets `dataViewer` on every raw dataset and `dataEditor` on staging and marts;
 `warehouse-reader` gets `jobUser` + `dataViewer` on every dataset.
 
-_Stopped. Waiting for Henry's go-ahead to re-run 02._
+- Henry approved re-running 02 unchanged (about 19:00Z).
+
+_Pending: output of the 02 re-run._
