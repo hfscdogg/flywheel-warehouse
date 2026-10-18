@@ -286,3 +286,17 @@ Caveat: alarmdotcom and vendordrop authenticated but wrote nothing, so their
 write and secret-read grants are not yet proven by a real load.
 
 _Pending: ingest-dtools, then transform, then the 3 probes._
+
+## Decisions (Henry, about 19:30Z)
+
+- **"One green nightly cycle"** for steps 7 to 9 means every workflow authenticates
+  on its new account and transform builds its marts. Transform's freshness
+  check stays red until four vendor reports are uploaded (issue #104), and that
+  does not block the cutover.
+- **PR #96** stays a draft until after tomorrow's nightly. Then it is brought up
+  to date with main and marked ready for review.
+- **PR #105** gets split: a supply-chain PR (merge after the nightly) and a
+  lifecycle-script PR whose WIF cleanup is limited to this repo's provider, so
+  `github-kitchen` and `kitchen-runner` are never touched. #105 itself is left as is.
+- Issues #98 and #102 were closed. Both had passed every scheduled run since their
+  single failure.
