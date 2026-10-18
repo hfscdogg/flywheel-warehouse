@@ -227,4 +227,10 @@ commands continue in Cloud Shell.
   `WIF_SA_INGEST_DTOOLS`; `ingest-qbo` and `ingest-qbo-reports` share
   `WIF_SA_INGEST_QBO`. `WIF_PROVIDER` is read by 11 workflows.
 
-_Pending: `gh variable list` before setting anything._
+- `gh variable list` before (about 19:17Z): `WIF_DEPLOYER_SERVICE_ACCOUNT`
+  (endpoint-deployer@…, ~1 month), `WIF_PROVIDER` (projects/711707450526/…,
+  ~2 months), `WIF_SERVICE_ACCOUNT` (ingest-writer@…, ~2 months),
+  `ZOHOBILLING_CUSTOMER_DETAIL` (1), `ZOHO_BILLING_ORG_ID` (42411013). No
+  `WIF_SA_*` set.
+
+_Pending: the 8 `gh variable set` commands._
