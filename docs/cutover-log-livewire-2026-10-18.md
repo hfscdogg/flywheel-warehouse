@@ -132,5 +132,31 @@ Full output in Cloud Shell `~/03-iam-livewire.log`. Grants applied:
 
 ## Step 2: trust and secrets
 
-_Pending: read-only check of the current WIF provider and of everything bound
-to the pool, before 05 changes the provider's mapping and condition._
+### Pre-check of WIF (about 19:07Z, read-only)
+
+Pool `flywheel-github` has two providers:
+
+| Provider | Condition | Mapping |
+|---|---|---|
+| `github` | `assertion.repository == 'hfscdogg/flywheel-warehouse'` | `google.subject`, `attribute.repository` |
+| `github-kitchen` | `assertion.repository == 'hfscdogg/flywheel-kitchen' && assertion.ref == 'refs/heads/main'` | `google.subject`, `attribute.repository`, `attribute.ref`, `attribute.job_workflow_ref` |
+
+Pool principals bound on service accounts (none at project level):
+
+- `ingest-writer`: `attribute.repository/hfscdogg/flywheel-warehouse`
+- `endpoint-deployer`: `attribute.repository/hfscdogg/flywheel-warehouse`
+- `kitchen-runner`: `attribute.job_workflow_ref/hfscdogg/flywheel-kitchen/.github/workflows/weekly-brief.yml@refs/heads/main`
+
+What 05's `update-oidc github` will do:
+
+- Touches the `github` provider only. `github-kitchen` and `kitchen-runner`
+  are untouched. The new warehouse `job_workflow_ref` values all start with
+  `hfscdogg/flywheel-warehouse/`, so they cannot match kitchen's binding and kitchen's cannot match ours.
+- Adds `attribute.ref` and `attribute.job_workflow_ref` to the mapping and
+  keeps `attribute.repository`, so `ingest-writer`'s and `endpoint-deployer`'s
+  repo-wide bindings keep matching.
+- Adds `assertion.ref == 'refs/heads/main'`. Every warehouse workflow that
+  authenticates to Google is `schedule` + `workflow_dispatch` only (lint.yml,
+  the only `push`/`pull_request` workflow, does not authenticate). Scheduled
+  runs use the default branch, `main`. Only dispatches from other branches lose
+  access, as the runbook intends.
