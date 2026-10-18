@@ -310,7 +310,64 @@ meets the agreed definition: authenticated and built the marts.
 
 ### Probes (probe.yml, run one at a time; the concurrency group holds one pending run)
 
-_Pending._
+Auth step: `service_account: warehouse-reader@livewire-dw.iam.gserviceaccount.com`.
+"ingest-writer" appears in none of the four logs.
+
+**1. `SELECT 1`**: run 39161598430, success
+```
+project: livewire-dw
+statement accepted: BigQuery reads it as a single SELECT
+[
+  {
+    "f0_": 1
+  }
+]
+```
+
+**2. `DELETE FROM marts.kpi_sales_pipeline WHERE FALSE`**: run 39161671565, failed at the dry run
+```
+google.api_core.exceptions.Forbidden: 403 POST https://bigquery.googleapis.com/bigquery/v2/projects/livewire-dw/jobs?prettyPrint=false: Access Denied: Table livewire-dw:marts.kpi_sales_pipeline: Permission bigquery.tables.updateData denied on table livewire-dw:marts.kpi_sales_pipeline (or it may not exist).
+Job ID: 1ac40577-6227-43c4-a070-bc65046f2665
+##[error]Process completed with exit code 1.
+```
+
+**3. `SELECT '/*'; DROP TABLE marts.kpi_sales_pipeline; SELECT '*/'`** (SoundVision's bypass): run 39161748750, failed at the dry run
+```
+google.api_core.exceptions.BadRequest: 400 POST https://bigquery.googleapis.com/bigquery/v2/projects/livewire-dw/jobs?prettyPrint=false: Access Denied: Table livewire-dw:marts.kpi_sales_pipeline: Permission bigquery.tables.delete denied on table livewire-dw:marts.kpi_sales_pipeline (or it may not exist). at [1:14]
+Job ID: f3ee5f5a-632e-4e81-b3db-9c5071e25d8c
+##[error]Process completed with exit code 1.
+```
+BigQuery parsed it as a multi-statement script, and the dry run was refused by IAM
+before the read-only classifier ran. This is the runbook's second expected outcome
+("BigQuery's own access-denied error for warehouse-reader"). Nothing was written.
+
+**4. Afterwards, `SELECT COUNT(*) AS n FROM marts.kpi_sales_pipeline`**: run 39161851451, success
+```
+statement accepted: BigQuery reads it as a single SELECT
+[
+  {
+    "n": 190
+  }
+]
+```
+`marts.kpi_sales_pipeline` is intact.
+
+**Step 4 complete.**
+
+## Step 5: skipped (Hermes out of scope, see decision above)
+
+## Status at end of day
+
+- Done: steps 1 to 4. Script 10 and step 5 were skipped because Hermes is out of scope.
+- Waiting: the 2026-10-19 06:00 to 07:00 UTC nightly cycle on the new accounts. "Green"
+  means every run authenticates on its new account and transform builds its marts.
+  Freshness (#104) is excluded.
+- Then: steps 7 to 9 (credential rotation, retire `ingest-writer`, 90-verify), each with
+  Henry's approval before anything is revoked or rotated.
+- Not yet proven by a real load: `ingest-alarmdotcom` (no dealer ID set) and
+  `ingest-vendor` (no new files) authenticated but wrote nothing.
+- Follow-ups: decommission Hermes (`hermes-mcp`, `hermes-reader`, `endpoint-deployer`,
+  `hermes-endpoint-token`); merge PRs #109 and #110 after the nightly, then port them to the template.
 
 ## Decisions (Henry, about 19:30Z)
 
