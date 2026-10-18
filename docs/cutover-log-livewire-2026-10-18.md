@@ -95,4 +95,21 @@ gets `dataViewer` on every raw dataset and `dataEditor` on staging and marts;
 
 - Henry approved re-running 02 unchanged (about 19:00Z).
 
-_Pending: output of the 02 re-run._
+### 02 re-run (about 19:01Z): OK
+
+```
+==> creating service account ingest-alarmdotcom
+Created service account [ingest-alarmdotcom].
+  ...attempt 1/12 failed; retrying in 5s      (visibility wait, expected)
+==> creating service account transform-writer
+Created service account [transform-writer].
+==> creating service account warehouse-reader
+Created service account [warehouse-reader].
+  ...attempt 1/12 failed; retrying in 5s
+==> Service accounts done.
+```
+
+Non-compute account count: 14 (6 before + 8 new). Full output in Cloud Shell
+`~/02-sa-livewire-rerun.log`.
+
+_Pending: `./scripts/03-iam.sh livewire`._
