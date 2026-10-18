@@ -265,4 +265,24 @@ WIF_SERVICE_ACCOUNT=ingest-writer@livewire-dw.iam.gserviceaccount.com
 Dispatched by Claude through the GitHub connector, on `main`, with default inputs
 (client `livewire`, no full refresh).
 
-_Pending: 8 ingest runs, then transform, then the 3 probes._
+### Ingest runs (dispatched 19:18Z, commit `6651fd9`)
+
+Provider in every auth step:
+`projects/711707450526/locations/global/workloadIdentityPools/flywheel-github/providers/github`.
+"ingest-writer" appears in none of the job logs.
+
+| Run | Workflow | Result | Authenticated as | Evidence |
+|---|---|---|---|---|
+| 39158194019 | ingest-zoho | success | `ingest-zoho@livewire-dw.iam.gserviceaccount.com` | `done: 7 rows total` |
+| 39158196201 | ingest-zohobilling | success | `ingest-zohobilling@…` | `done: 8381 rows total` |
+| 39158200016 | ingest-dtools-v2 | success | `ingest-dtools@…` | `done: 32 rows total`; wrote rotated refresh token to Secret Manager |
+| 39158201816 | ingest-qbo | success | `ingest-qbo@…` | `Invoice: loaded 1 rows into livewire-dw.raw_qbo.invoice` |
+| 39158203642 | ingest-qbo-reports | success | `ingest-qbo@…` | `done: 14586 rows total (2023-01-01 to 2026-10-18, Accrual)` |
+| 39158205378 | ingest-alarmdotcom | success | `ingest-alarmdotcom@…` | `ALARMDOTCOM_DEALER_ID is not set ... nothing to pull` (no load) |
+| 39158207121 | ingest-vendordrop | success | `ingest-vendor@…` | `no new files in gs://livewire-dw-vendor-drops — nothing to do` |
+| 39158197918 | ingest-dtools | running | auth step passed | normal runtime ~27 min |
+
+Caveat: alarmdotcom and vendordrop authenticated but wrote nothing, so their
+write and secret-read grants are not yet proven by a real load.
+
+_Pending: ingest-dtools, then transform, then the 3 probes._
