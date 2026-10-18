@@ -160,3 +160,22 @@ What 05's `update-oidc github` will do:
   the only `push`/`pull_request` workflow, does not authenticate). Scheduled
   runs use the default branch, `main`. Only dispatches from other branches lose
   access, as the runbook intends.
+
+### 05 dry run (about 19:09Z)
+
+Henry approved the 05 dry run and the trust narrowing it applies.
+
+- Provider values match: mapping `google.subject, attribute.repository,
+  attribute.ref, attribute.job_workflow_ref`; condition
+  `assertion.repository == 'hfscdogg/flywheel-warehouse' && assertion.ref == 'refs/heads/main'`.
+  The dry run prints `create`/`create-oidc` because `probe` reports "absent" under
+  DRY_RUN. On the real run the existing pool is left alone and the provider takes
+  the `update-oidc` path.
+- `secretVersionAdder` planned on `flywheel-dtools-v2-refresh-token`
+  (ingest-dtools) and `flywheel-qbo-refresh-token` (ingest-qbo) only.
+- Existing secrets (read-only list): all 16 `flywheel-*` secrets 05 expects are
+  present, so nothing will be created empty. Also present:
+  `hermes-endpoint-token`, which 05 does not touch. It goes on the Hermes
+  decommission list.
+
+_Pending: real run of 05._
