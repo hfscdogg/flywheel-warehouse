@@ -233,4 +233,36 @@ commands continue in Cloud Shell.
   `ZOHOBILLING_CUSTOMER_DETAIL` (1), `ZOHO_BILLING_ORG_ID` (42411013). No
   `WIF_SA_*` set.
 
-_Pending: the 8 `gh variable set` commands._
+### Set (about 19:18Z, Cloud Shell, gh as hfscdogg): OK
+
+```
+✓ Created variable WIF_SA_INGEST_ZOHO for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_INGEST_ZOHOBILLING for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_INGEST_DTOOLS for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_INGEST_QBO for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_INGEST_VENDOR for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_INGEST_ALARMDOTCOM for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_TRANSFORM for hfscdogg/flywheel-warehouse
+✓ Created variable WIF_SA_PROBE for hfscdogg/flywheel-warehouse
+WIF_DEPLOYER_SERVICE_ACCOUNT=endpoint-deployer@livewire-dw.iam.gserviceaccount.com
+WIF_PROVIDER=projects/711707450526/locations/global/workloadIdentityPools/flywheel-github/providers/github
+WIF_SA_INGEST_ALARMDOTCOM=ingest-alarmdotcom@livewire-dw.iam.gserviceaccount.com
+WIF_SA_INGEST_DTOOLS=ingest-dtools@livewire-dw.iam.gserviceaccount.com
+WIF_SA_INGEST_QBO=ingest-qbo@livewire-dw.iam.gserviceaccount.com
+WIF_SA_INGEST_VENDOR=ingest-vendor@livewire-dw.iam.gserviceaccount.com
+WIF_SA_INGEST_ZOHO=ingest-zoho@livewire-dw.iam.gserviceaccount.com
+WIF_SA_INGEST_ZOHOBILLING=ingest-zohobilling@livewire-dw.iam.gserviceaccount.com
+WIF_SA_PROBE=warehouse-reader@livewire-dw.iam.gserviceaccount.com
+WIF_SA_TRANSFORM=transform-writer@livewire-dw.iam.gserviceaccount.com
+WIF_SERVICE_ACCOUNT=ingest-writer@livewire-dw.iam.gserviceaccount.com
+```
+
+**Step 3 complete.** Undo for any one workflow: `gh variable delete WIF_SA_<X>`
+(it falls back to `ingest-writer`).
+
+## Step 4: run each workflow from main
+
+Dispatched by Claude through the GitHub connector, on `main`, with default inputs
+(client `livewire`, no full refresh).
+
+_Pending: 8 ingest runs, then transform, then the 3 probes._
