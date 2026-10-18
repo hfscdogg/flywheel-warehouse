@@ -382,3 +382,10 @@ statement accepted: BigQuery reads it as a single SELECT
   `github-kitchen` and `kitchen-runner` are never touched. #105 itself is left as is.
 - Issues #98 and #102 were closed. Both had passed every scheduled run since their
   single failure.
+
+## Communication
+
+- 2026-10-18 about 20:20Z: Henry approved and Claude posted the status update to Slack
+  #all-flywheel (Mark, Chris). It covers steps 1 to 4, the probe results, what this means for
+  template builds, and the next steps. The evidence log was offered on request because the
+  partners have access to the template repo only, by design.
