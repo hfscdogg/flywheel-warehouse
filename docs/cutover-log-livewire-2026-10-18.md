@@ -178,4 +178,24 @@ Henry approved the 05 dry run and the trust narrowing it applies.
   `hermes-endpoint-token`, which 05 does not touch. It goes on the Hermes
   decommission list.
 
-_Pending: real run of 05._
+### 05 real run (about 19:12Z): OK
+
+Full output in Cloud Shell `~/05-infra-livewire.log`. Tail:
+
+- Each source: `trusted workflow: <file>.yml` then `Updated IAM policy for
+  serviceAccount [ingest-<source>@…]`; `secret flywheel-… exists` then
+  `Updated IAM policy for secret [flywheel-…]` (secretAccessor, own source only).
+- `rotation writeback: may add versions of flywheel-qbo-refresh-token` (and
+  dtools-v2).
+- `transform.yml: transform-writer` and `probe.yml: warehouse-reader` bound.
+- `==> Phase 2 infra done.` No secrets created.
+- Printed variables: `WIF_PROVIDER` =
+  `projects/711707450526/locations/global/workloadIdentityPools/flywheel-github/providers/github`,
+  plus the 8 `WIF_SA_*` values matching the runbook.
+
+Note: Henry asked whether Claude could run the commands directly. Claude
+started a gcloud sign-in in its container before Henry had agreed. The
+session's permission guard blocked it, so nothing was authenticated. All GCP
+commands continue in Cloud Shell.
+
+_Pending: provider readback (the `update-oidc` line scrolled off), then 09._
