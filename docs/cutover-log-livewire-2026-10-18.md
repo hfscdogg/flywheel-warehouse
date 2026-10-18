@@ -18,4 +18,13 @@ of scope until one green nightly cycle.
 
 ## Step 1: accounts and grants
 
-_Pending: Cloud Shell checkout sync, then `DRY_RUN=1 ./scripts/02-service-accounts.sh livewire`._
+- Cloud Shell had a stale `~/flywheel-warehouse` from before #103 (no cutover
+  scripts). `git pull --ff-only origin main` fast-forwarded it: 59 files
+  changed, including `docs/runbook-identity-cutover.md`,
+  `scripts/11-retire-ingest-writer.sh`, `pipelines/lib/readonly_sql.py`. HEAD
+  now at #107 (`fix: the IAM audit writes its inventory outside the repo`).
+- Note: under `DRY_RUN=1`, `probe` always reports "absent", so 02's plan shows
+  every account as "creating". The real state comes from
+  `gcloud iam service-accounts list`.
+
+_Pending: hash and clean-tree confirmation, existing account list, 02 dry run._
