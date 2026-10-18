@@ -50,7 +50,7 @@ jobs:
     # dispatch never holds a credential at all.
     environment: endpoint
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Say what is being shipped and why
         env:
@@ -64,15 +64,15 @@ jobs:
           printf 'reason : %s\n' "$REASON"
           printf 'commit : %s\n' "$GITHUB_SHA"
 
-      - uses: google-github-actions/auth@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           # NOT a pipeline account (WIF_SA_*, or the retired
           # WIF_SERVICE_ACCOUNT). This job gets the endpoint-deployer account,
           # which has no BigQuery access at all.
           service_account: ${{ vars.WIF_DEPLOYER_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-
       - name: Redeploy the agent endpoint
         env:
           CLIENT: ${{ inputs.client || 'livewire' }}

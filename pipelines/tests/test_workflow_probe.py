@@ -33,7 +33,7 @@ class ProbeWorkflow(unittest.TestCase):
         return PROBE.read_text()
 
     def test_it_runs_as_the_read_only_account(self):
-        self.assertIn("service_account: ${{ vars.WIF_SA_PROBE || vars.WIF_SERVICE_ACCOUNT }}",
+        self.assertIn("service_account: ${{ vars.WIF_SA_PROBE }}",
                       self.src())
 
     def test_the_query_goes_through_the_dry_run_check(self):
