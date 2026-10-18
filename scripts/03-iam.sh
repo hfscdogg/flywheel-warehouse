@@ -3,7 +3,8 @@
 #
 # The trust surface (docs/trust.md) is defined here:
 #   hermes-reader : jobUser (project) + dataViewer on marts — and on staging
-#                   too when the client's AGENT_SCOPE is "wide" (Tier 2b)
+#                   too when the client's AGENT_SCOPE is "wide" (Tier 2b).
+#                   Under "narrow" the staging grant is REVOKED if present.
 #   ingest-<src>  : jobUser (project) + dataEditor on raw_<src> ONLY
 #   transform-writer : jobUser (project) + dataViewer on every raw dataset
 #                   (and the GA4 export) + dataEditor on staging and marts
@@ -31,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 load_client "$1"
 require_cmd gcloud bq python3
 
-# grant_dataset_role lives in lib/common.sh.
+# grant_dataset_role and revoke_dataset_role live in lib/common.sh.
 
 info "IAM bindings for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
 
@@ -43,6 +44,26 @@ run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
 info "hermes-reader: read access on $DATASETS_AGENT (AGENT_SCOPE=$AGENT_SCOPE)"
 for ds in $DATASETS_AGENT; do
   grant_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$ds"
+done
+
+# Narrowing is a revoke, not only a grant. A client moving from wide to
+# narrow had staging's grant left in place: client.env, the endpoint's table
+# list and the docs all said marts only, while BigQuery still let the agent
+# read staging. So every dataset outside DATASETS_AGENT loses whatever
+# hermes-reader holds on it: every dataset in the project, including ones
+# client.env does not name. raw_* never should hold one, but is checked too
+# rather than trusted.
+if is_dry_run; then
+  AGENT_OUTSIDE="$ALL_DATASETS $GA4_EXPORT_DATASET"
+else
+  AGENT_OUTSIDE="$(project_datasets)"
+  [ -n "$AGENT_OUTSIDE" ] || die "could not list the datasets in $GCP_PROJECT_ID"
+fi
+for ds in $AGENT_OUTSIDE; do
+  case " $DATASETS_AGENT " in
+    *" $ds "*) : ;;
+    *) revoke_dataset_member "$SA_HERMES_READER_EMAIL" "$ds" ;;
+  esac
 done
 
 grant_job_user() {
