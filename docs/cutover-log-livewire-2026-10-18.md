@@ -112,4 +112,25 @@ Created service account [warehouse-reader].
 Non-compute account count: 14 (6 before + 8 new). Full output in Cloud Shell
 `~/02-sa-livewire-rerun.log`.
 
-_Pending: `./scripts/03-iam.sh livewire`._
+### 03 (about 19:05Z): OK, step 1 complete
+
+Full output in Cloud Shell `~/03-iam-livewire.log`. Grants applied:
+
+- `hermes-reader`: `already has roles/bigquery.dataViewer on marts`, same on
+  `staging` (converging, no change). Project `jobUser` and Henry's
+  `serviceAccountTokenCreator` were confirmed present before the run, so
+  `add-iam-policy-binding` was a no-op. **Nothing new granted to Hermes.**
+- `ingest-zoho`, `-zohobilling`, `-dtools`, `-qbo`, `-vendor`, `-alarmdotcom`:
+  `granted roles/bigquery.dataEditor` on their own `raw_<source>` only (plus
+  project `jobUser`).
+- `transform-writer`: `dataViewer` on raw_zoho, raw_zohobilling, raw_dtools,
+  raw_qbo, raw_vendor, raw_alarmdotcom, raw_ga4, raw_google_ads,
+  analytics_285482813; `dataEditor` on staging, marts.
+- `warehouse-reader`: `dataViewer` on all of the above plus staging and marts.
+  No write.
+- Ended `==> IAM done.`
+
+## Step 2: trust and secrets
+
+_Pending: read-only check of the current WIF provider and of everything bound
+to the pool, before 05 changes the provider's mapping and condition._
