@@ -287,7 +287,30 @@ write and secret-read grants are not yet proven by a real load.
 
 All 8 ingests green on their own accounts. transform dispatched 19:50Z (run 39160563424).
 
-_Pending: transform, then the 3 probes._
+### transform (run 39160563424, 19:50Z to 20:02Z): built, red on freshness only, as agreed
+
+```
+Replaced livewire-dw.marts.kpi_website_traffic          (and every other mart)
+==> Transform: every agent-readable table described
+  every mart table and column is described
+==> Transform: QuickBooks' reports tie to each other
+  QuickBooks' reports agree with each other in every month
+==> Transform: every source loaded recently enough to answer from
+WARN: sources older than their own cadence allows
+    stg_vendor__securitycentral_accounts,2026-08-27,52,45,...
+    stg_vendor__alarmdotcom_accounts,2026-08-31,48,45,...
+    stg_vendor__parasol_accounts,2026-08-31,48,45,...
+    stg_vendor__securitycentral_status,2026-09-28,20,14,...
+WARN: the marts above were BUILT and are correct for what has landed
+ERROR: a stale source answers confidently and wrongly; this is why it is red
+```
+
+The only error is the freshness check (#104, vendor uploads, owned by Henry). This
+meets the agreed definition: authenticated and built the marts.
+
+### Probes (probe.yml, run one at a time; the concurrency group holds one pending run)
+
+_Pending._
 
 ## Decisions (Henry, about 19:30Z)
 
