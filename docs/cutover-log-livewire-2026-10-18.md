@@ -60,4 +60,37 @@ cutover:
   `hermes-mcp`, `hermes-reader` and `endpoint-deployer` are decommissioned. That
   is a revoke/delete and is not part of today's scope.
 
-_Pending: real run of 02 confirmed, top of 03 dry run, Hermes grant check._
+### 02 real run (about 18:53Z): FAILED partway
+
+The output scrolled off in Cloud Shell. Recovered from the account list and
+Cloud Audit Logs (`CreateServiceAccount`, severity ERROR, last 30 min):
+
+```
+2026-10-18T18:53:30.044Z  ingest-vendor       A quota has been reached for project number 711707450526: Service accounts created per minute per project.
+2026-10-18T18:53:35.712Z  ingest-alarmdotcom  (same)
+2026-10-18T18:53:37.416Z  ingest-alarmdotcom  (same)
+2026-10-18T18:53:42.120Z  ingest-alarmdotcom  (same)
+2026-10-18T18:53:48.377Z  ingest-alarmdotcom  (same)
+2026-10-18T18:54:08.206Z  ingest-alarmdotcom  (same)
+```
+
+- Created: ingest-zoho, ingest-zohobilling, ingest-dtools, ingest-qbo,
+  ingest-vendor (succeeded after gcloud's retry).
+- Not created: ingest-alarmdotcom (gave up after 5 quota errors),
+  transform-writer and warehouse-reader (not attempted; the script stops on the first error).
+- Diagnosis: the project's per-minute limit on service-account creation. Six
+  creates in one minute crossed it. Not a permissions or config fault. Nothing
+  was half-made: the missing accounts don't exist at all, and the ones created have no grants yet.
+  Nightly pipelines are unaffected (still on `ingest-writer`).
+
+Hermes grant check before 03 (read-only): `hermes-reader` has `READER` on
+`marts` and `staging` and `roles/bigquery.jobUser` on the project, and
+`henry@getlivewire.com` has `serviceAccountTokenCreator` on it. 03 would
+converge all three without change.
+
+03 dry run reviewed in full. Additive only, and matches trust.md: each `ingest-*`
+gets `jobUser` + `dataEditor` on its own `raw_<source>`; `transform-writer`
+gets `dataViewer` on every raw dataset and `dataEditor` on staging and marts;
+`warehouse-reader` gets `jobUser` + `dataViewer` on every dataset.
+
+_Stopped. Waiting for Henry's go-ahead to re-run 02._
