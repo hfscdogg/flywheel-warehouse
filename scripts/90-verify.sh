@@ -52,7 +52,9 @@ if is_dry_run; then
   log "  - $SA_INGEST_WRITER_EMAIL is named in no policy in $GCP_PROJECT_ID"
   log "  - $SA_WIF_REHEARSAL_EMAIL does not exist and is named in no policy"
   log "  - the only WIF provider accepting GitHub tokens is ${WIF_POOL:-<WIF_POOL>}/github, pinned to $WIF_ALLOWED_REF"
+  log "    (providers pinned to another repository are not counted)"
   log "  - every federated binding names one workflow file on $WIF_ALLOWED_REF"
+  log "    (bindings naming another repository are not counted)"
   log "  - impersonated query on $DATASET_MARTS._flywheel_canary → HTTP 200"
   log "  - impersonated query on $FIRST_RAW._flywheel_canary → HTTP 403"
   exit 0
@@ -227,7 +229,7 @@ esac
 if [ -n "${GITHUB_REPO:-}" ] && [ -n "${WIF_POOL:-}" ]; then
   STRAY="$(stray_wif_providers)"
   if [ -z "$STRAY" ]; then
-    record PASS "absence: no WIF provider but $WIF_POOL/github accepts GitHub tokens"
+    record PASS "absence: no WIF provider but $WIF_POOL/github accepts GitHub tokens from $GITHUB_REPO"
   else
     record FAIL "absence: extra WIF providers: $(printf '%s' "$STRAY" | tr '\t\n' '/ ')"
   fi
@@ -246,7 +248,7 @@ if [ -n "${GITHUB_REPO:-}" ] && [ -n "${WIF_POOL:-}" ]; then
   else
     LOOSE="$(loose_wif_bindings "$POOL_NAME")"
     if [ -z "$LOOSE" ]; then
-      record PASS "absence: every federated binding names one workflow file on $WIF_ALLOWED_REF"
+      record PASS "absence: every federated binding that could match $GITHUB_REPO names one workflow file on $WIF_ALLOWED_REF"
     else
       record FAIL "absence: loose federated bindings: $(printf '%s' "$LOOSE" | tr '\t\n' ' ;')"
     fi

@@ -15,7 +15,9 @@
 #                   every dataset, the vendor drop bucket, the agent endpoint
 #                   (Cloud Run service) and its token secret, every connector
 #                   secret, the workload identity pool with its providers
-#                   (and any stray provider that accepts GitHub tokens), the
+#                   (and any stray provider that accepts this repository's
+#                   GitHub tokens; if the pool still holds a provider pinned
+#                   to another repository, only WIF_POOL/github goes), the
 #                   endpoint deployer's custom role, and every Flywheel
 #                   service account. Irreversible (a deleted pool, provider
 #                   or secret is recoverable for 30 days at most). Requires
@@ -146,16 +148,10 @@ full_teardown() {
   done
 
   # GitHub's way in. Deleting the pool deletes its providers; a provider in
-  # another pool that accepts GitHub tokens goes too.
+  # another pool that accepts this repository's tokens goes too. The pool is
+  # shared: while it holds another repository's provider, only ours goes.
   if [ -n "${WIF_POOL:-}" ]; then
-    delete_stray_wif_providers
-    if is_dry_run || probe gcloud iam workload-identity-pools describe "$WIF_POOL" \
-        --project "$GCP_PROJECT_ID" --location=global; then
-      run gcloud iam workload-identity-pools delete "$WIF_POOL" \
-        --project "$GCP_PROJECT_ID" --location=global --quiet
-    else
-      info "workload identity pool $WIF_POOL already absent"
-    fi
+    delete_wif_federation
   fi
 
   for ds in $ALL_DATASETS; do

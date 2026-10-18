@@ -644,20 +644,42 @@ strip_member_everywhere() {
 # ── Workload identity federation: one way in ───────────────────────────────
 # The design has one pool (WIF_POOL), one provider in it (github), and
 # bindings that each name one workflow file on WIF_ALLOWED_REF. Anything else
-# that lets a GitHub token into the project is a second way in.
+# that lets a GitHub token from GITHUB_REPO into the project is a second way
+# in.
+#
+# The pool is shared: other repositories (e.g. hfscdogg/flywheel-kitchen) have
+# their own providers in it, and their own bindings on their own accounts. A
+# provider whose condition pins assertion.repository to another repository,
+# and a binding that names another repository, are not ours: nothing here
+# flags, deletes or removes them, and the pool is never deleted while such a
+# provider remains.
 
 GITHUB_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 
-# wif_providers: "<pool><TAB><provider><TAB><issuer>" for every active
-# provider in every pool of the project.
+# wif_providers: "<pool><TAB><provider><TAB><issuer><TAB><other-repo>" for
+# every active provider in every pool of the project. <issuer> is '-' when the
+# provider is not OIDC. <other-repo> is the repository the provider's
+# attributeCondition pins it to when that is not GITHUB_REPO, so the provider
+# cannot accept this repository's tokens; '-' otherwise. A condition with
+# '||' or a negation is never read as pinned elsewhere: it may still let this
+# repository in.
 wif_providers() {
   local pool
   for pool in $(gcloud iam workload-identity-pools list --project "$GCP_PROJECT_ID" \
       --location=global --format='value(name.basename())' 2>/dev/null); do
     gcloud iam workload-identity-pools providers list --project "$GCP_PROJECT_ID" \
         --location=global --workload-identity-pool="$pool" --format=json 2>/dev/null \
-      | POOL="$pool" python3 -c '
-import json, os, sys
+      | POOL="$pool" REPO="${GITHUB_REPO:-}" python3 -c '
+import json, os, re, sys
+repo = os.environ["REPO"].lower()
+
+def pinned_elsewhere(cond):
+    if not repo or repo in cond.lower() or "||" in cond or re.search(r"!(?!=)", cond):
+        return ""
+    pins = re.findall(r"assertion\.repository\s*==\s*[\x27\"]([^\x27\"]+)[\x27\"]", cond)
+    others = [r for r in pins if r.lower() != repo]
+    return others[0] if others else ""
+
 try:
     rows = json.load(sys.stdin)
 except ValueError:
@@ -666,17 +688,20 @@ for p in rows or []:
     if p.get("state", "ACTIVE") != "ACTIVE":
         continue
     print("\t".join([os.environ["POOL"], p["name"].rsplit("/", 1)[1],
-                     (p.get("oidc") or {}).get("issuerUri", "")]))
+                     (p.get("oidc") or {}).get("issuerUri", "") or "-",
+                     pinned_elsewhere(p.get("attributeCondition") or "") or "-"]))
 '
   done
 }
 
-# stray_wif_providers: "<pool><TAB><provider>" for each second way in: every
-# other provider in WIF_POOL, and any provider elsewhere in the project that
-# accepts GitHub Actions tokens.
+# stray_wif_providers: "<pool><TAB><provider>" for each second way in for
+# GITHUB_REPO's tokens: every other provider in WIF_POOL, and any provider
+# elsewhere in the project that accepts GitHub Actions tokens, unless its
+# condition pins it to another repository.
 stray_wif_providers() {
-  local pool provider issuer
-  wif_providers | while IFS="$(printf '\t')" read -r pool provider issuer; do
+  local pool provider issuer elsewhere
+  wif_providers | while IFS="$(printf '\t')" read -r pool provider issuer elsewhere; do
+    [ "$elsewhere" = "-" ] || continue
     if [ "$pool" = "$WIF_POOL" ]; then
       [ "$provider" = "github" ] || printf '%s\t%s\n' "$pool" "$provider"
     elif [ "$issuer" = "$GITHUB_OIDC_ISSUER" ]; then
@@ -685,13 +710,24 @@ stray_wif_providers() {
   done
 }
 
+# other_repo_wif_providers <pool>: "<provider><TAB><repository>" for each
+# provider in <pool> pinned to a repository other than GITHUB_REPO.
+other_repo_wif_providers() {
+  local want="$1" pool provider issuer elsewhere
+  wif_providers | while IFS="$(printf '\t')" read -r pool provider issuer elsewhere; do
+    [ "$pool" = "$want" ] && [ "$elsewhere" != "-" ] && printf '%s\t%s\n' "$provider" "$elsewhere"
+  done
+  return 0
+}
+
 # delete_stray_wif_providers: delete them, and any pool other than WIF_POOL
-# that this leaves with no provider. Deletion is soft for 30 days
+# that this leaves with no provider (a pool that still holds another
+# repository's provider is kept). Deletion is soft for 30 days
 # ('gcloud iam workload-identity-pools providers undelete').
 delete_stray_wif_providers() {
   local pool provider left
   if is_dry_run; then
-    log "[dry-run] delete every WIF provider but $WIF_POOL/github that accepts GitHub tokens"
+    log "[dry-run] delete every WIF provider but $WIF_POOL/github that accepts GitHub tokens from $GITHUB_REPO (providers pinned to another repository are kept)"
     return 0
   fi
   local stray
@@ -703,7 +739,7 @@ delete_stray_wif_providers() {
       --project "$GCP_PROJECT_ID" --location=global --workload-identity-pool="$pool" --quiet </dev/null
     if [ "$pool" != "$WIF_POOL" ]; then
       left="$(gcloud iam workload-identity-pools providers list --project "$GCP_PROJECT_ID" \
-        --location=global --workload-identity-pool="$pool" --format='value(name)' 2>/dev/null || true)"
+        --location=global --workload-identity-pool="$pool" --format='value(name)' 2>/dev/null </dev/null || true)"
       if [ -z "$left" ]; then
         info "Deleting the now-empty pool $pool"
         run gcloud iam workload-identity-pools delete "$pool" \
@@ -713,31 +749,114 @@ delete_stray_wif_providers() {
   done
 }
 
+# delete_wif_federation: teardown of this repository's way in. Deletes the
+# stray providers, then WIF_POOL, unless another repository's provider is
+# still in it: then only WIF_POOL/github goes and the pool stays.
+delete_wif_federation() {
+  delete_stray_wif_providers
+  if is_dry_run; then
+    log "[dry-run] if $WIF_POOL still holds a provider pinned to another repository, delete only $WIF_POOL/github and keep the pool; otherwise:"
+    run gcloud iam workload-identity-pools delete "$WIF_POOL" \
+      --project "$GCP_PROJECT_ID" --location=global --quiet
+    return 0
+  fi
+  if ! probe gcloud iam workload-identity-pools describe "$WIF_POOL" \
+      --project "$GCP_PROJECT_ID" --location=global; then
+    info "workload identity pool $WIF_POOL already absent"
+    return 0
+  fi
+  local others
+  others="$(other_repo_wif_providers "$WIF_POOL")"
+  if [ -n "$others" ]; then
+    info "Keeping pool $WIF_POOL: it holds providers for other repositories: $(printf '%s' "$others" | tr '\t\n' ': ')"
+    if probe gcloud iam workload-identity-pools providers describe github \
+        --project "$GCP_PROJECT_ID" --location=global --workload-identity-pool="$WIF_POOL"; then
+      run gcloud iam workload-identity-pools providers delete github \
+        --project "$GCP_PROJECT_ID" --location=global --workload-identity-pool="$WIF_POOL" --quiet
+    else
+      info "WIF provider $WIF_POOL/github already absent"
+    fi
+  else
+    run gcloud iam workload-identity-pools delete "$WIF_POOL" \
+      --project "$GCP_PROJECT_ID" --location=global --quiet
+  fi
+}
+
 # loose_wif_bindings <pool-name>: "<sa><TAB><role><TAB><member>" for every
-# federated principal bound on any service account that is not one workflow
-# file on WIF_ALLOWED_REF in WIF_POOL: the repo-wide principalSet, another
-# branch, a principal from another pool.
+# federated principal bound on any service account that could match
+# GITHUB_REPO's tokens and is not one workflow file on WIF_ALLOWED_REF in
+# WIF_POOL: the repo-wide principalSet, another branch, this repository from
+# another pool, the whole pool, the repository owner, or any principal from a
+# pool of this project that no longer exists. A principal that names another
+# repository is that repository's, and is never listed.
 loose_wif_bindings() {
-  local pool_name="$1" sa
+  local pool_name="$1" sa pools
+  pools="$(gcloud iam workload-identity-pools list --project "$GCP_PROJECT_ID" \
+    --location=global --format='value(name)' 2>/dev/null || true)"
   for sa in $(gcloud iam service-accounts list --project "$GCP_PROJECT_ID" --format='value(email)' 2>/dev/null); do
     gcloud iam service-accounts get-iam-policy "$sa" --project "$GCP_PROJECT_ID" --format=json 2>/dev/null \
-      | SA="$sa" POOL_NAME="$pool_name" REPO="$GITHUB_REPO" REF="$WIF_ALLOWED_REF" python3 -c '
-import json, os, sys
+      | SA="$sa" POOL_NAME="$pool_name" POOLS="$pools" REPO="$GITHUB_REPO" REF="$WIF_ALLOWED_REF" python3 -c '
+import json, os, re, sys
 try:
     policy = json.load(sys.stdin)
 except ValueError:
     sys.exit(0)
+pool_name, repo = os.environ["POOL_NAME"], os.environ["REPO"]
+rl, owner = repo.lower(), repo.lower().split("/")[0]
+pools = set(os.environ.get("POOLS", "").split())
+project = pool_name.split("/locations/")[0] + "/"
 pinned = "principalSet://iam.googleapis.com/%s/attribute.job_workflow_ref/%s/.github/workflows/" % (
-    os.environ["POOL_NAME"], os.environ["REPO"])
+    pool_name, repo)
 suffix = "@" + os.environ["REF"]
+member_re = re.compile(r"^principal(?:Set)?://iam\.googleapis\.com/"
+                       r"(projects/[^/]+/locations/global/workloadIdentityPools/[^/]+)(?:/(.*))?$")
+
+def could_be_ours(pool, rest):
+    if pools and pool.startswith(project) and pool not in pools:
+        return True  # its pool is gone
+    if rest in ("", "*"):
+        return True  # anyone the pool admits
+    kind, _, value = rest.partition("/")
+    v = value.lower()
+    if kind == "attribute.repository":
+        return v == rl
+    if kind == "attribute.repository_owner":
+        return v == owner
+    if kind == "attribute.job_workflow_ref":
+        return v.startswith(rl + "/")
+    if kind == "subject":
+        return v == "repo:" + rl or v.startswith("repo:" + rl + ":")
+    return rl in v
+
 for b in policy.get("bindings", []):
     for m in b.get("members", []):
         if not m.startswith(("principal://", "principalSet://")):
             continue
         wf = m[len(pinned):] if m.startswith(pinned) else ""
         name = wf[: -len(suffix)] if wf.endswith(suffix) else ""
-        if not (name.endswith((".yml", ".yaml")) and "/" not in name):
+        if name.endswith((".yml", ".yaml")) and "/" not in name:
+            continue
+        hit = member_re.match(m)
+        if hit and could_be_ours(hit.group(1), hit.group(2) or ""):
             print("\t".join([os.environ["SA"], b["role"], m]))
 '
+  done
+}
+
+# remove_loose_wif_bindings <pool-name>: remove every binding
+# loose_wif_bindings lists. Listed in full before anything is removed, so no
+# removal races the reads.
+remove_loose_wif_bindings() {
+  local loose sa role member
+  if is_dry_run; then
+    log "[dry-run] remove every federated binding that is not one workflow file on $WIF_ALLOWED_REF and could match $GITHUB_REPO (bindings naming another repository are kept)"
+    return 0
+  fi
+  loose="$(loose_wif_bindings "$1")"
+  printf '%s\n' "$loose" | while IFS="$(printf '\t')" read -r sa role member; do
+    [ -n "$sa" ] || continue
+    info "Removing loose federated binding on $sa: $member"
+    run gcloud iam service-accounts remove-iam-policy-binding "$sa" --project "$GCP_PROJECT_ID" \
+      --member="$member" --role="$role" --format=none --quiet </dev/null
   done
 }

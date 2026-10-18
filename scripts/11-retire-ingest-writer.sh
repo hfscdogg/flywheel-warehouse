@@ -12,9 +12,12 @@
 #   wif-rehearsal   an account made by hand to rehearse the cutover. Stripped
 #                   and DELETED: nothing in the design ever used it.
 #   stray providers any WIF provider but WIF_POOL/github that accepts GitHub
-#                   tokens (the rehearsal's second provider trusted the whole
-#                   repository), and any federated binding on any account
-#                   that is not one workflow file on WIF_ALLOWED_REF.
+#                   tokens from GITHUB_REPO (the rehearsal's second provider
+#                   trusted the whole repository), and any federated binding
+#                   on any account that could match GITHUB_REPO and is not one
+#                   workflow file on WIF_ALLOWED_REF. Providers and bindings
+#                   pinned to another repository (other products share the
+#                   pool) are left alone.
 #
 # RUN THIS LAST. Until every workflow's repository variable points at its new
 # account, the workflows fall back to WIF_SERVICE_ACCOUNT, which is
@@ -153,21 +156,11 @@ else
 fi
 delete_stray_wif_providers
 
-# Any federated binding left on any account that is not one workflow file on
-# $WIF_ALLOWED_REF: the repo-wide principal on an account other than
-# ingest-writer, a principal from the pool just deleted.
-if is_dry_run; then
-  log "[dry-run] remove every federated binding that is not one workflow file on $WIF_ALLOWED_REF"
-else
-  # Listed in full before anything is removed, so no removal races the reads.
-  LOOSE="$(loose_wif_bindings "$POOL_NAME")"
-  printf '%s\n' "$LOOSE" | while IFS="$(printf '\t')" read -r sa role member; do
-    [ -n "$sa" ] || continue
-    info "Removing loose federated binding on $sa: $member"
-    run gcloud iam service-accounts remove-iam-policy-binding "$sa" --project "$GCP_PROJECT_ID" \
-      --member="$member" --role="$role" --format=none --quiet </dev/null
-  done
-fi
+# Any federated binding left on any account that could match $GITHUB_REPO and
+# is not one workflow file on $WIF_ALLOWED_REF: the repo-wide principal on an
+# account other than ingest-writer, a principal from the pool just deleted.
+# Bindings that name another repository (another product's) stay.
+remove_loose_wif_bindings "$POOL_NAME"
 
 log ""
 info "ingest-writer retired. Delete the WIF_SERVICE_ACCOUNT repository variable"

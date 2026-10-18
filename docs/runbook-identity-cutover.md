@@ -134,9 +134,14 @@ on a dataset `client.env` does not name.
 
 It also removes the cutover rehearsal: the hand-made `wif-rehearsal` account
 (stripped, then deleted), every WIF provider other than
-`flywheel-github/github` that accepts GitHub tokens (with any pool that
-leaves empty), and every federated binding on any account that is not one
-workflow file on `main`.
+`flywheel-github/github` that accepts this repository's GitHub tokens (with
+any pool that leaves empty), and every federated binding on any account that
+could match this repository and is not one workflow file on `main`. The pool
+is shared: a provider whose condition pins another repository (e.g.
+`github-kitchen` for `hfscdogg/flywheel-kitchen`) and bindings naming another
+repository (e.g. `kitchen-runner`'s) are left alone, and `99-teardown --full`
+keeps the pool, deleting only `flywheel-github/github`, while such a provider
+remains.
 
 Disabling ingest-writer is reversible (`gcloud iam service-accounts enable`);
 the grants have to be re-added by hand. A deleted provider or pool can be
@@ -154,8 +159,10 @@ bound on `staging` or `marts`, and that the agent's 200/403 boundary holds.
 It also checks what must be absent, read from the live policies: nothing
 anywhere names `ingest-writer` or `wif-rehearsal`, `wif-rehearsal` does not
 exist, `hermes-reader` holds nothing outside its scope on any dataset in the
-project, the only provider accepting GitHub tokens is `flywheel-github/github`
-pinned to `main`, and every federated binding names one workflow file.
+project, the only provider accepting this repository's GitHub tokens is
+`flywheel-github/github` pinned to `main`, and every federated binding that
+could match this repository names one workflow file. Providers and bindings
+pinned to another repository are not counted.
 
 For a before/after record of the whole project's IAM, run this before the
 first change and again after the last, and diff the two:
