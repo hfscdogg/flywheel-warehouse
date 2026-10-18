@@ -198,4 +198,33 @@ started a gcloud sign-in in its container before Henry had agreed. The
 session's permission guard blocked it, so nothing was authenticated. All GCP
 commands continue in Cloud Shell.
 
-_Pending: provider readback (the `update-oidc` line scrolled off), then 09._
+### Provider readback (about 19:15Z)
+
+- `~/05-infra-livewire.log`: `==> provider exists — converging mapping and condition` (took the `update-oidc` path).
+- `providers list`:
+  - `github`: `assertion.repository == 'hfscdogg/flywheel-warehouse' && assertion.ref == 'refs/heads/main'`
+  - `github-kitchen`: `assertion.repository == 'hfscdogg/flywheel-kitchen' && assertion.ref == 'refs/heads/main'` (unchanged)
+
+### 09 (about 19:15Z): OK
+
+- `bucket exists`, `==> ingest-vendor: read and archive uploads`, no "could
+  not create" warnings. Full output in Cloud Shell `~/09-vendor-livewire.log`.
+- `gsutil iam get gs://livewire-dw-vendor-drops`: `ingest-vendor` now sits in the same role
+  binding as `ingest-writer`. `ingest-writer` keeps its access until step 8.
+- All six upload prefixes have their `.keep`. Pre-existing and left alone:
+  `processed/…/2026-08-31T19:25:4x-.keep` files archived in August, before the
+  zero-byte placeholder fix.
+
+### 10: skipped (Hermes out of scope, see decision above)
+
+**Step 2 complete except `10`.**
+
+## Step 3: repository variables
+
+- Cloud Shell `gh auth status`: logged in to github.com as `hfscdogg`.
+- Workflows read `vars.WIF_SA_<X> || vars.WIF_SERVICE_ACCOUNT`, so an unset
+  variable falls back to `ingest-writer`. `ingest-dtools` and `ingest-dtools-v2` share
+  `WIF_SA_INGEST_DTOOLS`; `ingest-qbo` and `ingest-qbo-reports` share
+  `WIF_SA_INGEST_QBO`. `WIF_PROVIDER` is read by 11 workflows.
+
+_Pending: `gh variable list` before setting anything._
