@@ -27,4 +27,18 @@ of scope until one green nightly cycle.
   every account as "creating". The real state comes from
   `gcloud iam service-accounts list`.
 
-_Pending: hash and clean-tree confirmation, existing account list, 02 dry run._
+- Cloud Shell, 14:52: `git rev-parse --short HEAD` → `6651fd9`. No tracked
+  files modified. Untracked: `Transform`, `audit.sh`,
+  `leak_highest_confidence.csv`. No script or workflow references them.
+- Existing service accounts in livewire-dw (all enabled):
+  `ingest-writer`, `711707450526-compute@developer`, `hermes-reader`,
+  `station-reader`, `endpoint-builder`, `endpoint-deployer`, `kitchen-runner`.
+  None of the 8 new accounts exist yet. `station-reader` and `kitchen-runner`
+  are not managed by any script in this repo.
+- `DRY_RUN=1 ./scripts/02-service-accounts.sh livewire`: plans `create` for
+  ingest-zoho, ingest-zohobilling, ingest-dtools, ingest-qbo, ingest-vendor,
+  ingest-alarmdotcom, transform-writer, warehouse-reader. Nothing else.
+  On the real run `hermes-reader` already exists, so 02 only updates its display
+  name.
+
+_Pending: real run of 02._
