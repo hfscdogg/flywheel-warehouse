@@ -389,3 +389,9 @@ statement accepted: BigQuery reads it as a single SELECT
   #all-flywheel (Mark, Chris). It covers steps 1 to 4, the probe results, what this means for
   template builds, and the next steps. The evidence log was offered on request because the
   partners have access to the template repo only, by design.
+
+## Step 6: nightly cycle (2026-10-19)
+
+- 07:31Z check: no 2026-10-19 scheduled runs yet. The Oct 17 and Oct 18 scheduled runs were
+  created about 10:28 to 11:55Z, not at the 06:00 to 07:00Z the runbook assumes (GitHub
+  schedule delay). Re-checking at 12:15Z.
