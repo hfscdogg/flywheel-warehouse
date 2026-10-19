@@ -398,3 +398,18 @@ statement accepted: BigQuery reads it as a single SELECT
 - 12:25Z check: still no 2026-10-19 scheduled run for any of the 9 workflows, not even
   queued. The crons on main are unchanged (06:00 to 07:00Z); main has not moved since
   6651fd9 (Oct 15). This is later than the latest start on Oct 17 and 18. Re-checking at 13:15Z.
+- 14:00Z check: the scheduled runs are arriving about 7 hours late.
+
+| Run | Workflow | Created | Result | Authenticated as | Evidence |
+|---|---|---|---|---|---|
+| 39254895029 | ingest-zoho | 12:48Z | success | _to confirm_ | |
+| 39257011991 | ingest-zohobilling | 13:04Z | success | _to confirm_ | |
+| 39258922379 | ingest-dtools | 13:17Z | success | `ingest-dtools@` | `done: 7716 rows total` |
+| 39262376809 | ingest-qbo-reports | 13:42Z | success | `ingest-qbo@` | `done: 14586 rows total`; "QBO rotated the refresh token, new version written to Secret Manager" |
+| 39263280162 | ingest-alarmdotcom | 13:48Z | success | `ingest-alarmdotcom@` | `ALARMDOTCOM_DEALER_ID is not set` (no load) |
+| 39263694601 | ingest-qbo | 13:51Z | success | `ingest-qbo@` | `done: 97 rows total` |
+| 39264988130 | ingest-dtools-v2 | 13:59Z | success | `ingest-dtools@` | `done: 32 rows total`; "Entra rotated the refresh token, new version written to Secret Manager" |
+
+"ingest-writer" appears in none of the five logs read, and there are no permission errors. The
+refresh-token rotations prove that `secretVersionAdder` works on the new accounts. Still to
+come: ingest-vendordrop and transform.
