@@ -402,8 +402,8 @@ statement accepted: BigQuery reads it as a single SELECT
 
 | Run | Workflow | Created | Result | Authenticated as | Evidence |
 |---|---|---|---|---|---|
-| 39254895029 | ingest-zoho | 12:48Z | success | _to confirm_ | |
-| 39257011991 | ingest-zohobilling | 13:04Z | success | _to confirm_ | |
+| 39254895029 | ingest-zoho | 12:48Z | success | `ingest-zoho@` | `done: 21 rows total` |
+| 39257011991 | ingest-zohobilling | 13:04Z | success | `ingest-zohobilling@` | `done: 8382 rows total` |
 | 39258922379 | ingest-dtools | 13:17Z | success | `ingest-dtools@` | `done: 7716 rows total` |
 | 39262376809 | ingest-qbo-reports | 13:42Z | success | `ingest-qbo@` | `done: 14586 rows total`; "QBO rotated the refresh token, new version written to Secret Manager" |
 | 39263280162 | ingest-alarmdotcom | 13:48Z | success | `ingest-alarmdotcom@` | `ALARMDOTCOM_DEALER_ID is not set` (no load) |
@@ -413,3 +413,16 @@ statement accepted: BigQuery reads it as a single SELECT
 "ingest-writer" appears in none of the five logs read, and there are no permission errors. The
 refresh-token rotations prove that `secretVersionAdder` works on the new accounts. Still to
 come: ingest-vendordrop and transform.
+
+- 14:45Z check: the cycle is complete.
+
+| Run | Workflow | Created | Result | Authenticated as | Evidence |
+|---|---|---|---|---|---|
+| 39265624054 | ingest-vendordrop | 14:04Z | success | `ingest-vendor@` | `no new files in gs://livewire-dw-vendor-drops`; `done: 0 files, 0 rows total` |
+| 39267631542 | transform | 14:17Z | failure (freshness only) | `transform-writer@` | all 14 `Replaced livewire-dw.marts.*` lines; "every mart table and column is described"; "QuickBooks' reports agree with each other in every month"; only error: `ERROR: a stale source answers confidently and wrongly` (securitycentral_accounts 53d/45, alarmdotcom_accounts 49d/45, parasol_accounts 49d/45, securitycentral_status 21d/14) |
+
+"ingest-writer" appears in none of the 9 logs, and there are no permission or access-denied errors.
+
+**Step 6 verdict: GREEN** under the agreed definition. Every run authenticated on its new
+account and transform built every mart. The only error is the freshness check (#104), which is
+excluded. Steps 7 to 9 and the merges of #109, #110 and #96 are unblocked, pending Henry's go-ahead.
