@@ -395,3 +395,6 @@ statement accepted: BigQuery reads it as a single SELECT
 - 07:31Z check: no 2026-10-19 scheduled runs yet. The Oct 17 and Oct 18 scheduled runs were
   created about 10:28 to 11:55Z, not at the 06:00 to 07:00Z the runbook assumes (GitHub
   schedule delay). Re-checking at 12:15Z.
+- 12:25Z check: still no 2026-10-19 scheduled run for any of the 9 workflows, not even
+  queued. The crons on main are unchanged (06:00 to 07:00Z); main has not moved since
+  6651fd9 (Oct 15). This is later than the latest start on Oct 17 and 18. Re-checking at 13:15Z.
