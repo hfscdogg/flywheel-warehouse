@@ -15,7 +15,9 @@ each landing in that format's raw_vendor table:
 
 Processed files move to processed/<prefix>/<timestamp>-<name> so a re-run
 never double-loads and the drop folders stay empty enough to see at a glance
-whether this week's report arrived. Landing tables are append-only; staging
+whether this week's report arrived. A file that yields no records moves to
+rejected/<prefix>/ instead, and the run fails so the alert opens an issue:
+see handle_upload. Landing tables are append-only; staging
 keeps the latest row per record, so re-uploading the same export is harmless.
 
 Env:
@@ -68,6 +70,48 @@ def pending_blobs(bucket, fmt_key, slug):
                   key=lambda b: b.time_created)
 
 
+def archive(bucket, blob, top):
+    """Move an upload to <top>/<its path> with a timestamp; return the new name."""
+    dest = f"{top}/{blob.name}"
+    stamped = f"{os.path.dirname(dest)}/{util.utcnow_iso()[:19]}-{os.path.basename(dest)}"
+    bucket.copy_blob(blob, bucket, stamped)
+    blob.delete()
+    return stamped
+
+
+def why_empty(data, name, fmt_key):
+    """A sentence for the person who uploaded a file that parsed to nothing."""
+    if data.lstrip()[:5] == b"{\\rtf":
+        return (f"{name} is a rich-text (.rtf) file, not the vendor's export. It "
+                "was probably opened in a text editor and saved again. Upload "
+                "the attachment exactly as the vendor sent it.")
+    return (f"{name} has no row in the {fmt_key} layout. Check that it is the "
+            "right report for this folder, exported in the vendor's own format.")
+
+
+def handle_upload(bucket, blob, fmt_key, land, limit=None):
+    """Parse one upload, land it, and archive it. Returns (rows, archived_to, error).
+
+    A file that parses to NO records is rejected, not processed. On
+    2026-09-28 a Customer Count saved as .rtf parsed to nothing, landed zero
+    rows, logged "no new records" and was archived as done: a green run, and
+    a report that never reached the warehouse. Every format here is a roster
+    or an invoice, and a real one is never empty, so zero records always
+    means the wrong file. It moves to rejected/ rather than staying put, so
+    the folder is clear for the corrected upload and the next scheduled run
+    does not fail on the same file again.
+    """
+    data = blob.download_as_bytes()
+    records = tabular.parse(data, blob.name, fmt_key)
+    if not records:
+        error = why_empty(data, blob.name, fmt_key)
+        return 0, archive(bucket, blob, "rejected"), error
+    if limit:
+        records = records[:limit]
+    n = land(records)
+    return n, archive(bucket, blob, "processed"), None
+
+
 def main():
     args, cfg, dataset, run_id = runner.setup(
         "vendor", [tabular.table_name(k) for k in sorted(tabular.FORMATS)])
@@ -91,7 +135,7 @@ def main():
         bq_mod.ensure_table(bq, cfg, dataset, tabular.table_name(fmt_key),
                             bq_mod.LANDING_SCHEMA)
 
-    total, files, reachable = 0, 0, True
+    total, files, reachable, rejected = 0, 0, True, []
     for fmt_key in sorted(tabular.FORMATS):
         pending = pending_blobs(bucket, fmt_key, cfg.slug)
         if pending is None:          # bucket missing or unreadable; warned once
@@ -99,25 +143,31 @@ def main():
             break
         for blob in pending:
             log.info("%s: parsing %s (%d bytes)", fmt_key, blob.name, blob.size)
-            records = tabular.parse(blob.download_as_bytes(),
-                                    blob.name, fmt_key)
-            if args.limit:
-                records = records[:args.limit]
             # No source-side modified timestamp in these reports; the upload
             # is the only "when", and _loaded_at already carries it.
-            total += runner.land(bq_mod, bq, cfg, dataset,
-                                 tabular.table_name(fmt_key), records,
-                                 tabular.id_column(fmt_key), None, run_id)
+            def land(records, fmt_key=fmt_key):
+                return runner.land(bq_mod, bq, cfg, dataset,
+                                   tabular.table_name(fmt_key), records,
+                                   tabular.id_column(fmt_key), None, run_id)
+            n, stamped, error = handle_upload(bucket, blob, fmt_key, land,
+                                              args.limit)
             files += 1
-            dest = f"processed/{blob.name}"
-            stamped = f"{os.path.dirname(dest)}/{util.utcnow_iso()[:19]}-{os.path.basename(dest)}"
-            bucket.copy_blob(blob, bucket, stamped)
-            blob.delete()
-            log.info("%s: archived to gs://%s/%s", fmt_key, bucket_name, stamped)
+            total += n
+            if error:
+                log.error("%s: REJECTED, moved to gs://%s/%s: %s",
+                          fmt_key, bucket_name, stamped, error)
+                rejected.append(stamped)
+            else:
+                log.info("%s: archived to gs://%s/%s", fmt_key, bucket_name, stamped)
 
     if not files and reachable:
         log.info("no new files in gs://%s — nothing to do", bucket_name)
     log.info("done: %d files, %d rows total", files, total)
+    if rejected:
+        # After every other file has loaded, so one bad upload never holds
+        # back the rest; failing turns the run red and the alert opens an issue.
+        raise SystemExit(f"{len(rejected)} upload(s) held no records and were "
+                         f"rejected: {', '.join(rejected)}")
 
 
 if __name__ == "__main__":
