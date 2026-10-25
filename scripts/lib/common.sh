@@ -136,6 +136,11 @@ load_client() {
   SA_TRANSFORM_EMAIL="${SA_TRANSFORM}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   SA_PROBE="${SA_PROBE:-warehouse-reader}"
   SA_PROBE_EMAIL="${SA_PROBE}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+  # Reads policies, dataset access lists and secret metadata for audit.yml,
+  # and nothing else: no table data, no secret values, no writes
+  # (scripts/12-auditor.sh).
+  SA_AUDITOR="${SA_AUDITOR:-auditor}"
+  SA_AUDITOR_EMAIL="${SA_AUDITOR}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
   SA_INGEST_PREFIX="${SA_INGEST_PREFIX:-ingest-}"
 
   # Raw datasets a pipeline in this repo writes. raw_ga4 and raw_google_ads

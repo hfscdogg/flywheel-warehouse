@@ -37,6 +37,7 @@ SOURCES = {
     "vendor": ({"ingest-vendordrop.yml"}, "WIF_SA_INGEST_VENDOR"),
 }
 OTHER = {"transform.yml": "WIF_SA_TRANSFORM", "probe.yml": "WIF_SA_PROBE",
+         "audit.yml": "WIF_SA_AUDIT",
          "deploy-endpoint.yml": "WIF_DEPLOYER_SERVICE_ACCOUNT"}
 
 
