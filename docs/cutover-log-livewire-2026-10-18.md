@@ -451,3 +451,39 @@ No values passed through this log, the chat or any job log.
 Notes:
 - **QBO:** the refresh token was not re-authorized and Intuit's revoke endpoint was not called. An old QBO refresh token is useless without the client secret, and as far as we know Intuit's revoke disconnects the whole app from the company.
 - **D-Tools v2 runs as Henry's own D-Tools account.** Dave Kirn (D-Tools) provisioned v2 early access on henry@getlivewire.com only (email thread "D-Tools API v2 access", Sep 11 to 30). On Sep 30 he offered a service principal for unattended jobs, and nobody has followed up yet. Follow-up: ask for a read-only service principal, ideally with a federated credential that trusts this repo's GitHub OIDC, so there is no secret to rotate.
+
+## Step 8: retire ingest-writer (2026-10-25)
+
+Henry ran the script and approved each step.
+
+Pre-checks:
+- `gcloud iam service-accounts keys list --managed-by=user` on ingest-writer: `Listed 0 items` (keyless policy holds).
+- Last-authentication activity query: inconclusive. It returned nothing when searched by email or by unique id 117186651414592731464.
+- The run logs are the evidence that nothing used the account: all 9 workflows authenticated on their own accounts every night from Oct 19 to 23, and in every run on Oct 25.
+- `DRY_RUN=1 ./scripts/11-retire-ingest-writer.sh livewire` (main): the plan touched only ingest-writer's own grants. No WIF provider was modified, and github-kitchen and kitchen-runner were not touched.
+
+Real run (`./scripts/11-retire-ingest-writer.sh livewire`, confirmed by typing `livewire`). Every line returned `Updated IAM policy` or `successfully updated`:
+- removed `roles/iam.workloadIdentityUser` for `principalSet://.../flywheel-github/attribute.repository/hfscdogg/flywheel-warehouse`
+- removed `secretAccessor` on all 16 connector secrets, and `secretVersionAdder` on `flywheel-dtools-v2-refresh-token` and `flywheel-qbo-refresh-token`
+- removed `dataEditor` on raw_zoho, raw_zohobilling, raw_dtools, raw_qbo, raw_vendor, raw_alarmdotcom, raw_ga4, raw_google_ads, staging and marts, and `dataViewer` on analytics_285482813
+- removed project `roles/bigquery.jobUser`
+- removed `storage.objectAdmin` on gs://livewire-dw-vendor-drops
+- `Disabled service account [ingest-writer@livewire-dw.iam.gserviceaccount.com]` (reversible with `gcloud iam service-accounts enable`)
+
+Then `gh variable delete WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse` returned `Deleted variable WIF_SERVICE_ACCOUNT`.
+
+Post-retirement runs: ingest-zoho 40216952689 and transform 40216954902 are PENDING.
+
+## Step 9: verify (2026-10-25)
+
+`scripts/90-verify.sh` was **not** run. It asserts grants on hermes-reader and impersonates it for the 200/403 smoke test. Hermes is out of scope for Flywheel, and the Livewire station reads through station-reader, which the script does not know about.
+
+Option 1 (today): `docs/cutover-verify-livewire-2026-10-25.sh` is read-only. It runs 90-verify's checks that do not involve Hermes, plus the step 8 evidence. Henry ran it in Cloud Shell:
+- 10 datasets exist in US: 10 PASS
+- 8 pipeline accounts exist: 8 PASS
+- no ingest account on staging or marts: 12 PASS
+- project jobUser on all 8 accounts: 8 PASS
+- ingest-writer disabled, no jobUser, no grant on any of the 11 datasets, no WIF binding: 14 PASS
+- **`failures: 0`**
+
+Option 2 (this week): make the reader account in 90-verify configurable, point it at station-reader after checking that account's grants, and run the 200/403 boundary test against it. The template needs the same change.
