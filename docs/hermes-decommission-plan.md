@@ -9,8 +9,17 @@ from this repo. Each part disables before it deletes, so for the first 30 days
 everything except the Cloud Run service can be undone with one command.
 
 > **ON HOLD (2026-10-25).** Henry still wants an easy way to ask the warehouse
-> questions, including from his phone. Part A does not start until the replacement
-> is chosen and working. Step 0 (inventory) is read-only and can run now.
+> questions, including from his phone. Decision (2026-10-25): **A now, B this week.**
+> - A: ask Claude with the BigQuery connector. It runs as Henry's own login, so it is
+>   not limited to marts; use the read-only query tool.
+> - B: keep the endpoint without Hermes. Rename the service, give it its own read-only
+>   reader account, keep the marts-and-staging limit, the SELECT-only guard and the
+>   goal cards, and connect it to Claude.
+>
+> Part A below starts only once B is live. At that point it retires hermes-reader, the
+> old service name and the token. endpoint-deployer and endpoint-builder are kept only
+> if B still deploys from CI, and the legacy repo-wide WIF binding on endpoint-deployer
+> is removed either way. Step 0 (inventory) is read-only and can run now.
 
 ## What exists (from the repo; confirm with the inventory)
 
