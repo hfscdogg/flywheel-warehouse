@@ -11,8 +11,21 @@
 #   --all-iam       The above, plus the same for every pipeline identity
 #                   (ingest-<source>, transform-writer, warehouse-reader,
 #                   and the retired ingest-writer if it still exists).
-#   --full          The above, plus DELETE every dataset and those SAs.
-#                   Irreversible. Requires typing the project ID.
+#   --full          The above, plus DELETE everything the setup scripts made:
+#                   every dataset, the vendor drop bucket, the agent endpoint
+#                   (Cloud Run service) and its token secret, every connector
+#                   secret, the workload identity pool with its providers
+#                   (and any stray provider that accepts this repository's
+#                   GitHub tokens; if the pool still holds a provider pinned
+#                   to another repository, only WIF_POOL/github goes), the
+#                   endpoint deployer's custom role, and every Flywheel
+#                   service account. Irreversible (a deleted pool, provider
+#                   or secret is recoverable for 30 days at most). Requires
+#                   typing the project ID.
+#
+# Left behind by --full, because Google made them rather than these scripts:
+# the APIs 05 and 07 enabled, and Cloud Run's own source-deploy bucket
+# (run-sources-<project>-<region>) and Artifact Registry repository.
 #
 # Idempotent: every removal checks for the binding first, because
 # 'remove-iam-policy-binding' exits 1 when the binding is already absent.
@@ -26,7 +39,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLUG="$1"
 shift
 load_client "$SLUG"
-require_cmd gcloud bq python3
+require_cmd gcloud gsutil bq python3
+
+# Optional per-client overrides, as in 07-hermes-endpoint.sh and
+# 10-endpoint-deployer.sh.
+RUN_REGION="${RUN_REGION:-us-east4}"
+HERMES_MCP_SERVICE="${HERMES_MCP_SERVICE:-hermes-mcp}"
+TOKEN_SECRET="${HERMES_TOKEN_SECRET:-hermes-endpoint-token}"
+SA_ENDPOINT_DEPLOYER="${SA_ENDPOINT_DEPLOYER:-endpoint-deployer}"
+SA_ENDPOINT_DEPLOYER_EMAIL="${SA_ENDPOINT_DEPLOYER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+BUCKET_LISTER_ROLE="flywheelSourceBucketLister"
 
 MODE="--revoke-agent"
 ASSUME_YES=0
@@ -55,7 +77,12 @@ confirm() { # confirm <prompt> <required-reply>
 revoke_agent() {
   info "Revoking agent access for '$CLIENT_SLUG' ($SA_HERMES_READER_EMAIL)"
   remove_project_binding "$SA_HERMES_READER_EMAIL" roles/bigquery.jobUser
-  revoke_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
+  # Every dataset, not only marts: under AGENT_SCOPE=wide the agent reads
+  # staging too, and a revoke that left that grant behind left the agent's
+  # widest view in place behind a disabled account.
+  for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+    revoke_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$ds"
+  done
   revoke_sa "$SA_HERMES_READER_EMAIL" "hermes-reader"
   info "Agent access revoked. Re-grant: 03-iam.sh + 'gcloud iam service-accounts enable'."
 }
@@ -83,16 +110,71 @@ revoke_writer() {
   done
 }
 
-full_teardown() {
-  info "FULL teardown: deleting all datasets and service accounts"
-  for ds in $ALL_DATASETS; do
-    run $BQ rm -r -f -d "$GCP_PROJECT_ID:$ds"
+# Every secret the setup scripts made: each connector's (05), whether or not
+# this client ingests that source, and the endpoint token (07).
+flywheel_secrets() {
+  local src s
+  for src in zoho zohobilling dtools alarmdotcom qbo; do
+    for s in $(source_secrets "$src"); do printf '%s\n' "$s"; done
   done
-  for email in "$SA_HERMES_READER_EMAIL" $(pipeline_identities); do
+  printf '%s\n' "$TOKEN_SECRET"
+}
+
+# Every account the setup scripts made, and the rehearsal one nobody should
+# have: hermes-reader, the pipeline identities, the endpoint deployer and
+# builder (10, lib/common.sh converge_endpoint_builder), wif-rehearsal.
+all_identities() {
+  printf '%s\n' "$SA_HERMES_READER_EMAIL"
+  pipeline_identities
+  printf '%s\n%s\n%s\n' "$SA_ENDPOINT_DEPLOYER_EMAIL" "$SA_ENDPOINT_BUILDER_EMAIL" "$SA_WIF_REHEARSAL_EMAIL"
+}
+
+full_teardown() {
+  info "FULL teardown: the endpoint, secrets, federation, data and accounts"
+
+  # The endpoint first: it serves the agent until it is gone.
+  if is_dry_run || probe gcloud run services describe "$HERMES_MCP_SERVICE" \
+      --project "$GCP_PROJECT_ID" --region "$RUN_REGION"; then
+    run gcloud run services delete "$HERMES_MCP_SERVICE" \
+      --project "$GCP_PROJECT_ID" --region "$RUN_REGION" --quiet
+  else
+    info "Cloud Run service $HERMES_MCP_SERVICE already absent"
+  fi
+
+  for s in $(flywheel_secrets); do
+    if is_dry_run || probe gcloud secrets describe "$s" --project "$GCP_PROJECT_ID"; then
+      run gcloud secrets delete "$s" --project "$GCP_PROJECT_ID" --quiet
+    fi
+  done
+
+  # GitHub's way in. Deleting the pool deletes its providers; a provider in
+  # another pool that accepts this repository's tokens goes too. The pool is
+  # shared: while it holds another repository's provider, only ours goes.
+  if [ -n "${WIF_POOL:-}" ]; then
+    delete_wif_federation
+  fi
+
+  for ds in $ALL_DATASETS; do
+    if is_dry_run || probe $BQ show --format=none "$GCP_PROJECT_ID:$ds"; then
+      run $BQ rm -r -f -d "$GCP_PROJECT_ID:$ds"
+    fi
+  done
+  BUCKET="$(vendor_drop_bucket)"
+  if is_dry_run || probe gsutil ls -b "gs://$BUCKET"; then
+    run gsutil -m rm -r "gs://$BUCKET"
+  fi
+
+  # Strip before deleting: a deleted account's grants stay in every policy as
+  # deleted:serviceAccount:<email>, and would sit there until someone looked.
+  for email in $(all_identities); do
+    strip_member_everywhere "$email"
     if is_dry_run || probe gcloud iam service-accounts describe "$email" --project "$GCP_PROJECT_ID"; then
       run gcloud iam service-accounts delete "$email" --project "$GCP_PROJECT_ID" --quiet
     fi
   done
+  if is_dry_run || probe gcloud iam roles describe "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID"; then
+    run gcloud iam roles delete "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID" --quiet
+  fi
 }
 
 case "$MODE" in
@@ -106,7 +188,7 @@ case "$MODE" in
     revoke_writer
     ;;
   --full)
-    confirm "IRREVERSIBLE: this DELETES every dataset (all data!) and every Flywheel service account in $GCP_PROJECT_ID." "$GCP_PROJECT_ID"
+    confirm "IRREVERSIBLE: this DELETES every dataset and the vendor drop bucket (all data!), the agent endpoint, every Flywheel secret, the GitHub federation and every Flywheel service account in $GCP_PROJECT_ID." "$GCP_PROJECT_ID"
     revoke_agent
     revoke_writer
     full_teardown

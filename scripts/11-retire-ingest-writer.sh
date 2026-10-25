@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # 11-retire-ingest-writer.sh <client-slug> [--yes]
 #
-# Strips the single pipeline identity this repo used before 2026-10-09 and
-# disables it. ingest-writer held every connector secret, dataEditor on raw,
-# staging and marts, and trusted any workflow on any branch of the repo. Its
-# jobs now run as one account each (lib/common.sh, docs/trust.md).
+# Closes every trust path the 2026-10 cutover left behind:
+#
+#   ingest-writer   the single pipeline identity used before 2026-10-09. It
+#                   held every connector secret, dataEditor on raw, staging
+#                   and marts, and trusted any workflow on any branch. Its
+#                   jobs now run as one account each (lib/common.sh,
+#                   docs/trust.md). Stripped of every grant it holds anywhere
+#                   in the project, then disabled.
+#   wif-rehearsal   an account made by hand to rehearse the cutover. Stripped
+#                   and DELETED: nothing in the design ever used it.
+#   stray providers any WIF provider but WIF_POOL/github that accepts GitHub
+#                   tokens from GITHUB_REPO (the rehearsal's second provider
+#                   trusted the whole repository), and any federated binding
+#                   on any account that could match GITHUB_REPO and is not one
+#                   workflow file on WIF_ALLOWED_REF. Providers and bindings
+#                   pinned to another repository (other products share the
+#                   pool) are left alone.
 #
 # RUN THIS LAST. Until every workflow's repository variable points at its new
 # account, the workflows fall back to WIF_SERVICE_ACCOUNT, which is
@@ -37,11 +50,10 @@ fi
 info "Retiring $SA_INGEST_WRITER_EMAIL"
 
 # ── Preconditions ───────────────────────────────────────────────────────────
+# No early exit when ingest-writer is already disabled or deleted: its grants
+# outlive it (a deleted account's entries stay, as deleted:serviceAccount:),
+# and the rehearsal leftovers below are independent of it.
 if ! is_dry_run; then
-  if ! probe gcloud iam service-accounts describe "$SA_INGEST_WRITER_EMAIL" --project "$GCP_PROJECT_ID"; then
-    info "$SA_INGEST_WRITER_EMAIL does not exist — nothing to retire"
-    exit 0
-  fi
   missing=""
   for src in $INGEST_SOURCES; do
     probe gcloud iam service-accounts describe "$(ingest_sa_email "$src")" --project "$GCP_PROJECT_ID" \
@@ -118,8 +130,37 @@ if is_dry_run || probe gsutil ls -b "gs://$BUCKET"; then
     || warn "could not remove objectAdmin on gs://$BUCKET — check it by hand"
 fi
 
+# ── Everything else it holds ────────────────────────────────────────────────
+# The removals above are the grants this repo's scripts once made. A grant
+# made any other way (by hand, under a legacy role such as OWNER, on a
+# dataset client.env does not list) survives them, and SoundVision's pass
+# found ingest-writer still able to write after this script had run. So,
+# last, take it off every policy in the project, whatever the grant.
+strip_member_everywhere "$SA_INGEST_WRITER_EMAIL"
+
 # ── The account ─────────────────────────────────────────────────────────────
-revoke_sa "$SA_INGEST_WRITER_EMAIL" "$SA_INGEST_WRITER"
+if is_dry_run || probe gcloud iam service-accounts describe "$SA_INGEST_WRITER_EMAIL" --project "$GCP_PROJECT_ID"; then
+  revoke_sa "$SA_INGEST_WRITER_EMAIL" "$SA_INGEST_WRITER"
+else
+  info "$SA_INGEST_WRITER_EMAIL does not exist — its grants are what was left"
+fi
+
+# ── The cutover rehearsal ───────────────────────────────────────────────────
+info "Removing the cutover rehearsal: $SA_WIF_REHEARSAL_EMAIL and any second WIF provider"
+strip_member_everywhere "$SA_WIF_REHEARSAL_EMAIL"
+if is_dry_run || probe gcloud iam service-accounts describe "$SA_WIF_REHEARSAL_EMAIL" --project "$GCP_PROJECT_ID"; then
+  delete_all_user_keys "$SA_WIF_REHEARSAL_EMAIL"
+  run gcloud iam service-accounts delete "$SA_WIF_REHEARSAL_EMAIL" --project "$GCP_PROJECT_ID" --quiet
+else
+  info "$SA_WIF_REHEARSAL_EMAIL already absent"
+fi
+delete_stray_wif_providers
+
+# Any federated binding left on any account that could match $GITHUB_REPO and
+# is not one workflow file on $WIF_ALLOWED_REF: the repo-wide principal on an
+# account other than ingest-writer, a principal from the pool just deleted.
+# Bindings that name another repository (another product's) stay.
+remove_loose_wif_bindings "$POOL_NAME"
 
 log ""
 info "ingest-writer retired. Delete the WIF_SERVICE_ACCOUNT repository variable"

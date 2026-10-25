@@ -34,7 +34,9 @@ Hermes Agent, Claude, ChatGPT). Two widths, chosen by the client:
   shape as 2a; the difference is one line in `client.env`,
   `AGENT_SCOPE="wide"`, which makes `03-iam.sh` grant `hermes-reader` read
   on `staging` too, `07-hermes-endpoint.sh` tell the server to list it, and
-  `90-verify.sh` assert the grant is present rather than absent. **`raw_*`
+  `90-verify.sh` assert the grant is present rather than absent. Going back
+  to narrow revokes it: `03-iam.sh` removes whatever `hermes-reader` holds on
+  any dataset outside the chosen scope. **`raw_*`
   stays locked in both widths** — it is append-only JSON, every version of
   every record, nothing an agent wants, and it is where the strongest
   promise in [trust.md](trust.md) lives. Staging carries customer names,
