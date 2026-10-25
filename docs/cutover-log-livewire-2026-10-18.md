@@ -476,7 +476,7 @@ Post-retirement runs:
 - ingest-zoho 40216952689: success.
 - transform 40216954902: every mart was replaced, `described` and `qbo_reports_tie` passed, and there were no permission errors. It failed only on the freshness check (#104, excluded); six vendor uploads are stale (securitycentral and alarmdotcom accounts, parasol, alarmdotcom billing, securitycentral recurring and status).
 
-#109 (pinned action SHAs, hash-locked deps, no ingest-writer fallback) was merged as 8a3156c. Every workflow was then run by hand on that commit: ingest-zoho, zohobilling, qbo, qbo-reports, dtools-v2, alarmdotcom and vendordrop all succeeded, as did probe with `SELECT 1`; ingest-dtools and transform were still running when this was written. #110 (lifecycle scripts) was merged as 71b8be4.
+#109 (pinned action SHAs, hash-locked deps, no ingest-writer fallback) was merged as 8a3156c. Every workflow was then run by hand on that commit: ingest-zoho, zohobilling, qbo, qbo-reports, dtools-v2, alarmdotcom and vendordrop all succeeded, as did probe with `SELECT 1`; ingest-dtools 40217842436 also succeeded, and transform 40217844106 built every mart, passed the described and qbo_reports_tie checks, and failed only on the #104 freshness check. #96 (vendordrop rejects zero-record uploads) was merged as 369f953, and ingest-vendordrop 40218989483 succeeded on it. #110 (lifecycle scripts) was merged as 71b8be4.
 
 ## Step 9: verify (2026-10-25)
 
