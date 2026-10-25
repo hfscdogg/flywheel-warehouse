@@ -426,3 +426,28 @@ come: ingest-vendordrop and transform.
 **Step 6 verdict: GREEN** under the agreed definition. Every run authenticated on its new
 account and transform built every mart. The only error is the freshness check (#104), which is
 excluded. Steps 7 to 9 and the merges of #109, #110 and #96 are unblocked, pending Henry's go-ahead.
+
+## Step 7: credential rotation (2026-10-25)
+
+Henry approved each step. The method for each source:
+1. Generate the new credential at the vendor.
+2. Load it from Cloud Shell with `read -rs` or a pipe, so the value never appears on screen. Run a length check.
+3. Run that source's ingest by hand on the new credential. The pipelines always read `versions/latest` (`pipelines/lib/secret_store.py`).
+4. Revoke the old credential at the vendor.
+5. Disable the old Secret Manager versions. Disabled versions are kept, so this can be undone; nothing was destroyed.
+
+No values passed through this log, the chat or any job log.
+
+| Source | New version | Length check | Test run | Old credential | Secret Manager |
+|---|---|---|---|---|---|
+| Zoho CRM refresh token | `flywheel-zoho-refresh-token` v2 (16:54Z) | 70 = 70 | 40213930133 success, `done: 9 rows total`; after the revoke, 40214316043 success | revoked at Zoho, `{"status":"success"}` | v1 disabled |
+| Zoho Billing refresh token | `flywheel-zohobilling-refresh-token` v2 (16:58Z) | 70 = 70 | 40214263105 success, `done: 8417 rows total`; post-revoke re-run: PENDING | revoked at Zoho, `{"status":"success"}` | v1 disabled |
+| QBO client secret | `flywheel-qbo-client-secret` v3 (17:02Z) | 40 = 40 | 40214597248 ingest-qbo success (token refresh, all 10 entities queried, 0 new rows on a Sunday); 40214604338 ingest-qbo-reports success, `done: 14586 rows total` | rotated in the Intuit portal ("Rotate Secret") | v2 disabled (v1 was already disabled) |
+| D-Tools v2 sign-in | `flywheel-dtools-v2-refresh-token` v27 (17:14Z, written by the test run after Entra rotated the token) | n/a (device-code sign-in; nothing is shown) | 40215475299 success, `done: 28 rows total`; the five `/proposal 404, skipped` lines also appear in the 12:02Z nightly run, so they are not caused by the rotation | Henry changed his D-Tools password first, then signed in again (`Signed in as henry@getlivewire.com`) | v1 to v26 disabled |
+| D-Tools API key | `flywheel-dtools-api-key` v2 | 50 = 50 | 40213563543: PENDING | PENDING | PENDING |
+| D-Tools auth-basic | not rotated | | | D-Tools publishes one shared value for all tenants, so it cannot be rotated | |
+| Alarm.com password | not rotated | | | `flywheel-alarmdotcom-password` has 0 versions, so no credential exists | |
+
+Notes:
+- **QBO:** the refresh token was not re-authorized and Intuit's revoke endpoint was not called. An old QBO refresh token is useless without the client secret, and as far as we know Intuit's revoke disconnects the whole app from the company.
+- **D-Tools v2 runs as Henry's own D-Tools account.** Dave Kirn (D-Tools) provisioned v2 early access on henry@getlivewire.com only (email thread "D-Tools API v2 access", Sep 11 to 30). On Sep 30 he offered a service principal for unattended jobs, and nobody has followed up yet. Follow-up: ask for a read-only service principal, ideally with a federated credential that trusts this repo's GitHub OIDC, so there is no secret to rotate.
