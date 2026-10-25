@@ -2,17 +2,19 @@
 
 v1 (pipelines/dtools/ingest.py) lands opportunities, quotes and projects from
 list endpoints that return no cost field of any name, so kpi_project_margin
-has had quoted price and no cost. v2 exposes cost in three places, one landing
-table each:
+has had quoted price and no cost. v2 exposes cost, one landing table each:
 
-- v2_project_proposals: a project's proposal data. Its summary carries cost,
-  productCost, laborCost and margin; the labor summary splits labor cost by
-  labor type. One GET per project, only for projects modified since the last
-  run (v2_projects holds the list and the watermark).
+- v2_project_proposals: a project's proposal data, whose summary carries
+  cost, productCost, laborCost and margin (the labor summary splits labor
+  cost by labor type), landed with the project's proposal info, which
+  carries its quote number: the key Zoho CRM deals share (QB_Estimate_Num).
+  Two GETs per project, only for projects modified since the last run
+  (v2_projects holds the list and the watermark).
 - v2_purchase_orders: purchase order detail, whose products carry unitCost and
   the projectId they were bought for. One GET per changed purchase order.
-- v2_time_entries: every time entry, with totalCost and costPerHour. No id
-  and no modified date exist on these, so each run pulls them all.
+
+Time entries are not pulled: D-Tools records hours sold, and hours worked
+live in Zoho CRM (meetings on a deal).
 
 Auth is delegated Entra External ID: see lib/sources.py DTOOLS_V2 and
 pipelines/dtools/signin.py. Every shape here is from the published spec,
@@ -35,8 +37,7 @@ log = logging.getLogger("flywheel.ingest.dtools_v2")
 PROJECTS = "v2_projects"
 PROPOSALS = "v2_project_proposals"
 PURCHASE_ORDERS = "v2_purchase_orders"
-TIME_ENTRIES = "v2_time_entries"
-ENTITIES = [PROJECTS, PROPOSALS, PURCHASE_ORDERS, TIME_ENTRIES]
+ENTITIES = [PROJECTS, PROPOSALS, PURCHASE_ORDERS]
 
 REQUIRED_ENV = ("DTOOLS_V2_TENANT_ID", "DTOOLS_V2_CLIENT_ID", "DTOOLS_V2_SCOPE")
 BATCH_SIZE = 100
@@ -221,11 +222,15 @@ def run_projects(api, land, watermark, limit=0):
         for p in batch:
             data = fetch_detail(api, conf, p["id"])
             if data is not None:
-                # The proposal body has no project id or modified time of its
-                # own, so it lands wrapped with both, untouched inside.
+                # The proposal body has no project id, modified time or quote
+                # number of its own, so it lands wrapped with the first two
+                # and the proposal info that carries the third, each
+                # untouched inside. A missing info still lands the cost.
+                info = fetch_detail(api, {"detail_path": conf["info_path"]}, p["id"])
                 proposals.append({"project_id": p["id"],
                                   "project_modified_date": p.get("modifiedDate"),
-                                  "proposal": data})
+                                  "proposal": data,
+                                  "proposal_info": info})
         total += land(PROPOSALS, proposals, "project_id", "project_modified_date")
         # The list rows land LAST: their load is what advances the watermark.
         total += land(PROJECTS, batch, "id", "modifiedDate")
@@ -245,13 +250,6 @@ def run_purchase_orders(api, land, watermark, limit=0):
                    if d is not None]
         total += land(PURCHASE_ORDERS, details, "id", "modifiedDate")
     return total
-
-
-def run_time_entries(api, land, limit=0):
-    records = fetch_list(api, DTOOLS_V2["time_entries"], {}, limit)
-    # No id, no modified date: _source_id and _modified_at land NULL and
-    # staging reads the newest run whole.
-    return land(TIME_ENTRIES, records, None, None)
 
 
 def main():
@@ -276,7 +274,6 @@ def main():
 
     total = run_projects(api, land, watermark(PROJECTS), args.limit)
     total += run_purchase_orders(api, land, watermark(PURCHASE_ORDERS), args.limit)
-    total += run_time_entries(api, land, args.limit)
     log.info("done: %d rows total", total)
 
 

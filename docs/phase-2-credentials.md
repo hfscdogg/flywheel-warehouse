@@ -131,8 +131,8 @@ refresh token, writing back any replacement Entra hands it (as QBO does).
    (the commented block there lists them). The values in D-Tools' public
    docs are for their demo environment.
 2. Run `scripts/05-ingestion-infra.sh <slug>` again (idempotent). It creates
-   `flywheel-dtools-v2-refresh-token` and lets ingest-writer read it and add
-   versions to it.
+   `flywheel-dtools-v2-refresh-token` and lets `ingest-dtools` read it and
+   add versions to it.
 3. Sign in, on your own machine with gcloud signed in as a project owner:
    `python -m pipelines.dtools.signin --client <slug>`. Open the URL it
    prints, enter the code, and sign in as the **service user**, not your own
@@ -243,8 +243,8 @@ see it.
 
 > **Rotation is handled.** QBO invalidates and replaces refresh tokens over
 > time; the pipeline writes each new token back to Secret Manager
-> automatically (that's why `ingest-writer` holds `secretVersionAdder` on
-> that secret, and on the D-Tools v2 one, section 2a). Never paste the refresh token anywhere else — a stale
+> automatically (that's why `ingest-qbo` holds `secretVersionAdder` on
+> that secret, as `ingest-dtools` does on the D-Tools v2 one, section 2a). Never paste the refresh token anywhere else — a stale
 > copy stops working.
 
 ## 3b. Vendor report drop bucket (no credentials)
@@ -264,13 +264,18 @@ BigQuery, nothing else in the project. Full walkthrough:
 
 ## 4. GitHub repo variables (one-time, not sensitive)
 
-`05-ingestion-infra.sh` prints the exact commands; they identify which GCP
-identity the workflows federate into:
+`05-ingestion-infra.sh` prints the exact commands. They tell each workflow
+which GCP identity it federates into, one per job
+([trust.md](trust.md#pipeline-identities)):
 
 ```sh
 gh variable set WIF_PROVIDER --repo hfscdogg/flywheel-warehouse --body '<provider resource name>'
-gh variable set WIF_SERVICE_ACCOUNT --repo hfscdogg/flywheel-warehouse --body 'ingest-writer@livewire-dw.iam.gserviceaccount.com'
+gh variable set WIF_SA_INGEST_QBO --repo hfscdogg/flywheel-warehouse --body 'ingest-qbo@livewire-dw.iam.gserviceaccount.com'
+# ...one WIF_SA_INGEST_<SOURCE> per source, then WIF_SA_TRANSFORM and WIF_SA_PROBE
 ```
+
+A client set up before 2026-10-09 has a single `WIF_SERVICE_ACCOUNT`
+(`ingest-writer`) instead: see [runbook-identity-cutover.md](runbook-identity-cutover.md).
 
 `VENDOR_DROP_BUCKET` is optional — `ingest-vendordrop` defaults to
 `<project-id>-vendor-drops`, which is what `09-vendor-drop.sh` creates. Set it

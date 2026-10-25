@@ -22,7 +22,7 @@ load_client "$1"
 ACTION="${2:-create}"
 require_cmd gcloud gsutil
 
-BUCKET="${VENDOR_DROP_BUCKET:-${GCP_PROJECT_ID}-vendor-drops}"
+BUCKET="$(vendor_drop_bucket)"
 # Keep this list in step with pipelines/lib/tabular.FORMATS.
 DROP_PREFIXES="securitycentral/allaccounts securitycentral/customercount \
 securitycentral/recurring alarmdotcom/customerlist alarmdotcom/billing \
@@ -38,10 +38,22 @@ case "$ACTION" in
       run gsutil label ch -l "managed-by:$LABEL_MANAGED_BY" -l "env:$LABEL_ENV" "gs://$BUCKET"
     fi
 
-    info "$SA_INGEST_WRITER: read and archive uploads"
-    run gsutil iam ch \
-      "serviceAccount:$SA_INGEST_WRITER_EMAIL:roles/storage.objectAdmin" \
-      "gs://$BUCKET"
+    # The vendor ingest account reads uploads and moves them under
+    # processed/. It exists once raw_vendor is in DATASETS_RAW (02), which
+    # the template says to add only after the first roster load, so a bucket
+    # made before then gets its grant when this is re-run.
+    case " $INGEST_SOURCES " in
+      *" vendor "*)
+        info "$(ingest_sa_name vendor): read and archive uploads"
+        run gsutil iam ch \
+          "serviceAccount:$(ingest_sa_email vendor):roles/storage.objectAdmin" \
+          "gs://$BUCKET"
+        ;;
+      *)
+        warn "raw_vendor is not in DATASETS_RAW, so no account reads this bucket yet."
+        warn "Add it, run 02-service-accounts.sh, then re-run this script."
+        ;;
+    esac
 
     info "Folder placeholders (a bucket has no real folders; these make the"
     info "upload targets visible in the console)"

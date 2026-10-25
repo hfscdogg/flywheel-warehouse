@@ -37,6 +37,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 import goal_cards
+import readonly
 
 PROJECT = os.environ.get("GCP_PROJECT_ID") or None
 DATASET = os.environ.get("DATASET_MARTS", "marts")
@@ -77,21 +78,20 @@ def _json_safe(value):
     return str(value)  # DATE/TIMESTAMP/NUMERIC etc.
 
 
-def _clean_select(sql: str) -> str:
-    """Reject anything but a single SELECT/WITH statement.
+def _read_only(client: bigquery.Client, sql: str) -> str:
+    """Refuse anything but a single SELECT, as BigQuery classifies it.
 
-    IAM makes writes impossible for hermes-reader anyway; this just turns
-    the denial into a clear message instead of a BigQuery permission error.
+    IAM makes writes impossible for hermes-reader anyway; this turns the
+    denial into a clear message, and keeps the endpoint safe if it is ever
+    deployed as an account that can write. readonly.py says why it is a
+    dry run and not a regex.
     """
-    no_comments = re.sub(r"--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S)
-    stmt = no_comments.strip().rstrip(";").strip()
-    if not stmt:
-        raise ValueError("empty query")
-    if ";" in stmt:
-        raise ValueError("one statement per query")
-    if not re.match(r"(?is)^(select|with)\b", stmt):
-        raise ValueError("read-only endpoint: SELECT/WITH statements only")
-    return stmt
+    try:
+        return readonly.check(client, sql, bigquery.QueryJobConfig,
+                              default_dataset=f"{client.project}.{DATASET}",
+                              use_legacy_sql=False)
+    except readonly.NotReadOnly as e:
+        raise ValueError(str(e)) from None
 
 
 @mcp.tool()
@@ -167,7 +167,7 @@ def query(sql: str) -> dict:
     is customer-level rather than per project, a match that must be verified
     by a person) as part of the answer, not as an afterthought."""
     client = bq()
-    stmt = _clean_select(sql)
+    stmt = _read_only(client, sql)
     job = client.query(stmt, job_config=bigquery.QueryJobConfig(
         default_dataset=f"{client.project}.{DATASET}",
         maximum_bytes_billed=MAX_BYTES_BILLED,

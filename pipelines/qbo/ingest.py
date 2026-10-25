@@ -2,7 +2,7 @@
 
 Sharp edge this pipeline exists to handle: QBO ROTATES REFRESH TOKENS — a
 token refresh can return a new refresh token, and the old one dies. The new
-value is written straight back to Secret Manager (ingest-writer holds
+value is written straight back to Secret Manager (ingest-qbo holds
 secretVersionAdder on that one secret), so the pipeline stays stateless.
 """
 

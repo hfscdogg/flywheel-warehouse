@@ -10,7 +10,10 @@ ZOHO = {
     # fields param and honor If-Modified-Since for incremental pulls.
     "api_version": "v2",
     "default_accounts_host": "accounts.zoho.com",  # .eu/.in/... per data center
-    "modules": ["Leads", "Contacts", "Accounts", "Deals"],
+    # Events is the API name of the Meetings module. Technicians log the hours
+    # they work as meetings on a deal ("Duration (Man Hrs)"); Zoho CRM, not
+    # D-Tools, is where hours worked live.
+    "modules": ["Leads", "Contacts", "Accounts", "Deals", "Events"],
     "id_field": "id",
     "modified_field": "Modified_Time",
     "page_size": 200,
@@ -99,6 +102,10 @@ DTOOLS_V2 = {
     # observed. Staging models wait for that run's payloads (read by probe).
     "base_url_default": "https://api.d-tools.cloud/api/v2",
     "refresh_secret": "flywheel-dtools-v2-refresh-token",
+    # D-Tools (2026-09-30): pageSize tops out at 500; no rate limit on reads
+    # yet but one is coming, so stay under 4-5 concurrent requests and back
+    # off on 429. The ingest makes one request at a time, and web.session()
+    # retries 429 with backoff and honors Retry-After.
     "page_size": 100,
     # Changed-since lists whose rows need a per-id GET for the fields that
     # matter: a project's cost and margin sit on its proposal data, a purchase
@@ -109,16 +116,17 @@ DTOOLS_V2 = {
                  # IncludeSummary carries cost/margin; the labor summary
                  # splits labor cost by labor type.
                  "detail_params": {"IncludeSummary": "true",
-                                   "IncludeLaborSummary": "true"}},
+                                   "IncludeLaborSummary": "true"},
+                 # The proposal info is the only place a project's quote
+                 # number appears, and the quote number is the only key
+                 # D-Tools shares with Zoho CRM (a deal's QB_Estimate_Num).
+                 "info_path": "/projects/{id}/proposal"},
     "purchase_orders": {"list_path": "/purchase-orders",
                         "list_key": "purchaseOrders",
                         "total_key": "totalPurchaseOrders",
                         "detail_path": "/purchase-orders/{id}"},
-    # Time entries carry no id and no modified date, so they cannot be pulled
-    # incrementally or deduplicated by key: every run pulls them all and
-    # staging reads the newest run.
-    "time_entries": {"list_path": "/time-entries", "list_key": "timeEntries",
-                     "total_key": "totalTimeEntries"},
+    # No time entries: D-Tools records hours sold, not hours worked. Hours
+    # worked are Zoho CRM meetings (ZOHO["modules"], Events).
 }
 
 ALARMDOTCOM = {

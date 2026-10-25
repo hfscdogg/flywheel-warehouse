@@ -91,7 +91,7 @@ the whole status display.
 ./scripts/09-vendor-drop.sh livewire
 ```
 
-Creates the bucket, grants `ingest-writer` read/archive on it, and prints the
+Creates the bucket, grants `ingest-vendor` read/archive on it, and prints the
 console URL. Then set the repo variable so the workflow finds it:
 
 ```sh

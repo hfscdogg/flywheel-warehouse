@@ -15,7 +15,7 @@
 CREATE OR REPLACE TABLE marts.kpi_project_margin
 OPTIONS (description = """
 Margin scoreboard, one row per D-Tools project. Quoted price is per project, from D-Tools.
-THERE IS NO MARGIN IN THIS TABLE TODAY. quoted_cost is NULL on all 1,599 rows, and quoted_margin and quoted_margin_pct are NULL with it. The D-Tools endpoint this is built from returns no cost field of any name, so the column is empty at the source, not miscomputed. D-Tools does hold cost natively, on a different endpoint that is not ingested yet. Until that lands, this table answers what was QUOTED and what was INVOICED, and cannot answer what anything cost or earned — say so rather than reporting a margin of zero or nothing.
+THERE IS NO MARGIN IN THIS TABLE TODAY. quoted_cost is NULL on all 1,599 rows, and quoted_margin and quoted_margin_pct are NULL with it. The D-Tools endpoint this is built from returns no cost field of any name, so the column is empty at the source, not miscomputed. This table answers what was QUOTED and what was INVOICED. For cost and margin per project use kpi_project_job_costing, built on the D-Tools endpoint that carries cost; never report a margin of zero from this table.
 The QuickBooks figures (invoiced, collected, AR) are matched on customer NAME and are CUSTOMER-level: when customer_project_count > 1 the same dollars appear on every project for that customer, so summing them across projects double-counts.
 qbo_matched = FALSE means no QuickBooks customer matched by name and the QBO columns are NULL. Amounts USD.
 """)

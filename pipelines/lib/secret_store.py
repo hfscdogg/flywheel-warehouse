@@ -1,9 +1,10 @@
 """Secret Manager access (imports google-cloud-secret-manager).
 
 All source credentials live in the client's own project — GitHub holds no
-client secrets (docs/trust.md). ingest-writer has secretAccessor on the
-flywheel-* secrets, and secretVersionAdder on the two rotating refresh
-tokens only (QBO, D-Tools v2).
+client secrets (docs/trust.md). Each source's ingest account
+(ingest-<source>) has secretAccessor on that source's flywheel-* secrets
+only, and secretVersionAdder on its rotating refresh token, if it has one
+(QBO, D-Tools v2).
 """
 
 from google.cloud import secretmanager

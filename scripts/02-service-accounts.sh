@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# 02-service-accounts.sh <client-slug> — create/converge the two service
-# accounts: hermes-reader (agents) and ingest-writer (pipelines).
+# 02-service-accounts.sh <client-slug> — create/converge the service
+# accounts: hermes-reader (agents) and one per pipeline job — an ingest
+# account per source, transform-writer and warehouse-reader (probe). What each
+# may do is 03-iam.sh and 05-ingestion-infra.sh; lib/common.sh says why.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
@@ -34,5 +36,9 @@ create_sa() {
 
 info "Service accounts for '$CLIENT_SLUG' in $GCP_PROJECT_ID"
 create_sa "$SA_HERMES_READER" "$SA_HERMES_READER_EMAIL" "agent read-only, marts only"
-create_sa "$SA_INGEST_WRITER" "$SA_INGEST_WRITER_EMAIL" "ingestion writer"
+for src in $INGEST_SOURCES; do
+  create_sa "$(ingest_sa_name "$src")" "$(ingest_sa_email "$src")" "ingest raw_$src only"
+done
+create_sa "$SA_TRANSFORM" "$SA_TRANSFORM_EMAIL" "build staging and marts"
+create_sa "$SA_PROBE" "$SA_PROBE_EMAIL" "read-only probe"
 info "Service accounts done."

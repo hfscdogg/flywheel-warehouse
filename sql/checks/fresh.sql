@@ -44,6 +44,21 @@ WITH loaded AS (
          CAST(NULL AS STRING) AS raw_table
   FROM staging.stg_dtools__quotes
   UNION ALL
+  SELECT 'stg_dtools__v2_projects' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_dtools.v2_projects' AS raw_table
+  FROM staging.stg_dtools__v2_projects
+  UNION ALL
+  SELECT 'stg_dtools__v2_project_proposals' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_dtools.v2_project_proposals' AS raw_table
+  FROM staging.stg_dtools__v2_project_proposals
+  UNION ALL
+  SELECT 'stg_dtools__v2_po_lines' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_dtools.v2_purchase_orders' AS raw_table
+  FROM staging.stg_dtools__v2_po_lines
+  UNION ALL
   SELECT 'stg_qbo__accounts' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_qbo.account' AS raw_table
@@ -142,6 +157,11 @@ WITH loaded AS (
          'raw_zoho.contacts' AS raw_table
   FROM staging.stg_zoho__contacts
   UNION ALL
+  SELECT 'stg_zoho__meetings' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_zoho.events' AS raw_table
+  FROM staging.stg_zoho__meetings
+  UNION ALL
   SELECT 'stg_zoho__deals' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_zoho.deals' AS raw_table
@@ -181,9 +201,9 @@ WITH loaded AS (
   FROM staging.stg_vendor__securitycentral_status
 ),
 -- The run log (pipelines/lib/bq.py RUNS_TABLE): one row per entity per run,
--- empty pulls included. Read for the two INCREMENTAL API sources only,
--- QuickBooks and Zoho CRM, whose landing tables grow only when a record
--- changes. There MAX(loaded_at) says when something last changed, which for
+-- empty pulls included. Read for the INCREMENTAL API sources only,
+-- QuickBooks, Zoho CRM and D-Tools v2, whose landing tables grow only when a
+-- record changes. There MAX(loaded_at) says when something last changed, which for
 -- a quiet entity can be days while the ingest runs green every night:
 -- 2026-09-25, stg_qbo__purchase_orders "3 days old, ingest workflow has not
 -- run" the morning after ingest-qbo passed for the third night running. The
@@ -196,6 +216,12 @@ ran AS (
   UNION ALL
   SELECT CONCAT('raw_zoho.', entity) AS raw_table, MAX(ran_at) AS ran_at
   FROM raw_zoho._flywheel_runs
+  GROUP BY entity
+  UNION ALL
+  -- D-Tools v1 is a full pull, but shares the dataset and run log; only the
+  -- v2_ entities are joined on.
+  SELECT CONCAT('raw_dtools.', entity) AS raw_table, MAX(ran_at) AS ran_at
+  FROM raw_dtools._flywheel_runs
   GROUP BY entity
 ),
 -- Newest of the last load and the last run. GREATEST is NULL if either side

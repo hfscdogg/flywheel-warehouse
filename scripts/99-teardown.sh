@@ -8,9 +8,24 @@
 #                   keys, DISABLE the SA (reversible). Agents lose all access
 #                   in under a minute; data untouched. Undo: 03-iam.sh +
 #                   'gcloud iam service-accounts enable'.
-#   --all-iam       The above, plus the same for ingest-writer.
-#   --full          The above, plus DELETE every dataset and both SAs.
-#                   Irreversible. Requires typing the project ID.
+#   --all-iam       The above, plus the same for every pipeline identity
+#                   (ingest-<source>, transform-writer, warehouse-reader,
+#                   and the retired ingest-writer if it still exists).
+#   --full          The above, plus DELETE everything the setup scripts made:
+#                   every dataset, the vendor drop bucket, the agent endpoint
+#                   (Cloud Run service) and its token secret, every connector
+#                   secret, the workload identity pool with its providers
+#                   (and any stray provider that accepts this repository's
+#                   GitHub tokens; if the pool still holds a provider pinned
+#                   to another repository, only WIF_POOL/github goes), the
+#                   endpoint deployer's custom role, and every Flywheel
+#                   service account. Irreversible (a deleted pool, provider
+#                   or secret is recoverable for 30 days at most). Requires
+#                   typing the project ID.
+#
+# Left behind by --full, because Google made them rather than these scripts:
+# the APIs 05 and 07 enabled, and Cloud Run's own source-deploy bucket
+# (run-sources-<project>-<region>) and Artifact Registry repository.
 #
 # Idempotent: every removal checks for the binding first, because
 # 'remove-iam-policy-binding' exits 1 when the binding is already absent.
@@ -24,7 +39,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLUG="$1"
 shift
 load_client "$SLUG"
-require_cmd gcloud bq python3
+require_cmd gcloud gsutil bq python3
+
+# Optional per-client overrides, as in 07-hermes-endpoint.sh and
+# 10-endpoint-deployer.sh.
+RUN_REGION="${RUN_REGION:-us-east4}"
+HERMES_MCP_SERVICE="${HERMES_MCP_SERVICE:-hermes-mcp}"
+TOKEN_SECRET="${HERMES_TOKEN_SECRET:-hermes-endpoint-token}"
+SA_ENDPOINT_DEPLOYER="${SA_ENDPOINT_DEPLOYER:-endpoint-deployer}"
+SA_ENDPOINT_DEPLOYER_EMAIL="${SA_ENDPOINT_DEPLOYER}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+BUCKET_LISTER_ROLE="flywheelSourceBucketLister"
 
 MODE="--revoke-agent"
 ASSUME_YES=0
@@ -45,126 +69,112 @@ confirm() { # confirm <prompt> <required-reply>
   [ "$reply" = "$2" ] || die "confirmation did not match — aborting"
 }
 
-# --- binding-aware removal helpers (check first: re-runnable) ---------------
-
-remove_project_binding() { # <sa-email> <role>
-  local email="$1" role="$2"
-  if is_dry_run || gcloud projects get-iam-policy "$GCP_PROJECT_ID" \
-      --flatten='bindings[].members' \
-      --filter="bindings.role=$role AND bindings.members=serviceAccount:$email" \
-      --format='value(bindings.role)' 2>/dev/null | grep -q .; then
-    run gcloud projects remove-iam-policy-binding "$GCP_PROJECT_ID" \
-      --member="serviceAccount:$email" --role="$role" \
-      --condition=None --format=none --quiet
-  else
-    info "project binding $role for $email already absent"
-  fi
-}
-
-# revoke_dataset_role <sa-email> <role> <dataset>
-# Mirror of grant_dataset_role in 03-iam.sh: dataset-level revocation via
-# access entries ('bq remove-iam-policy-binding' on a dataset needs Google
-# allowlisting). Accepts both premium and legacy role names in the access
-# array (dataViewer→READER, dataEditor→WRITER). Re-runnable: absent entry
-# or absent dataset is a no-op.
-revoke_dataset_role() {
-  ds_email="$1"; ds_role="$2"; ds_name="$3"
-  if is_dry_run; then
-    log "[dry-run] bq update --source <access-={\"role\":\"$ds_role\",\"userByEmail\":\"$ds_email\"}> $GCP_PROJECT_ID:$ds_name"
-    return 0
-  fi
-  if ! probe $BQ show --format=none "$GCP_PROJECT_ID:$ds_name"; then
-    info "dataset $ds_name absent — nothing to revoke"
-    return 0
-  fi
-  ds_tmp="$(mktemp)"
-  $BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds_name" > "$ds_tmp"
-  if DS_EMAIL="$ds_email" DS_ROLE="$ds_role" python3 - "$ds_tmp" <<'PYEOF'
-import json, os, sys
-path = sys.argv[1]
-email, role = os.environ["DS_EMAIL"], os.environ["DS_ROLE"]
-LEGACY = {"roles/bigquery.dataViewer": "READER",
-          "roles/bigquery.dataEditor": "WRITER",
-          "roles/bigquery.dataOwner": "OWNER"}
-wanted = {role, LEGACY.get(role, role)}
-with open(path) as f:
-    ds = json.load(f)
-access = ds.get("access", [])
-kept = [e for e in access
-        if not (e.get("userByEmail") == email and e.get("role") in wanted)]
-if len(kept) == len(access):
-    sys.exit(3)  # already absent — converged
-with open(path, "w") as f:
-    json.dump({"access": kept}, f)
-sys.exit(0)
-PYEOF
-  then
-    run $BQ update --source "$ds_tmp" "$GCP_PROJECT_ID:$ds_name"
-    log "  revoked $ds_role from $ds_email on $ds_name"
-  else
-    rc=$?
-    if [ "$rc" -eq 3 ]; then
-      info "dataset grant $ds_role for $ds_email on $ds_name already absent"
-    else
-      rm -f "$ds_tmp"
-      die "failed to compute access entries for $GCP_PROJECT_ID:$ds_name"
-    fi
-  fi
-  rm -f "$ds_tmp"
-}
-
-delete_all_user_keys() { # <sa-email>
-  local email="$1" key
-  if is_dry_run; then
-    log "[dry-run] delete all user-managed keys on $email"
-    return 0
-  fi
-  for key in $(gcloud iam service-accounts keys list --iam-account "$email" \
-      --project "$GCP_PROJECT_ID" --managed-by=user \
-      --format='value(name.basename())' 2>/dev/null || true); do
-    run gcloud iam service-accounts keys delete "$key" \
-      --iam-account "$email" --project "$GCP_PROJECT_ID" --quiet
-  done
-}
-
-revoke_sa() { # <sa-email> <label>  — bindings assumed already removed
-  local email="$1" label="$2"
-  delete_all_user_keys "$email"
-  if is_dry_run || probe gcloud iam service-accounts describe "$email" --project "$GCP_PROJECT_ID"; then
-    run gcloud iam service-accounts disable "$email" --project "$GCP_PROJECT_ID" --quiet
-    info "$label disabled (reversible: gcloud iam service-accounts enable $email)"
-  fi
-}
+# Removal helpers (remove_project_binding, revoke_dataset_role, revoke_sa)
+# live in lib/common.sh, shared with 11-retire-ingest-writer.sh.
 
 # --- modes ------------------------------------------------------------------
 
 revoke_agent() {
   info "Revoking agent access for '$CLIENT_SLUG' ($SA_HERMES_READER_EMAIL)"
   remove_project_binding "$SA_HERMES_READER_EMAIL" roles/bigquery.jobUser
-  revoke_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$DATASET_MARTS"
+  # Every dataset, not only marts: under AGENT_SCOPE=wide the agent reads
+  # staging too, and a revoke that left that grant behind left the agent's
+  # widest view in place behind a disabled account.
+  for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+    revoke_dataset_role "$SA_HERMES_READER_EMAIL" roles/bigquery.dataViewer "$ds"
+  done
   revoke_sa "$SA_HERMES_READER_EMAIL" "hermes-reader"
   info "Agent access revoked. Re-grant: 03-iam.sh + 'gcloud iam service-accounts enable'."
 }
 
+# Every pipeline identity: one per ingest source, transform, probe, and the
+# retired single ingest-writer for a client that still has it. Their WIF
+# bindings are left in place: a disabled account mints no token anyway, and
+# re-enabling it (the documented undo) should not also need 05 re-run.
+pipeline_identities() {
+  local src
+  for src in $INGEST_SOURCES; do ingest_sa_email "$src"; printf '\n'; done
+  printf '%s\n%s\n%s\n' "$SA_TRANSFORM_EMAIL" "$SA_PROBE_EMAIL" "$SA_INGEST_WRITER_EMAIL"
+}
+
 revoke_writer() {
-  info "Revoking pipeline access ($SA_INGEST_WRITER_EMAIL)"
-  remove_project_binding "$SA_INGEST_WRITER_EMAIL" roles/bigquery.jobUser
-  for ds in $ALL_DATASETS; do
-    revoke_dataset_role "$SA_INGEST_WRITER_EMAIL" roles/bigquery.dataEditor "$ds"
+  local email
+  for email in $(pipeline_identities); do
+    info "Revoking pipeline access ($email)"
+    remove_project_binding "$email" roles/bigquery.jobUser
+    for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+      revoke_dataset_role "$email" roles/bigquery.dataEditor "$ds"
+      revoke_dataset_role "$email" roles/bigquery.dataViewer "$ds"
+    done
+    revoke_sa "$email" "$email"
   done
-  revoke_sa "$SA_INGEST_WRITER_EMAIL" "ingest-writer"
+}
+
+# Every secret the setup scripts made: each connector's (05), whether or not
+# this client ingests that source, and the endpoint token (07).
+flywheel_secrets() {
+  local src s
+  for src in zoho zohobilling dtools alarmdotcom qbo; do
+    for s in $(source_secrets "$src"); do printf '%s\n' "$s"; done
+  done
+  printf '%s\n' "$TOKEN_SECRET"
+}
+
+# Every account the setup scripts made, and the rehearsal one nobody should
+# have: hermes-reader, the pipeline identities, the endpoint deployer and
+# builder (10, lib/common.sh converge_endpoint_builder), wif-rehearsal.
+all_identities() {
+  printf '%s\n' "$SA_HERMES_READER_EMAIL"
+  pipeline_identities
+  printf '%s\n%s\n%s\n' "$SA_ENDPOINT_DEPLOYER_EMAIL" "$SA_ENDPOINT_BUILDER_EMAIL" "$SA_WIF_REHEARSAL_EMAIL"
 }
 
 full_teardown() {
-  info "FULL teardown: deleting all datasets and service accounts"
-  for ds in $ALL_DATASETS; do
-    run $BQ rm -r -f -d "$GCP_PROJECT_ID:$ds"
+  info "FULL teardown: the endpoint, secrets, federation, data and accounts"
+
+  # The endpoint first: it serves the agent until it is gone.
+  if is_dry_run || probe gcloud run services describe "$HERMES_MCP_SERVICE" \
+      --project "$GCP_PROJECT_ID" --region "$RUN_REGION"; then
+    run gcloud run services delete "$HERMES_MCP_SERVICE" \
+      --project "$GCP_PROJECT_ID" --region "$RUN_REGION" --quiet
+  else
+    info "Cloud Run service $HERMES_MCP_SERVICE already absent"
+  fi
+
+  for s in $(flywheel_secrets); do
+    if is_dry_run || probe gcloud secrets describe "$s" --project "$GCP_PROJECT_ID"; then
+      run gcloud secrets delete "$s" --project "$GCP_PROJECT_ID" --quiet
+    fi
   done
-  for email in "$SA_HERMES_READER_EMAIL" "$SA_INGEST_WRITER_EMAIL"; do
+
+  # GitHub's way in. Deleting the pool deletes its providers; a provider in
+  # another pool that accepts this repository's tokens goes too. The pool is
+  # shared: while it holds another repository's provider, only ours goes.
+  if [ -n "${WIF_POOL:-}" ]; then
+    delete_wif_federation
+  fi
+
+  for ds in $ALL_DATASETS; do
+    if is_dry_run || probe $BQ show --format=none "$GCP_PROJECT_ID:$ds"; then
+      run $BQ rm -r -f -d "$GCP_PROJECT_ID:$ds"
+    fi
+  done
+  BUCKET="$(vendor_drop_bucket)"
+  if is_dry_run || probe gsutil ls -b "gs://$BUCKET"; then
+    run gsutil -m rm -r "gs://$BUCKET"
+  fi
+
+  # Strip before deleting: a deleted account's grants stay in every policy as
+  # deleted:serviceAccount:<email>, and would sit there until someone looked.
+  for email in $(all_identities); do
+    strip_member_everywhere "$email"
     if is_dry_run || probe gcloud iam service-accounts describe "$email" --project "$GCP_PROJECT_ID"; then
       run gcloud iam service-accounts delete "$email" --project "$GCP_PROJECT_ID" --quiet
     fi
   done
+  if is_dry_run || probe gcloud iam roles describe "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID"; then
+    run gcloud iam roles delete "$BUCKET_LISTER_ROLE" --project "$GCP_PROJECT_ID" --quiet
+  fi
 }
 
 case "$MODE" in
@@ -178,7 +188,7 @@ case "$MODE" in
     revoke_writer
     ;;
   --full)
-    confirm "IRREVERSIBLE: this DELETES every dataset (all data!) and both service accounts in $GCP_PROJECT_ID." "$GCP_PROJECT_ID"
+    confirm "IRREVERSIBLE: this DELETES every dataset and the vendor drop bucket (all data!), the agent endpoint, every Flywheel secret, the GitHub federation and every Flywheel service account in $GCP_PROJECT_ID." "$GCP_PROJECT_ID"
     revoke_agent
     revoke_writer
     full_teardown

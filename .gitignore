@@ -11,3 +11,7 @@ ingest-writer.json
 .DS_Store
 __pycache__/
 *.pyc
+
+# IAM inventories (scripts/audit-*.sh) belong in ~/.flywheel/audit/, never
+# in the repo.
+audit-*.txt

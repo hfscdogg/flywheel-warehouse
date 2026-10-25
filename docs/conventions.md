@@ -8,11 +8,17 @@ Role-based short names — client identity is carried by the project, not the
 SA name:
 
 - `hermes-reader@<project>.iam.gserviceaccount.com` — agents; read `marts` only
-- `ingest-writer@<project>.iam.gserviceaccount.com` — pipelines; write raw,
-  build staging/marts
+- `ingest-<source>@…` — one per source system; reads that source's secrets,
+  writes `raw_<source>` only
+- `transform-writer@…` — builds staging/marts from raw; no secrets
+- `warehouse-reader@…` — the probe workflow; reads everything, writes nothing
+- `endpoint-deployer@…`, `endpoint-builder@…` — ship the agent endpoint
 
-Future SAs follow `<consumer>-<verb>` (e.g. `transformer-runner` if Phase 3
-splits transformation from ingestion).
+One account per job, each trusted from one workflow file on `main`
+(`scripts/lib/common.sh`, [trust.md](trust.md#pipeline-identities)). Until
+2026-10-09 one `ingest-writer` did every pipeline job;
+`scripts/11-retire-ingest-writer.sh` removes it from a client that still has
+it.
 
 ## Datasets
 
