@@ -441,10 +441,10 @@ No values passed through this log, the chat or any job log.
 | Source | New version | Length check | Test run | Old credential | Secret Manager |
 |---|---|---|---|---|---|
 | Zoho CRM refresh token | `flywheel-zoho-refresh-token` v2 (16:54Z) | 70 = 70 | 40213930133 success, `done: 9 rows total`; after the revoke, 40214316043 success | revoked at Zoho, `{"status":"success"}` | v1 disabled |
-| Zoho Billing refresh token | `flywheel-zohobilling-refresh-token` v2 (16:58Z) | 70 = 70 | 40214263105 success, `done: 8417 rows total`; post-revoke re-run: PENDING | revoked at Zoho, `{"status":"success"}` | v1 disabled |
+| Zoho Billing refresh token | `flywheel-zohobilling-refresh-token` v2 (16:58Z) | 70 = 70 | 40214263105 success, `done: 8417 rows total`; after the revoke, 40215785462 success, `done: 8417 rows total` | revoked at Zoho, `{"status":"success"}` | v1 disabled |
 | QBO client secret | `flywheel-qbo-client-secret` v3 (17:02Z) | 40 = 40 | 40214597248 ingest-qbo success (token refresh, all 10 entities queried, 0 new rows on a Sunday); 40214604338 ingest-qbo-reports success, `done: 14586 rows total` | rotated in the Intuit portal ("Rotate Secret") | v2 disabled (v1 was already disabled) |
 | D-Tools v2 sign-in | `flywheel-dtools-v2-refresh-token` v27 (17:14Z, written by the test run after Entra rotated the token) | n/a (device-code sign-in; nothing is shown) | 40215475299 success, `done: 28 rows total`; the five `/proposal 404, skipped` lines also appear in the 12:02Z nightly run, so they are not caused by the rotation | Henry changed his D-Tools password first, then signed in again (`Signed in as henry@getlivewire.com`) | v1 to v26 disabled |
-| D-Tools API key | `flywheel-dtools-api-key` v2 | 50 = 50 | 40213563543: PENDING | PENDING | PENDING |
+| D-Tools API key | `flywheel-dtools-api-key` v2 | 50 = 50 | 40213563543 success, `done: 7765 rows total` (2795 opportunities, 3311 quotes, 1659 projects) | PENDING: revoke in D-Tools Cloud | PENDING: disable v1 |
 | D-Tools auth-basic | not rotated | | | D-Tools publishes one shared value for all tenants, so it cannot be rotated | |
 | Alarm.com password | not rotated | | | `flywheel-alarmdotcom-password` has 0 versions, so no credential exists | |
 
