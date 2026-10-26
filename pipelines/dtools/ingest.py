@@ -11,10 +11,12 @@ DTOOLS were verified against the live API reference
   'projects') with page/pageSize pagination.
 - GetQuotes requires an opportunityId (400 without one, despite the spec
   marking it optional) and returns a bare array — so quotes are fetched per
-  opportunity id, after the opportunities pull.
+  opportunity id, last: after opportunities (for the ids) and projects (so a
+  slow quotes phase never costs the projects load).
 """
 
 import logging
+import time
 
 from ..lib import runner, util
 from ..lib.sources import DTOOLS
@@ -55,10 +57,16 @@ def fetch_entity(http, headers, entity, limit):
     return records
 
 
+# One progress line per this many GetQuotes calls, so a slow or stalled
+# quotes phase shows in the run log instead of going silent for hours.
+PROGRESS_EVERY = 250
+
+
 def fetch_quotes(http, headers, entity, opportunity_ids, limit):
     """One GetQuotes call per opportunity id; returns the combined list."""
     records = []
-    for oid in opportunity_ids:
+    started = time.monotonic()
+    for n, oid in enumerate(opportunity_ids, 1):
         resp = http.get(
             f"{DTOOLS['base_url']}{entity['path']}",
             headers=headers,
@@ -70,6 +78,11 @@ def fetch_quotes(http, headers, entity, opportunity_ids, limit):
         records.extend(body if isinstance(body, list) else body.get("items", []))
         if limit and len(records) >= limit:
             return records[:limit]
+        if n % PROGRESS_EVERY == 0:
+            log.info("quotes: %d/%d opportunities, %d quotes, %.0fs elapsed",
+                     n, len(opportunity_ids), len(records), time.monotonic() - started)
+    log.info("quotes: done, %d opportunities, %d quotes, %.0fs",
+             len(opportunity_ids), len(records), time.monotonic() - started)
     return records
 
 

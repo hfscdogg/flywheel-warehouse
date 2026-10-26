@@ -71,10 +71,12 @@ DTOOLS = {
     "entities": [
         {"name": "opportunities", "path": "/api/v1/Opportunities/GetOpportunities",
          "list_key": "opportunities"},
-        {"name": "quotes", "path": "/api/v1/Quotes/GetQuotes",
-         "per_opportunity": True},
+        # Projects before quotes: quotes are one call per opportunity, the
+        # long phase, and a stall there should not cost the projects load.
         {"name": "projects", "path": "/api/v1/Projects/GetProjects",
          "list_key": "projects"},
+        {"name": "quotes", "path": "/api/v1/Quotes/GetQuotes",
+         "per_opportunity": True},
     ],
     "id_field": "id",
     "modified_field": "modifiedDate",

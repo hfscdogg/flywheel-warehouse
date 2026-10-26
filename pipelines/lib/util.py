@@ -176,3 +176,26 @@ def raise_for_status(resp, context=""):
               f" [{context}]" if context else "", body)
     resp.raise_for_status()
     return resp
+
+
+# The longest Retry-After any source may ask us to wait before one retry.
+# urllib3's own ceiling is 21600 seconds, the runner's whole six hours: a
+# server that answers 429 with a long Retry-After gets a job that sleeps,
+# silently, until GitHub cancels it. Longer than this is a quota that will
+# not clear inside one run, and the job should say so and stop.
+RETRY_AFTER_CAP_SECONDS = 300
+
+
+class RetryAfterTooLong(RuntimeError):
+    """The server asked for a wait longer than RETRY_AFTER_CAP_SECONDS."""
+
+
+def check_retry_after(seconds, status, url):
+    """Return the Retry-After wait, or raise if it is over the cap."""
+    if seconds is not None and seconds > RETRY_AFTER_CAP_SECONDS:
+        raise RetryAfterTooLong(
+            f"HTTP {status} from {url or '?'} asked to retry after "
+            f"{seconds:.0f}s, over the {RETRY_AFTER_CAP_SECONDS}s cap; "
+            "failing now rather than sleeping (likely a rate-limit quota)"
+        )
+    return seconds
