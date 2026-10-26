@@ -113,11 +113,51 @@ sc_identity AS (
   FROM roster r
   FULL OUTER JOIN weekly w ON r.contract_no = w.contract_no
 ),
--- What Security Central charges for each account, from the monthly recurring
--- report — the only feed of theirs that carries a price at all. An account is
--- billed as several resource lines (monitoring, plus any scheduled tests), so
--- the account's cost is their sum. monthly_amount is already monthly on every
--- line including the quarterly and yearly ones; see the staging model.
+-- What Security Central charges for each account. Two feeds carry a price,
+-- the same per-resource rate each: the Customer System Recurring report,
+-- pulled from SCAN by hand and already monthly on every line, and the dealer
+-- statement, emailed on the 25th and made monthly in staging. An account is
+-- billed as several resource lines (monitoring, plus any scheduled tests),
+-- so the account's cost is their sum.
+--
+-- The statement only lists an account billed ahead in the month it is
+-- billed, so its lines are taken while covered_through reaches the month of
+-- the latest statement loaded, not merely while they sit on that statement.
+-- Lines are read from the latest statement that carries each one.
+sc_recurring_lines AS (
+  SELECT account_no, monthly_amount, loaded_at, subscriber_name, payment_method,
+         'recurring' AS price_source
+  FROM staging.stg_vendor__securitycentral_recurring
+  WHERE account_no IS NOT NULL AND account_no != ''
+),
+sc_statement_lines AS (
+  SELECT account_no, monthly_amount, loaded_at, subscriber_name,
+         CAST(NULL AS STRING) AS payment_method,
+         'statement' AS price_source
+  FROM staging.stg_vendor__securitycentral_statement
+  WHERE section = 'recurring'
+    AND account_no IS NOT NULL
+    AND covered_through >= DATE_TRUNC(
+          (SELECT MAX(statement_date) FROM staging.stg_vendor__securitycentral_statement),
+          MONTH)
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY account_no, resource_description ORDER BY statement_date DESC
+  ) = 1
+),
+-- Per account, the feed loaded more recently is the price. They never
+-- disagree on a rate, so this is about currency: once statements flow in,
+-- they price the dealer-billed accounts month by month, and the recurring
+-- report keeps pricing the direct-billed ones the statement never lists.
+sc_price_lines AS (
+  SELECT *
+  FROM (
+    SELECT * FROM sc_recurring_lines
+    UNION ALL
+    SELECT * FROM sc_statement_lines
+  )
+  QUALIFY MAX(loaded_at) OVER (PARTITION BY account_no, price_source)
+        = MAX(loaded_at) OVER (PARTITION BY account_no)
+),
 sc_billing AS (
   SELECT
     account_no,
@@ -146,8 +186,7 @@ sc_billing AS (
     -- payment method is the better marker of the two: it says how the customer
     -- pays rather than how much, and it cannot be confused with our cost.
     LOGICAL_OR(payment_method IS NOT NULL) AS direct_billed
-  FROM staging.stg_vendor__securitycentral_recurring
-  WHERE account_no IS NOT NULL AND account_no != ''
+  FROM sc_price_lines
   GROUP BY account_no
 ),
 -- FULL OUTER, like the join above and for the same reason: an account
@@ -1238,7 +1277,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_type
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_status
   SET OPTIONS (description = "The vendor's own status word. Only Active counts as active; Deactivated and Inactive do not.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_source
-  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), recurring (Security Central billing report, for an account that reaches neither of those but is still being invoiced), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
+  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), recurring (Security Central billing feed, the recurring report or the dealer statement, for an account that reaches neither of those but is still being invoiced), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_as_of
   SET OPTIONS (description = "When that status was loaded into the warehouse (UTC).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN in_roster
@@ -1246,7 +1285,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN in_roster
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN started_on
   SET OPTIONS (description = "Account start date per the vendor. NULL for Parasol, whose invoice does not carry one.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_monthly_cost
-  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD, from that vendor's own billing feed: Security Central's recurring report, Alarm.com's billing export, Parasol's invoice. Already summed over the several lines a vendor bills one account as. NULL means the cost is not known for that account — its vendor's billing feed has not been uploaded, or carries no row for it — and never that the account is free.");
+  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD, from that vendor's own billing feed: Security Central's recurring report or its monthly dealer statement (whichever was loaded more recently), Alarm.com's billing export, Parasol's invoice. Already summed over the several lines a vendor bills one account as. NULL means the cost is not known for that account — its vendor's billing feed has not been uploaded, or carries no row for it — and never that the account is free.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
   SET OPTIONS (description = "Zoho Billing customer matched to this account. NULL when no match was found.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name

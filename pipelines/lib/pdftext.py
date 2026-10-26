@@ -125,19 +125,20 @@ _PLACE = re.compile(
 _ROW_TOLERANCE = 3.0
 
 
-def rows(data, probe):
-    """Text runs grouped into visual rows, in reading order.
+def cells(data, probe):
+    """Every text run with where it was drawn: [(page, y, x, text)].
 
-    Returns a list of rows, each a list of the cell strings on that line from
-    left to right. Callers still match cells by content rather than by index:
-    a report that omits an empty cell shifts every position after it, and
-    positional parsing here has already cost this repo eight accounts once.
-    What coordinates buy is the row, not the column.
+    The raw material `rows()` is built from, exposed for a report whose
+    wrapped lines sit closer together than _ROW_TOLERANCE allows. Security
+    Central's dealer statement draws the tail of a wrapped name 2.7 units
+    from the next record's baseline, inside the tolerance that keeps an
+    ordinary row together, so that parser bands rows itself with a tighter
+    one. Page is the index of the content stream the run came from; y grows
+    up the page, so a larger y is higher.
     """
     shift = detect_shift(data, probe)
     out = []
     for page, stream in enumerate(content_streams(data)):
-        placed = []
         x = y = leading = 0.0
         for m in _PLACE.finditer(stream):
             if m.group("bt") is not None:
@@ -156,8 +157,25 @@ def rows(data, probe):
                                for lit in _LITERAL.finditer(m.group("show")))
                 text = text.strip()
                 if text:
-                    placed.append((y, x, text))
+                    out.append((page, y, x, text))
+    return out
 
+
+def rows(data, probe):
+    """Text runs grouped into visual rows, in reading order.
+
+    Returns a list of rows, each a list of the cell strings on that line from
+    left to right. Callers still match cells by content rather than by index:
+    a report that omits an empty cell shifts every position after it, and
+    positional parsing here has already cost this repo eight accounts once.
+    What coordinates buy is the row, not the column.
+    """
+    out = []
+    by_page = {}
+    for page, y, x, text in cells(data, probe):
+        by_page.setdefault(page, []).append((y, x, text))
+    for page in sorted(by_page):
+        placed = by_page[page]
         # Down the page to find the rows, then across each one. The two steps
         # cannot be collapsed into a single sort: cells on one printed line
         # differ slightly in baseline, so sorting by y before x orders a row
@@ -169,5 +187,5 @@ def rows(data, probe):
                 bands[-1][1].append((cell_x, text))
             else:
                 bands.append((cell_y, [(cell_x, text)]))
-        out.extend([text for _, text in sorted(cells)] for _, cells in bands)
+        out.extend([text for _, text in sorted(cells_)] for _, cells_ in bands)
     return out

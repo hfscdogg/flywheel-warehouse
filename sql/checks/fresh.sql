@@ -197,6 +197,9 @@ WITH loaded AS (
   SELECT 'stg_vendor__securitycentral_recurring', 45, 'securitycentral/recurring', MAX(loaded_at), NULL
   FROM staging.stg_vendor__securitycentral_recurring
   UNION ALL
+  SELECT 'stg_vendor__securitycentral_statement', 45, 'securitycentral/statement', MAX(loaded_at), NULL
+  FROM staging.stg_vendor__securitycentral_statement
+  UNION ALL
   SELECT 'stg_vendor__securitycentral_status', 14, 'securitycentral/customercount', MAX(loaded_at), NULL
   FROM staging.stg_vendor__securitycentral_status
 ),

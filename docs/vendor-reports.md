@@ -34,6 +34,23 @@ number (`CS Account Prefix` + `CS Account Number`, e.g. `A1651-1047`). That
 is an exact key between two vendors and is worth more than any address
 heuristic.
 
+**Security Central — the monthly dealer statement** (.pdf). The bill, emailed
+by Security Central Accounting on the 25th ("Statement EMail", attachment
+`000312-YYYYMMDD.pdf`). One line per billed account and service, with the
+street address, the Security Central account number, the period charged and
+the amount. It carries the same per-resource rate as the Customer System
+Recurring report, with one difference that matters: **it arrives by itself.**
+With `scripts/gmail-to-vendor-drop.gs` installed it reaches the bucket with
+nobody touching it, which makes it the feed that keeps Security Central's
+prices current and retires the monthly Customer System Recurring upload.
+
+Two things the statement is not. It is not already monthly: a quarterly
+account prints `15.00` against a three-month period, and staging divides it.
+And one statement is not the roster: an account billed ahead appears only on
+the statement that bills it, so it is missing from two statements out of
+three while still live. The audit reads coverage off the period end, not off
+presence on the latest statement.
+
 **Parasol — the monthly invoice** (.pdf). Parasol provides no roster, but
 every invoice line item *is* an account: name, address, service tier, and
 the rate for that specific property. It is the only vendor that tells us
@@ -76,6 +93,7 @@ gs://livewire-dw-vendor-drops/
   securitycentral/allaccounts/      ← the SCAN "All Accounts" export (.xlsx)
   securitycentral/customercount/    ← the weekly emailed report (.CSV)
   securitycentral/recurring/        ← "Customer System Recurring" (.pdf)
+  securitycentral/statement/        ← the monthly dealer statement (.pdf, arrives by itself)
   alarmdotcom/customerlist/         ← dealer-site "Custom List" export (.csv)
   alarmdotcom/billing/              ← dealer-site billing export (.csv)
   parasol/invoice/                  ← the monthly invoice (.pdf)
@@ -121,10 +139,11 @@ project. Revoke by removing those two bindings on the bucket.
 > **Monthly.** Parasol emails an invoice — drop the PDF into
 > `parasol/invoice/`. Same thing, different folder.
 >
-> **Monthly.** Two billing files, so the warehouse knows what each account
-> costs. Security Central's **Customer System Recurring** report goes in
-> `securitycentral/recurring/`, and the Alarm.com dealer-site billing export
-> goes in `alarmdotcom/billing/`.
+> **Monthly.** One billing file, so the warehouse knows what each Alarm.com
+> account costs: the dealer-site billing export goes in `alarmdotcom/billing/`.
+> Security Central's prices arrive on their own from the emailed statement;
+> the **Customer System Recurring** report is no longer needed monthly, but
+> `securitycentral/recurring/` still accepts one if it is ever pulled.
 >
 > That's the whole job. Each file disappears from its folder within a day
 > once the warehouse has read it.
@@ -145,6 +164,21 @@ when addresses go stale — quarterly is plenty, or whenever
 `kpi_subscription_audit` shows a run of `BILLED_NO_ROSTER` findings (accounts
 in the weekly feed that the roster has never seen). Drop it in
 `securitycentral/allaccounts/` the same way.
+
+### The statement that uploads itself
+
+`scripts/gmail-to-vendor-drop.gs` is an Apps Script that runs daily in the
+mailbox that receives the Security Central statement, finds any
+"Statement EMail" not yet labelled `warehouse/dropped`, copies its PDF into
+`securitycentral/statement/` and labels the thread. It runs as the user it
+is installed under, with their Gmail and bucket permissions — no key, nothing
+stored. Setup is three steps and lives at the top of the script. Today the
+email reaches `accounting@` through the AP ticket queue and is copied to
+`henry@`; install the script under whichever of those will keep receiving it.
+
+If a month's statement never lands, the freshness check turns
+`stg_vendor__securitycentral_statement` red after 45 days and names the
+folder to drop it in by hand.
 
 ## The command-line path (still supported)
 
@@ -183,7 +217,9 @@ Report formats are declared, not sniffed, in
 - `table` is the `raw_vendor` landing table, which is also what
   `sql/staging/stg_vendor__<table>.sql` reads.
 - `pdf_probe` marks a PDF format and names a string that must appear in the
-  extracted text; `pipelines/lib/pdftext.py` uses it to find the font's code
+  extracted text; its parser is then chosen by format key in `parse()`
+  (`parse_sc_recurring`, `parse_sc_statement`, else `parse_parasol_invoice`),
+  so a new PDF report means a parser function as well as a spec. `pipelines/lib/pdftext.py` uses it to find the font's code
   offset instead of hard-coding one, so a re-subsetted font self-corrects and
   a genuinely different document fails loudly.
 - `clean` unwraps a column an exporter dressed up for Excel (`="1047"`, a

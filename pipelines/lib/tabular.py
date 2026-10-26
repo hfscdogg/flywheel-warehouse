@@ -129,6 +129,31 @@ FORMATS = {
         "pdf_probe": "Security Central",
         "require": {"MONTHLY_AMOUNT": r"^\d+(\.\d+)?$"},
     },
+    # Security Central's monthly DEALER STATEMENT: the bill. It arrives by
+    # email on its own ("Statement EMail" from Security Central Accounting,
+    # the 25th of each month) where the Customer System Recurring report
+    # above has to be pulled from SCAN by hand, so this is the feed that
+    # keeps the price current without anyone doing anything.
+    #
+    # ONE ROW PER BILLED LINE: an account's Monitoring line plus any test
+    # lines, in three sections — prorated activations, prorated disconnect
+    # credits, and the recurring charges for the coming period.
+    #
+    # The amount is the amount billed FOR THE PERIOD PRINTED, not a monthly
+    # figure: a quarterly account prints 15.00 against a three-month period,
+    # and only in the month it is billed. Staging divides by the period's
+    # months and reads coverage off period_end, so a quarterly account stays
+    # priced in the two months it does not appear. It also means a single
+    # statement is not the roster: an account absent from one statement may
+    # simply be paid up.
+    "securitycentral/statement": {
+        "columns": None,
+        "id_column": "LINE_KEY",
+        "table": "securitycentral_statement",
+        "pdf_probe": "SECURITY CENTRAL",
+        "require": {"AMOUNT": r"^-?\d+(\.\d+)?$",
+                    "PERIOD_START": r"^\d\d/\d\d/\d\d$"},
+    },
     "parasol/invoice": {
         "columns": None,
         "id_column": "ACCOUNT",
@@ -324,6 +349,178 @@ def parse_sc_recurring(data, spec):
     return records
 
 
+# Statement layout. Columns sit at fixed x positions on every page; a run is
+# assigned to the column its left edge falls in. The account number and the
+# service type are drawn as ONE run ("A16511523 Monitoring") and split here.
+_ST_X_ADDRESS, _ST_X_ACCT, _ST_X_PERIOD, _ST_X_AMOUNT = 170, 300, 410, 500
+# Two runs are on one printed line within this. 1.0, not _ROW_TOLERANCE's
+# 3.0: the statement draws the tail of a wrapped name 2.7 units above the
+# next record, which 3.0 would fold into that record.
+_ST_LINE_TOLERANCE = 1.0
+_ST_ACCT = re.compile(r"^A(\d{4})(\d{4})$")
+_ST_PERIOD = re.compile(r"^(\d\d/\d\d/\d\d) - (\d\d/\d\d/\d\d)$")
+_ST_AMOUNT = re.compile(r"^-?[\d,]+\.\d\d$")
+_ST_FIELDS = ("SUBSCRIBER", "ADDRESS", "ACCOUNT", "DESCRIPTION")
+_ST_HEADER = ("SECURITY CENTRAL", "LIVEWIRE, LLC.", "4900 W CLAY", "RICHMOND, VA",
+              "P.O. BOX", "CHARLOTTE, NC", "(888)", "NOW AVAILABLE", "Terms",
+              "DUE UPON", "Account No", "Stmt Date", "PAGE:")
+
+
+def _st_columns(line):
+    """One printed line's runs -> the statement's columns, by x position."""
+    f = {"SUBSCRIBER": [], "ADDRESS": [], "ACCOUNT": [], "DESCRIPTION": [],
+         "PERIOD": [], "AMOUNT": []}
+    for x, text in sorted(line):
+        if x < _ST_X_ADDRESS:
+            f["SUBSCRIBER"].append(text)
+        elif x < _ST_X_ACCT:
+            f["ADDRESS"].append(text)
+        elif x < _ST_X_PERIOD:
+            # "A16511523 Monitoring", or "Open/Close Log" with no account, or
+            # "Cellular", the wrapped tail of "Smart Home with".
+            head, _, rest = text.partition(" ")
+            if _ST_ACCT.match(head):
+                f["ACCOUNT"].append(head)
+                if rest:
+                    f["DESCRIPTION"].append(rest)
+            else:
+                f["DESCRIPTION"].append(text)
+        elif x < _ST_X_AMOUNT:
+            f["PERIOD"].append(text)
+        else:
+            f["AMOUNT"].append(text)
+    return {k: " ".join(v).strip() for k, v in f.items()}
+
+
+def _st_merge(items):
+    """Attach wrapped fragments to their records.
+
+    A name, address or service type that does not fit its column continues on
+    a line of its own, drawn either just above the record's own line (the
+    first half of a wrapped name) or just below it (the second half, or
+    "Cellular"). For each field in the gap between records R1 and R2:
+      - R1's field empty -> the fragment completes R1 (wrapped above R1's line)
+      - else R2's field empty -> the LAST fragment completes R2
+      - else it continues R1 (wrapped below R1)
+    """
+    out, prev, i = [], None, 0
+    while i < len(items):
+        gap = []
+        while i < len(items) and items[i][0] == "frag":
+            gap.append(items[i][1])
+            i += 1
+        nxt = items[i][1] if i < len(items) else None
+        for f in _ST_FIELDS:
+            frags = [g[f] for g in gap if g[f]]
+            if not frags:
+                continue
+            if prev is not None and not prev[f]:
+                prev[f] = " ".join(frags)
+            elif nxt is not None and not nxt[f]:
+                if len(frags) > 1 and prev is not None:
+                    prev[f] = f"{prev[f]} {' '.join(frags[:-1])}".strip()
+                nxt[f] = frags[-1]
+            elif prev is not None:
+                prev[f] = f"{prev[f]} {' '.join(frags)}".strip()
+        if nxt is not None:
+            out.append(nxt)
+            prev = nxt
+            i += 1
+    return out
+
+
+def parse_sc_statement(data, spec):
+    """Billed lines from a Security Central monthly dealer statement.
+
+    Grain is one row per billed line: an account's Monitoring line plus any
+    test lines, across the statement's three sections (activation,
+    disconnect, recurring). AMOUNT is exactly as printed — the charge for the
+    PERIOD printed, which is one month for most accounts and three or six for
+    the ones billed ahead. Staging makes it monthly; this does not.
+
+    ACCOUNT is hyphenated (A1651-1523) to join the roster, the weekly feed and
+    the recurring report, which all key on that form; the statement prints it
+    solid. Disconnect lines and the odd add-on carry no account at all.
+
+    LINE_KEY is synthesised: the statement numbers nothing, and the same
+    account is billed for the same service every month, so the statement date
+    is part of the key — a month's bill is a fact of that month.
+    """
+    meta = {"STATEMENT_DATE": "", "DEALER_ACCOUNT": "", "TOTAL_DUE": ""}
+    section = invoice_no = None
+    records = []
+    by_page = {}
+    for page, y, x, text in pdftext.cells(data, spec["pdf_probe"]):
+        by_page.setdefault(page, []).append((y, x, text))
+    for page in sorted(by_page):
+        placed = sorted(by_page[page], key=lambda c: -c[0])
+        lines = []
+        for y, x, text in placed:
+            if lines and abs(y - lines[-1][0]) <= _ST_LINE_TOLERANCE:
+                lines[-1][1].append((x, text))
+            else:
+                lines.append((y, [(x, text)]))
+        items = []
+        for _, line in lines:
+            joined = " ".join(t for _, t in sorted(line))
+            m = re.search(r"Stmt Date:\s*(\d\d/\d\d/\d\d)", joined)
+            if m and not meta["STATEMENT_DATE"]:
+                meta["STATEMENT_DATE"] = m.group(1)
+            m = re.search(r"Account No\.:\s*(\d+)", joined)
+            if m and not meta["DEALER_ACCOUNT"]:
+                meta["DEALER_ACCOUNT"] = m.group(1)
+            m = re.search(r"Total Amount Due\s*=\s*([\d,]+\.\d\d)", joined)
+            if m:
+                meta["TOTAL_DUE"] = m.group(1).replace(",", "")
+            if re.search(r"Invoice Date:.*Customer Activations", joined):
+                section, invoice_no = "activation", _st_invoice_no(joined)
+                continue
+            if re.search(r"Invoice Date:.*Current Recurring Charges", joined):
+                section, invoice_no = "recurring", _st_invoice_no(joined)
+                continue
+            if joined.startswith("Total Activations"):
+                section = "disconnect"
+                continue
+            if joined.startswith("Total Disconnects"):
+                section = None
+                continue
+            if joined.startswith("Total Recurring Charges"):
+                section = "done"
+                continue
+            if section in (None, "done") or joined.startswith(_ST_HEADER):
+                continue
+            f = _st_columns(line)
+            pm = _ST_PERIOD.match(f["PERIOD"])
+            if pm and _ST_AMOUNT.match(f["AMOUNT"]):
+                items.append(("rec", {
+                    "SUBSCRIBER": f["SUBSCRIBER"], "ADDRESS": f["ADDRESS"],
+                    "ACCOUNT": f["ACCOUNT"], "DESCRIPTION": f["DESCRIPTION"],
+                    "SECTION": section, "INVOICE_NO": invoice_no or "",
+                    "PERIOD_START": pm.group(1), "PERIOD_END": pm.group(2),
+                    "AMOUNT": f["AMOUNT"].replace(",", ""),
+                    "PAGE": str(page + 1),
+                }))
+            elif any(f[k] for k in _ST_FIELDS):
+                items.append(("frag", {k: f[k] for k in _ST_FIELDS}))
+        records.extend(_st_merge(items))
+
+    for r in records:
+        r.update(meta)
+        m = _ST_ACCT.match(r["ACCOUNT"])
+        r["ACCOUNT"] = f"A{m.group(1)}-{m.group(2)}" if m else ""
+        r["ADDRESS"] = re.sub(r"\s*-$", "", r["ADDRESS"])  # wrap marker
+        r["LINE_KEY"] = "|".join([
+            r["STATEMENT_DATE"], r["SECTION"],
+            r["ACCOUNT"] or f"{r['SUBSCRIBER']}@{r['ADDRESS']}",
+            r["DESCRIPTION"]])
+    return records
+
+
+def _st_invoice_no(text):
+    m = re.search(r"Invoice No\.:\s*(\S+)", text)
+    return m.group(1) if m else ""
+
+
 _LEADING_NUMBER = re.compile(r"^\s*\d+\s")
 # Greedy prefix so this lands on the LAST house-number-shaped token:
 # "and 351 6802 Paragon Pl" must yield "6802 Paragon Pl", not "351 ...".
@@ -463,8 +660,9 @@ def parse(data, filename, fmt_key):
         # Two PDF reports with nothing in common but the file type: Parasol's
         # invoice is a list of line items read in draw order, Security
         # Central's is a table read from coordinates.
-        pdf_parser = (parse_sc_recurring if fmt_key == "securitycentral/recurring"
-                      else parse_parasol_invoice)
+        pdf_parser = {"securitycentral/recurring": parse_sc_recurring,
+                      "securitycentral/statement": parse_sc_statement,
+                      }.get(fmt_key, parse_parasol_invoice)
         records = pdf_parser(data, spec)
         return [r for r in records
                 if all(re.search(pat, r.get(col, ""))

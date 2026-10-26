@@ -8,6 +8,7 @@ caused trouble.
 """
 
 import io
+import re
 import unittest
 import zipfile
 
@@ -307,6 +308,132 @@ class SecurityCentralRecurring(unittest.TestCase):
         self.assertEqual(tabular.id_column("securitycentral/recurring"), "LINE_KEY")
         self.assertEqual(tabular.table_name("securitycentral/recurring"),
                          "securitycentral_recurring")
+
+
+# Security Central's monthly dealer statement, laid out as the real one is:
+# fixed columns (name at x=42, address 176, account+service as ONE run at
+# 304, period 417, amount 534), three sections with their total lines, and
+# the things that broke a first pass at reading it:
+#   * a name that wraps to a line of its own ABOVE the record's data line and
+#     a second tail BELOW it, 2.7 units from the next record's baseline — so
+#     close that pdftext.rows() folds it into that record;
+#   * a service type that wraps ("Smart Home with" / "Cellular"), its tail
+#     landing in the account column on the line below;
+#   * an add-on line with no account number at all;
+#   * a semi-annual line whose amount covers six months, not one.
+def _sc_statement_pdf():
+    runs = [
+        (250, 760, "SECURITY CENTRAL"),
+        (480, 750, "Stmt Date: 10/25/26"),
+        (480, 740, "Account No.: 000312"),
+        (420, 770, "Total Amount Due = 85.70"),
+        (42, 720, "Invoice Date: 10/25/26"), (250, 720, "Customer Activations"),
+        (480, 720, "Invoice No.: SI003578808"),
+        (42, 710, "MARILYN DUNCAN"), (176, 710, "6 WOLCOTT RD"),
+        (304, 710, "A16511918 Monitoring"), (417, 710, "09/22/26 - 10/31/26"),
+        (534, 710, "6.50"),
+        (400, 700, "Total Activations:"), (534, 700, "6.50"),
+        (42, 690, "JEFF HAMMER"), (176, 690, "3030 W LEIGH ST"),
+        (304, 690, "Monitoring"), (417, 690, "10/03/26 - 10/31/26"),
+        (534, 690, "-5.00"),
+        (400, 680, "Total Disconnects"), (534, 680, "-5.00"),
+        (42, 670, "Invoice Date: 10/25/26"), (250, 670, "Current Recurring Charges"),
+        (480, 670, "Invoice No.: SI003591443"),
+        # Wrapped name: first line above the data line, second line below,
+        # the second only 2.74 units above the next record.
+        (42, 660.0, "CHURCH HILL ANIMAL HOSPITAL -"),
+        (176, 659.0, "322 N 25TH ST"), (304, 659.0, "A16511586 Monitoring"),
+        (417, 659.0, "11/01/26 - 11/30/26"), (534, 659.0, "5.00"),
+        (42, 650.0, "CAROLYN CLAY"),
+        (42, 647.26, "DAN RADACK"), (176, 647.26, "1980 COVINGTON RD"),
+        (304, 647.26, "A16511568 Monitoring"), (417, 647.26, "11/01/26 - 11/30/26"),
+        (534, 647.26, "5.00"),
+        # Wrapped service type, and a six-month period.
+        (42, 635, "STEVE PIASCIK"), (176, 635, "3721 OLD GUN RD W"),
+        (304, 635, "A16379010 Smart Home with"), (417, 635, "11/01/26 - 04/30/27"),
+        (534, 635, "64.20"),
+        (304, 626, "Cellular"),
+        # No account number on the add-on line; the test line is free.
+        (42, 623, "SYSTEM 13"), (176, 623, "1648 STATE FARM BLVD"),
+        (304, 623, "Open/Close Log"), (417, 623, "11/01/26 - 11/30/26"),
+        (534, 623, "10.00"),
+        (42, 611, "SYSTEM 13"), (176, 611, "1648 STATE FARM BLVD"),
+        (304, 611, "A16511399 Weekly Test"), (417, 611, "11/01/26 - 11/30/26"),
+        (534, 611, "0.00"),
+        (400, 600, "Total Recurring Charges"), (534, 600, "84.20"),
+        # The summary table after the totals must not be read as lines.
+        (48, 580, "Monitoring"), (200, 580, "1.00"), (300, 580, "5.00"),
+    ]
+    return pdf(runs)
+
+
+class SecurityCentralStatement(unittest.TestCase):
+    def setUp(self):
+        self.records = tabular.parse(_sc_statement_pdf(), "000312-20261025.pdf",
+                                     "securitycentral/statement")
+        self.by_key = {r["LINE_KEY"]: r for r in self.records}
+
+    def test_every_billed_line_and_nothing_else(self):
+        # Three sections, seven lines; the totals and the summary table at
+        # the end are not lines.
+        self.assertEqual([r["SECTION"] for r in self.records],
+                         ["activation", "disconnect", "recurring", "recurring",
+                          "recurring", "recurring", "recurring"])
+        self.assertEqual(round(sum(float(r["AMOUNT"]) for r in self.records), 2),
+                         85.70)
+
+    def test_statement_date_and_invoice_on_every_line(self):
+        self.assertEqual({r["STATEMENT_DATE"] for r in self.records}, {"10/25/26"})
+        self.assertEqual(self.records[0]["INVOICE_NO"], "SI003578808")
+        self.assertEqual(self.records[2]["INVOICE_NO"], "SI003591443")
+
+    def test_name_wrapped_above_and_below_is_rejoined(self):
+        # Three pieces on three lines, the last of them closer to the next
+        # record than to its own. The audit matches on the whole name.
+        self.assertEqual(self.records[2]["SUBSCRIBER"],
+                         "CHURCH HILL ANIMAL HOSPITAL - CAROLYN CLAY")
+        self.assertEqual(self.records[2]["ACCOUNT"], "A1651-1586")
+        # ...and the next record did not absorb the tail.
+        self.assertEqual(self.records[3]["SUBSCRIBER"], "DAN RADACK")
+
+    def test_wrapped_service_type_is_rejoined(self):
+        self.assertEqual(self.records[4]["DESCRIPTION"], "Smart Home with Cellular")
+        self.assertEqual(self.records[4]["ACCOUNT"], "A1637-9010")
+
+    def test_account_number_is_hyphenated_to_join_the_roster(self):
+        # Printed solid (A16511586); the roster, the weekly feed and the
+        # recurring report all read A1651-1586.
+        self.assertTrue(all(r["ACCOUNT"] == "" or _HYPHENATED.match(r["ACCOUNT"])
+                            for r in self.records), [r["ACCOUNT"] for r in self.records])
+
+    def test_a_line_without_an_account_is_kept_not_shifted(self):
+        # The service type sits where the account number usually is. Read by
+        # position it would become the account; read by shape it is kept as
+        # the description, with no account.
+        addon = self.records[5]
+        self.assertEqual((addon["ACCOUNT"], addon["DESCRIPTION"], addon["AMOUNT"]),
+                         ("", "Open/Close Log", "10.00"))
+        self.assertEqual(self.records[1]["ACCOUNT"], "")  # disconnects print none
+
+    def test_amount_is_as_printed_not_monthly(self):
+        # 64.20 covers six months. Staging divides it; the parser must not.
+        self.assertEqual(self.records[4]["AMOUNT"], "64.20")
+        self.assertEqual((self.records[4]["PERIOD_START"], self.records[4]["PERIOD_END"]),
+                         ("11/01/26", "04/30/27"))
+
+    def test_line_keys_are_unique_and_dated(self):
+        keys = [r["LINE_KEY"] for r in self.records]
+        self.assertEqual(len(set(keys)), len(keys))
+        self.assertEqual(self.records[2]["LINE_KEY"],
+                         "10/25/26|recurring|A1651-1586|Monitoring")
+
+    def test_id_and_table(self):
+        self.assertEqual(tabular.id_column("securitycentral/statement"), "LINE_KEY")
+        self.assertEqual(tabular.table_name("securitycentral/statement"),
+                         "securitycentral_statement")
+
+
+_HYPHENATED = re.compile(r"^A\d{4}-\d{4}$")
 
 
 # Alarm.com's billing export: UTF-16, tab-separated, one row per charge. The

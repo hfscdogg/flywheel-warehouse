@@ -25,8 +25,8 @@ require_cmd gcloud gsutil
 BUCKET="$(vendor_drop_bucket)"
 # Keep this list in step with pipelines/lib/tabular.FORMATS.
 DROP_PREFIXES="securitycentral/allaccounts securitycentral/customercount \
-securitycentral/recurring alarmdotcom/customerlist alarmdotcom/billing \
-parasol/invoice"
+securitycentral/recurring securitycentral/statement alarmdotcom/customerlist \
+alarmdotcom/billing parasol/invoice"
 
 case "$ACTION" in
   create)
