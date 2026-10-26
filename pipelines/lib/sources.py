@@ -13,7 +13,7 @@ ZOHO = {
     # Events is the API name of the Meetings module. Technicians log the hours
     # they work as meetings on a deal ("Duration (Man Hrs)"); Zoho CRM, not
     # D-Tools, is where hours worked live.
-    "modules": ["Leads", "Contacts", "Accounts", "Deals", "Events"],
+    "modules": ["Leads", "Contacts", "Accounts", "Deals", "Events", "Cases"],
     "id_field": "id",
     "modified_field": "Modified_Time",
     "page_size": 200,
