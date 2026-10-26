@@ -1,0 +1,73 @@
+name: audit
+
+# Read-only checks of the client's project, runnable from GitHub instead of a
+# human pasting commands into Cloud Shell. A FIXED set: the `check` input is a
+# choice, and each choice runs one script from this repository. Nothing here
+# runs a command or a query handed in at dispatch time.
+#
+#   pipelines     scripts/91-verify-pipelines.sh: datasets, pipeline accounts,
+#                 no ingest account on staging or marts, ingest-writer retired
+#   iam-snapshot  scripts/92-iam-snapshot.sh: every grant and trust setting,
+#                 sorted, so two runs can be diffed
+#
+# It runs as `auditor` (scripts/12-auditor.sh): it reads policies, dataset
+# access lists and secret metadata, and cannot read a table row, a secret's
+# value or an object, run a query, or change anything.
+#
+# THE OUTPUT GOES TO THIS JOB'S LOG, readable by anyone who can read the
+# repository, and it outlives the run. It names accounts, users and groups
+# and the project's trust settings; it never contains customer data or a
+# secret value.
+
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      check:
+        description: Which read-only check to run
+        type: choice
+        options:
+          - pipelines
+          - iam-snapshot
+        default: pipelines
+
+concurrency:
+  group: audit-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1 — provides bq
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          # This job's own account (scripts/12-auditor.sh). No fallback: an
+          # unset variable should fail here rather than borrow another account.
+          service_account: ${{ vars.WIF_SA_AUDIT }}
+
+      # Inputs reach the script through env only, never interpolated into the
+      # shell line (pipelines/tests/test_workflow_inputs.py). An unknown check
+      # name cannot reach a script: the case below has no fallthrough.
+      - name: Run the check
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+          CHECK: ${{ inputs.check || 'pipelines' }}
+        run: |
+          case "$CHECK" in
+            pipelines)
+              ./scripts/91-verify-pipelines.sh "$CLIENT" ;;
+            iam-snapshot)
+              ./scripts/92-iam-snapshot.sh "$CLIENT" "$RUNNER_TEMP/iam"
+              cat "$RUNNER_TEMP/iam/grants.txt" ;;
+            *)
+              echo "unknown check: $CHECK" >&2; exit 2 ;;
+          esac

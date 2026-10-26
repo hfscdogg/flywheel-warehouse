@@ -98,6 +98,7 @@ data and credentials, and nothing else.
 | `ingest-<source>` (one per source system) | — | its own `raw_<source>` only | its own source's credentials only |
 | `transform-writer` | every `raw_*` | `staging`, `marts` | none |
 | `warehouse-reader` (the probe workflow) | every dataset | nothing | none |
+| `auditor` (the audit workflow, optional) | IAM policies, dataset access lists, secret metadata; no table rows, no secret values | nothing | none |
 | `hermes-reader` (agents) | `marts` (and `staging` if wide) | nothing | none |
 
 Only one workflow file can borrow each account, and only from the `main`
