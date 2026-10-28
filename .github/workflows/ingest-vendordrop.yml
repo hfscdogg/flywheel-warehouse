@@ -40,6 +40,7 @@ jobs:
       - name: Ingest vendor report drops → raw_vendor
         env:
           VENDOR_DROP_BUCKET: ${{ vars.VENDOR_DROP_BUCKET }}
+          VENDOR_DROP_MAX_MB: ${{ vars.VENDOR_DROP_MAX_MB }}
           CLIENT: ${{ inputs.client || 'livewire' }}
         # A no-op on days nobody uploaded anything.
         run: >

@@ -7,6 +7,7 @@ them, and getting that wrong is not a quiet failure — a placeholder that
 reaches the PDF extractor raises, and the invoice behind it never loads.
 """
 
+import os
 import sys
 import types
 import unittest
@@ -86,10 +87,13 @@ class TestPendingBlobs(unittest.TestCase):
 
 
 class UploadBlob:
-    def __init__(self, name, data):
+    def __init__(self, name, data, size=None):
         self.name, self.data, self.deleted = name, data, False
+        self.size = len(data) if size is None else size
+        self.downloaded = False
 
     def download_as_bytes(self):
+        self.downloaded = True
         return self.data
 
     def delete(self):
@@ -154,6 +158,46 @@ class TestHandleUpload(unittest.TestCase):
         (_, _, error), *_ = self.run_one(f"{self.KEY}/notes.csv", b"a,b\r\nc,d\r\n")
         self.assertIn(self.KEY, error)
         self.assertNotIn("rich-text", error)
+
+
+class TestUploadSizeCap(unittest.TestCase):
+    KEY = "securitycentral/customercount"
+
+    def run_sized(self, size, max_bytes):
+        bucket = ArchiveBucket()
+        blob = UploadBlob(f"{self.KEY}/45779342.CSV", CUSTOMERCOUNT, size=size)
+        landed = []
+        result = ingest.handle_upload(
+            bucket, blob, self.KEY, lambda recs: landed.append(recs) or len(recs),
+            max_bytes=max_bytes)
+        return result, blob, landed
+
+    def test_an_upload_over_the_cap_is_rejected_unread(self):
+        (rows, dest, error), blob, landed = self.run_sized(30 * 1024 * 1024, 25 * 1024 * 1024)
+        self.assertEqual(rows, 0)
+        self.assertEqual(landed, [])
+        self.assertFalse(blob.downloaded, "an oversized upload must never be read into memory")
+        self.assertTrue(dest.startswith(f"rejected/{self.KEY}/"), dest)
+        self.assertTrue(blob.deleted)
+        self.assertIn("30.0 MB", error)
+        self.assertIn("limit is 25 MB", error)
+
+    def test_an_upload_at_the_cap_is_processed(self):
+        (rows, dest, error), blob, _ = self.run_sized(1024, 1024)
+        self.assertIsNone(error)
+        self.assertEqual(rows, 1)
+        self.assertTrue(dest.startswith(f"processed/{self.KEY}/"))
+
+    def test_the_default_cap_is_25_mb_and_configurable(self):
+        old = os.environ.pop("VENDOR_DROP_MAX_MB", None)
+        try:
+            self.assertEqual(ingest.max_upload_bytes(), 25 * 1024 * 1024)
+            os.environ["VENDOR_DROP_MAX_MB"] = "5"
+            self.assertEqual(ingest.max_upload_bytes(), 5 * 1024 * 1024)
+        finally:
+            os.environ.pop("VENDOR_DROP_MAX_MB", None)
+            if old is not None:
+                os.environ["VENDOR_DROP_MAX_MB"] = old
 
 
 class TestRunFails(unittest.TestCase):
