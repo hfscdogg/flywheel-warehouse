@@ -132,7 +132,8 @@ project. Revoke by removing those two bindings on the bucket.
 > Upload the attachment exactly as the vendor sent it; don't open and re-save
 > it first. A file the warehouse can't read a single record from (a report
 > re-saved as .rtf, say) moves to `rejected/` instead of `processed/`, and the
-> run fails and opens an issue saying why.
+> run fails and opens an issue saying why. So does a file over 25 MB, unread;
+> set the `VENDOR_DROP_MAX_MB` repository variable if a real export needs more.
 
 The file name doesn't matter; the folder does. Re-uploading the same file is
 harmless (landing tables are append-only and staging keeps the latest row per

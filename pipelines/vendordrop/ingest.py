@@ -21,7 +21,9 @@ see handle_upload. Landing tables are append-only; staging
 keeps the latest row per record, so re-uploading the same export is harmless.
 
 Env:
-  VENDOR_DROP_BUCKET  optional; defaults to <project-id>-vendor-drops
+  VENDOR_DROP_BUCKET   optional; defaults to <project-id>-vendor-drops
+  VENDOR_DROP_MAX_MB   optional; uploads larger than this are rejected
+                       unread. Defaults to 25.
 """
 
 import logging
@@ -30,6 +32,16 @@ import os
 from ..lib import runner, tabular, util
 
 log = logging.getLogger("flywheel.ingest.vendordrop")
+
+# Anyone the dealer grants can upload, and handle_upload reads a whole file
+# into memory to parse it. The vendor exports this exists for are rosters and
+# invoices of a few megabytes; 25 MB is ample headroom for them and small
+# enough that one wrong or hostile upload cannot exhaust the runner.
+DEFAULT_MAX_MB = 25
+
+
+def max_upload_bytes():
+    return int(util.env_or("VENDOR_DROP_MAX_MB", str(DEFAULT_MAX_MB))) * 1024 * 1024
 
 
 def pending_blobs(bucket, fmt_key, slug):
@@ -89,7 +101,15 @@ def why_empty(data, name, fmt_key):
             "right report for this folder, exported in the vendor's own format.")
 
 
-def handle_upload(bucket, blob, fmt_key, land, limit=None):
+def too_large(name, size, max_bytes):
+    """A sentence for the person who uploaded a file over the size cap."""
+    mb = 1024 * 1024
+    return (f"{name} is {size / mb:.1f} MB; the limit is {max_bytes // mb} MB. "
+            "A vendor report is far smaller, so this is probably the wrong "
+            "file. Upload the export exactly as the vendor sent it.")
+
+
+def handle_upload(bucket, blob, fmt_key, land, limit=None, max_bytes=None):
     """Parse one upload, land it, and archive it. Returns (rows, archived_to, error).
 
     A file that parses to NO records is rejected, not processed. On
@@ -100,7 +120,13 @@ def handle_upload(bucket, blob, fmt_key, land, limit=None):
     means the wrong file. It moves to rejected/ rather than staying put, so
     the folder is clear for the corrected upload and the next scheduled run
     does not fail on the same file again.
+
+    A file over max_bytes is rejected the same way, before it is downloaded,
+    so its size is never held in memory.
     """
+    max_bytes = max_upload_bytes() if max_bytes is None else max_bytes
+    if blob.size and blob.size > max_bytes:
+        return 0, archive(bucket, blob, "rejected"), too_large(blob.name, blob.size, max_bytes)
     data = blob.download_as_bytes()
     records = tabular.parse(data, blob.name, fmt_key)
     if not records:
@@ -166,8 +192,8 @@ def main():
     if rejected:
         # After every other file has loaded, so one bad upload never holds
         # back the rest; failing turns the run red and the alert opens an issue.
-        raise SystemExit(f"{len(rejected)} upload(s) held no records and were "
-                         f"rejected: {', '.join(rejected)}")
+        raise SystemExit(f"{len(rejected)} upload(s) were empty or too large and "
+                         f"were rejected: {', '.join(rejected)}")
 
 
 if __name__ == "__main__":
