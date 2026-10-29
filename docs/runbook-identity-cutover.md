@@ -100,7 +100,7 @@ write, so this changes the error message an agent sees, not what it can do.
 
 ## 6. Let one nightly cycle pass
 
-Wait for the 06:00 to 07:00 UTC run of every workflow to come back green on
+Wait for the 06:00 to 09:15 UTC run of every workflow to come back green on
 the new accounts.
 
 ## 7. Rotate the connector credentials

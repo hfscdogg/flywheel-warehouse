@@ -2,7 +2,7 @@ name: ingest-vendordrop
 
 on:
   schedule:
-    - cron: "50 6 * * *" # after the API ingests, before the 07:00 transform
+    - cron: "50 6 * * *" # after the API ingests, before the 09:15 transform
   workflow_dispatch:
     inputs:
       client:

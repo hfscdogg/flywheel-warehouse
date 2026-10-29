@@ -22,7 +22,7 @@
 -- vendordrop ingest creates a landing table per known report on every run
 -- whether or not anyone uploaded anything, so running it once ahead of the
 -- transform is enough — which is the order the scheduled workflows already
--- run in (06:50, then 07:00). Run the transform first on a fresh clone and
+-- run in (06:50, then 09:15). Run the transform first on a fresh clone and
 -- the audit is skipped with a message naming the missing table, not built
 -- wrong.
 --

@@ -4,7 +4,7 @@ Scheduled pulls from Zoho CRM, Zoho Billing, D-Tools Cloud, Alarm.com, and
 QuickBooks Online into the `raw_*` datasets, plus one file-based source
 (`vendordrop`). One GitHub Actions workflow per source
 (`.github/workflows/ingest-*.yml`): cron-scheduled (06:00–06:50 UTC, before
-the 07:00 transform), manually triggerable via `workflow_dispatch`, one
+the 09:15 transform), manually triggerable via `workflow_dispatch`, one
 `concurrency` group per source+client so runs never overlap.
 
 ## How a run works
