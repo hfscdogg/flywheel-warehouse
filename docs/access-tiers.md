@@ -1,14 +1,15 @@
 # Access tiers — who can see what in a client's warehouse
 
 Every Flywheel client owns their GCP project outright. Within it, access is
-organized as three tiers, from widest to narrowest. Only Tier 1 and the
-narrow form of Tier 2 exist today; the rest are recorded here as design
+organized as three tiers, from widest to narrowest. Tiers 1, 1r and 2
+exist today; the rest are recorded here as design
 commitments so the answer to "what exactly can Flywheel see?" is written
 down before anyone has to ask.
 
 | Tier | Who | Scope | Credential | Status |
 |------|-----|-------|-----------|--------|
 | 1 | The client's humans | Everything — raw, staging, marts, IAM, billing | `ADMIN_USER` as project owner (console / gcloud) | ✅ live |
+| 1r | The client's people who ask questions | **Read** every dataset — raw, staging, marts, the GA4 export; write nothing, no IAM, no billing | Their own Google account, listed in `READER_USERS` | ✅ live for Livewire (Stacy Hicks, 2026-10-29) |
 | 2a | The client's own agents (narrow) | **`marts` only**, read-only | `hermes-reader` via the hermes-mcp endpoint + bearer token; `AGENT_SCOPE="narrow"` (the default) | ✅ built; Livewire ran this 2026-08-25 → 2026-09-04 |
 | 2b | The client's own agents (wide) | **`marts` + `staging`**, read-only; `raw_*` stays locked | Same SA and endpoint, `AGENT_SCOPE="wide"` in `client.env` — the scope-flag form | ✅ live for Livewire (Hermes Agent, 2026-09-04) |
 | 3 | Flywheel mothership | A dedicated aggregates dataset only — no row-level data, no PII | A separate per-client SA + token **held by Flywheel**, opt-in | 📐 design only — does not exist |
@@ -18,6 +19,48 @@ down before anyone has to ask.
 The project owner (`ADMIN_USER` in `clients/<slug>/client.env`) has
 unrestricted access through the GCP console and gcloud. This is the only
 unfettered access in the system, and it never belongs to an agent.
+
+## Tier 1r — the client's people, read-only
+
+Someone on the client's team who needs to ask the warehouse anything, about
+the business or its customers, without being able to change it. Each is a
+Google account in `READER_USERS` in `client.env`, with a date and a reason
+beside it. `03-iam.sh` gives each one `roles/bigquery.jobUser` on the
+project (run queries) and `roles/bigquery.dataViewer` on every dataset, the
+same view `warehouse-reader` has. Nothing grants them write: a query that
+tries to change a table is refused by BigQuery, and they hold no IAM,
+secret or billing roles. `90-verify.sh` fails if one of them holds anything
+but read on a dataset.
+
+This is a person, not an agent, so it is not bound by the agent tiers'
+"raw stays locked". Raw and staging carry customer names, emails and phone
+numbers; list someone knowingly.
+
+Why their own account and not the agent endpoint's bearer token: the token
+is shared, so their queries would be indistinguishable from the agent's in
+the logs, and taking it back would mean rotating it, which cuts off every
+agent too. Their own account shows up under their name in BigQuery's query
+history, and is removed alone:
+
+```sh
+./scripts/99-teardown.sh <client> --revoke-reader=<email>   # then delete them from READER_USERS
+```
+
+**Asking questions in Claude.** The person adds Claude's Google Cloud
+BigQuery connector from its connector settings and signs in with the Google
+account in `READER_USERS`. Claude then queries as them, with exactly the
+access above. Worth one standing instruction in their Claude project or
+preferences, the same one Hermes has:
+
+> For any question about the business's numbers, use the BigQuery tools on
+> project `<project-id>`. Start with the `marts` dataset, then `staging`;
+> read a table's description and column descriptions before querying it,
+> and follow them — they say what each column means and what not to do.
+> Say the caveats they name as part of the answer. Use `raw_*` only when
+> nothing in staging has what the question needs.
+
+The same account also opens the BigQuery console, Connected Sheets and
+Looker Studio, if they would rather have a spreadsheet or a dashboard.
 
 ## Tier 2 — the client's own agents
 

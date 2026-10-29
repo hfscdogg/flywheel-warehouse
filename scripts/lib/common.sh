@@ -169,6 +169,19 @@ load_client() {
     *) die "client.env for '$slug': AGENT_SCOPE must be narrow or wide (got '$AGENT_SCOPE')" ;;
   esac
 
+  # The client's people who may read every dataset and write none
+  # (docs/access-tiers.md, Tier 1r). Optional; Google accounts only. A
+  # service account here would be an agent with a view no agent is allowed.
+  READER_USERS="${READER_USERS:-}"
+  local reader
+  for reader in $READER_USERS; do
+    case "$reader" in
+      *.gserviceaccount.com) die "client.env for '$slug': READER_USERS is for people; '$reader' is a service account" ;;
+      ?*@?*.?*) : ;;
+      *) die "client.env for '$slug': READER_USERS entry '$reader' is not an email address" ;;
+    esac
+  done
+
   # Google Analytics 4 is not ingested: Google writes the property's export
   # into this project, and raw_ga4.events is a view over it. The two
   # settings only make sense together, so a half-configured client stops

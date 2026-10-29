@@ -49,6 +49,9 @@ if is_dry_run; then
   log "  - no ingest account is bound on $DATASET_STAGING or $DATASET_MARTS"
   log "  - $SA_HERMES_READER has dataViewer on $DATASETS_AGENT and nothing else (AGENT_SCOPE=$AGENT_SCOPE)"
   log "  - $SA_HERMES_READER has no grant on any project dataset outside $DATASETS_AGENT"
+  for reader in $READER_USERS; do
+    log "  - $reader has jobUser and only READER on every dataset"
+  done
   log "  - $SA_INGEST_WRITER_EMAIL is named in no policy in $GCP_PROJECT_ID"
   log "  - $SA_WIF_REHEARSAL_EMAIL does not exist and is named in no policy"
   log "  - the only WIF provider accepting GitHub tokens is ${WIF_POOL:-<WIF_POOL>}/github, pinned to $WIF_ALLOWED_REF"
@@ -156,6 +159,25 @@ for email in $(pipeline_and_agent_sas); do
   else
     record FAIL "policy: $email missing project-level jobUser"
   fi
+done
+
+# The client's readers (READER_USERS): read on every dataset, and nothing
+# more anywhere — a WRITER or OWNER entry is a write path nobody chose.
+for reader in $READER_USERS; do
+  if printf '%s\n' "$PROJECT_JOBUSERS" | grep -qxF "user:$reader"; then
+    record PASS "policy: $reader has project-level jobUser"
+  else
+    record FAIL "policy: $reader missing project-level jobUser"
+  fi
+  for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+    held="$($BQ show --format=prettyjson "$GCP_PROJECT_ID:$ds" 2>/dev/null \
+      | dataset_entries_of "$reader" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+    case "$held" in
+      READER|roles/bigquery.dataViewer) record PASS "policy: $reader reads $ds, writes nothing" ;;
+      "") record FAIL "policy: $reader cannot read $ds" ;;
+      *) record FAIL "policy: $reader holds $held on $ds (read-only expected)" ;;
+    esac
+  done
 done
 
 # 4. Absences. Each check above asks whether the grants this repo makes are

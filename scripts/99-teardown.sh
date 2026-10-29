@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 99-teardown.sh <client-slug> [--revoke-agent|--all-iam|--full] [--yes]
+# 99-teardown.sh <client-slug> [--revoke-agent|--all-iam|--full|--revoke-reader=<email>] [--yes]
 #
 # "You can revoke it anytime" (docs/trust.md), as a script. Three escalating
 # modes:
@@ -23,6 +23,14 @@
 #                   or secret is recoverable for 30 days at most). Requires
 #                   typing the project ID.
 #
+# And one that is not an escalation:
+#
+#   --revoke-reader=<email>  Remove one person's read access (READER_USERS,
+#                   docs/access-tiers.md Tier 1r): their jobUser and every
+#                   access entry naming them on any dataset. Agents and
+#                   pipelines are untouched. Take them out of READER_USERS
+#                   too, or the next 03-iam.sh grants it back.
+#
 # Left behind by --full, because Google made them rather than these scripts:
 # the APIs 05 and 07 enabled, and Cloud Run's own source-deploy bucket
 # (run-sources-<project>-<region>) and Artifact Registry repository.
@@ -35,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/lib/common.sh"
 
-[ $# -ge 1 ] || usage_and_exit "$0 [--revoke-agent|--all-iam|--full] [--yes]"
+[ $# -ge 1 ] || usage_and_exit "$0 [--revoke-agent|--all-iam|--full|--revoke-reader=<email>] [--yes]"
 SLUG="$1"
 shift
 load_client "$SLUG"
@@ -52,9 +60,11 @@ BUCKET_LISTER_ROLE="flywheelSourceBucketLister"
 
 MODE="--revoke-agent"
 ASSUME_YES=0
+REVOKE_READER=""
 for arg in "$@"; do
   case "$arg" in
     --revoke-agent|--all-iam|--full) MODE="$arg" ;;
+    --revoke-reader=?*) MODE="--revoke-reader"; REVOKE_READER="${arg#--revoke-reader=}" ;;
     --yes) ASSUME_YES=1 ;;
     *) die "unknown argument '$arg'" ;;
   esac
@@ -85,6 +95,37 @@ revoke_agent() {
   done
   revoke_sa "$SA_HERMES_READER_EMAIL" "hermes-reader"
   info "Agent access revoked. Re-grant: 03-iam.sh + 'gcloud iam service-accounts enable'."
+}
+
+# One person (READER_USERS). Every dataset in the project, not only the ones
+# 03-iam.sh granted, and any role: a grant made by hand in the console is
+# still their access.
+revoke_reader() {
+  local email="$1" datasets
+  info "Revoking read access for $email"
+  if is_dry_run || gcloud projects get-iam-policy "$GCP_PROJECT_ID" \
+      --flatten='bindings[].members' \
+      --filter="bindings.role=roles/bigquery.jobUser AND bindings.members=user:$email" \
+      --format='value(bindings.role)' 2>/dev/null | grep -q .; then
+    run gcloud projects remove-iam-policy-binding "$GCP_PROJECT_ID" \
+      --member="user:$email" --role=roles/bigquery.jobUser \
+      --condition=None --format=none --quiet
+  else
+    info "project binding roles/bigquery.jobUser for $email already absent"
+  fi
+  if is_dry_run; then
+    datasets="$ALL_DATASETS $GA4_EXPORT_DATASET"
+  else
+    datasets="$(project_datasets)"
+    [ -n "$datasets" ] || die "could not list the datasets in $GCP_PROJECT_ID"
+  fi
+  for ds in $datasets; do
+    revoke_dataset_member "$email" "$ds"
+  done
+  case " $READER_USERS " in
+    *" $email "*) warn "$email is still in READER_USERS: the next 03-iam.sh grants it back" ;;
+  esac
+  info "Read access revoked for $email."
 }
 
 # Every pipeline identity: one per ingest source, transform, probe, and the
@@ -178,6 +219,10 @@ full_teardown() {
 }
 
 case "$MODE" in
+  --revoke-reader)
+    confirm "This removes $REVOKE_READER's read access to $GCP_PROJECT_ID (data untouched, reversible)." "$CLIENT_SLUG"
+    revoke_reader "$REVOKE_READER"
+    ;;
   --revoke-agent)
     confirm "This removes ALL agent access for '$CLIENT_SLUG' (data untouched, reversible)." "$CLIENT_SLUG"
     revoke_agent
