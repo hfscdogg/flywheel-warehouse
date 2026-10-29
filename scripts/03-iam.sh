@@ -10,6 +10,8 @@
 #                   (and the GA4 export) + dataEditor on staging and marts
 #   warehouse-reader : jobUser (project) + dataViewer on every dataset (and
 #                   the GA4 export). Writes nothing; probe.yml runs as it.
+#   READER_USERS  : jobUser (project) + dataViewer on every dataset (and the
+#                   GA4 export). The client's people; read-only.
 #   ADMIN_USER    : serviceAccountTokenCreator on the hermes-reader SA
 #
 # Connector secrets and which workflow may act as which account are
@@ -103,6 +105,22 @@ info "$SA_PROBE: read every dataset, write none"
 grant_job_user "$SA_PROBE_EMAIL"
 for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
   grant_dataset_role "$SA_PROBE_EMAIL" roles/bigquery.dataViewer "$ds"
+done
+
+# The client's own people who ask the warehouse questions (READER_USERS,
+# Tier 1r). Read on every dataset, raw and the GA4 export included, as
+# warehouse-reader has; write on none. jobUser runs queries and nothing else:
+# it creates no table a query could write to, and dataViewer refuses every
+# write. Removing someone from READER_USERS does not revoke them: that is
+# 99-teardown.sh --revoke-reader=<email>.
+for reader in $READER_USERS; do
+  info "$reader: read every dataset, write none"
+  run gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="user:$reader" \
+    --role=roles/bigquery.jobUser --condition=None --format=none --quiet
+  for ds in $ALL_DATASETS $GA4_EXPORT_DATASET; do
+    grant_dataset_role "$reader" roles/bigquery.dataViewer "$ds"
+  done
 done
 
 # Project Owner does NOT include token creation. This is what lets ADMIN_USER

@@ -36,6 +36,8 @@ SOURCES = {
     "alarmdotcom": ({"ingest-alarmdotcom.yml"}, "WIF_SA_INGEST_ALARMDOTCOM"),
     "vendor": ({"ingest-vendordrop.yml"}, "WIF_SA_INGEST_VENDOR"),
 }
+# READER_USERS in clients/livewire/client.env: people, read-only.
+READERS = ["stacy@getlivewire.com"]
 OTHER = {"transform.yml": "WIF_SA_TRANSFORM", "probe.yml": "WIF_SA_PROBE",
          "deploy-endpoint.yml": "WIF_DEPLOYER_SERVICE_ACCOUNT"}
 
@@ -74,7 +76,8 @@ def wif_bindings(text):
 class BigQueryAccess(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.grants = dataset_grants(plan("03-iam.sh"))
+        cls.text = plan("03-iam.sh")
+        cls.grants = dataset_grants(cls.text)
 
     def granted(self, email, role):
         return {ds for r, e, ds in self.grants if e == email and r == role}
@@ -105,6 +108,31 @@ class BigQueryAccess(unittest.TestCase):
         email = sa("hermes-reader")
         self.assertEqual(self.granted(email, "dataEditor"), set())
         self.assertFalse([ds for ds in self.granted(email, "dataViewer") if ds.startswith("raw_")])
+
+    def test_each_reader_reads_every_dataset_and_writes_none(self):
+        everything = self.granted(sa("warehouse-reader"), "dataViewer")
+        for email in READERS:
+            with self.subTest(reader=email):
+                self.assertEqual(self.granted(email, "dataViewer"), everything)
+                self.assertFalse([g for g in self.grants if g[1] == email and g[0] != "dataViewer"])
+
+    def test_each_reader_may_run_queries_and_nothing_else_on_the_project(self):
+        for email in READERS:
+            with self.subTest(reader=email):
+                roles = re.findall(rf"--member=user:{re.escape(email)} --role=(\S+)", self.text)
+                self.assertEqual(roles, ["roles/bigquery.jobUser"])
+
+
+class RevokeReader(unittest.TestCase):
+    def test_it_removes_one_person_and_no_one_else(self):
+        email = READERS[0]
+        text = plan("99-teardown.sh", f"--revoke-reader={email}", "--yes")
+        self.assertIn(f"remove-iam-policy-binding {PROJECT} --member=user:{email} "
+                      "--role=roles/bigquery.jobUser", text)
+        self.assertIn(f"every entry naming {email}> {PROJECT}:raw_zoho", text)
+        self.assertIn(f"every entry naming {email}> {PROJECT}:marts", text)
+        self.assertNotIn("hermes-reader", text)
+        self.assertNotIn("service-accounts disable", text)
 
 
 class SecretsAndTrust(unittest.TestCase):
