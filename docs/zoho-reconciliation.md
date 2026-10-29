@@ -92,7 +92,7 @@ reconcile. If Henry wants CRM-quoted GM% alongside D-Tools margin, `$.Project_GM
 
 Zoho CRM and Zoho Finance sync to Analytics every 3 hours (Eastern / GMT
 respectively); the warehouse ingests daily at 06:00–06:40 UTC with the
-transform at 07:00 UTC. Rules for any totals comparison:
+transform at 09:15 UTC. Rules for any totals comparison:
 
 1. Compare only periods that closed **≥ 48 hours ago** (both systems settled).
 2. Record the as-of timestamp of both sides next to every compared number.

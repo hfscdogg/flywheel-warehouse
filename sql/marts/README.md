@@ -7,7 +7,7 @@ keep anything not meant for agents out of it. (`_flywheel_canary` also lives
 here, created by `scripts/01-datasets.sh`.)
 
 Built by [`scripts/06-transform.sh`](../../scripts/06-transform.sh) after
-staging; the `transform` workflow runs daily at 07:00 UTC.
+staging; the `transform` workflow runs daily at 09:15 UTC.
 
 ## Descriptions are the agent's documentation
 

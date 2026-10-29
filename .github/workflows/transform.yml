@@ -2,7 +2,13 @@ name: transform
 
 on:
   schedule:
-    - cron: "0 7 * * *" # after the 06:00/06:20/06:40 UTC ingests
+    # 09:15 UTC, after every source has landed. The API and vendor-drop
+    # ingests start between 06:00 and 06:50, and BigQuery's Google Ads transfer (05:00,
+    # plus the LSA account's at 05:30) loads one day every ~37 minutes and
+    # re-loads days 2 to 7 back until about 08:45. At 07:00 the transform read
+    # yesterday's ads, but the re-loads of days 5 to 7 back (late conversion
+    # corrections, if any) landed after it (job history 2026-10-22 to 10-29).
+    - cron: "15 9 * * *"
   workflow_dispatch:
     inputs:
       client:

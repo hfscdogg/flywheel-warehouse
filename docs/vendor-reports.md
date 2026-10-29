@@ -68,7 +68,7 @@ was pulled. See [`sql/marts/kpi_subscription_audit.sql`](../sql/marts/kpi_subscr
 A Cloud Storage bucket in the client's project with one folder per report.
 Anyone granted access drags the file into the right folder in a browser; the
 `ingest-vendordrop` workflow picks it up on the next run (06:50 UTC, before
-the 07:00 transform), lands it in `raw_vendor`, and moves the file to
+the 09:15 transform), lands it in `raw_vendor`, and moves the file to
 `processed/` so nothing loads twice.
 
 ```
