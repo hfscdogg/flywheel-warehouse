@@ -75,6 +75,29 @@ class Parse(unittest.TestCase):
         sales = next(r for r in rows if r["label"] == "Sales")
         self.assertEqual((sales["kind"], sales["section"]), ("section", []))
 
+    def test_a_name_repeated_down_one_branch_closes_the_inner_section(self):
+        # The real chart has Insurance > Automobile > Insurance. "Total
+        # Insurance" must close the inner one, or Automobile and every
+        # sibling after it lose their place (2009, 2010 and 2022 failed on it).
+        gl = (b',"Type","Debit","Credit","Balance"\n'
+              b'"Insurance",,,,0.00\n'
+              b'"Automobile",,,,0.00\n'
+              b'"Insurance",,,,0.00\n'
+              b',"Check",10.00,"",10.00\n'
+              b'"Total Insurance",,10.00,0.00,10.00\n'
+              b'"Total Automobile",,10.00,0.00,10.00\n'
+              b'"Workers Comp",,,,0.00\n'
+              b',"Check",5.00,"",5.00\n'
+              b'"Total Workers Comp",,5.00,0.00,5.00\n'
+              b'"Total Insurance",,15.00,0.00,15.00\n'
+              b'"TOTAL",,15.00,15.00,0.00\n')
+        self.assertEqual(report.ledger_totals(parsed(gl)), {
+            "insurance:automobile:insurance": 10.0,
+            "insurance:automobile": 10.0,
+            "insurance:workers comp": 5.0,
+            "insurance": 15.0,
+        })
+
     def test_opening_balance_row_is_a_section_not_an_account_line(self):
         rows = parsed(GL)
         checking = next(r for r in rows if r["label"] == "Checking")

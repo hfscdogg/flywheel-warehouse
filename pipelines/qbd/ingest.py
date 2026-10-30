@@ -220,6 +220,26 @@ def loaded_keys(bq, cfg, dataset):
         return set()
 
 
+def failing_years(bq, cfg, dataset):
+    """Years whose most recent check did not pass (empty before any check).
+
+    Re-checked on every run, not only when a new file for the year arrives:
+    a fix to the parser, or a re-exported piece of another year's ledger,
+    must clear a failure without anyone re-uploading the year's files.
+    """
+    sql = f"""
+        SELECT CAST(JSON_VALUE(payload, '$.year') AS INT64) AS year
+        FROM `{cfg.project_id}.{dataset}.{CHECKS_TABLE}`
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(payload, '$.year')
+                                   ORDER BY _loaded_at DESC) = 1
+          AND JSON_VALUE(payload, '$.ok') != 'true'
+    """
+    try:
+        return {row[0] for row in bq.query(sql).result()}
+    except Exception:          # table absent until the first check
+        return set()
+
+
 def main():
     args, cfg, dataset, run_id = runner.setup("vendor", [FILES_TABLE, CHECKS_TABLE])
     folder_id = util.env_or("QBD_DRIVE_FOLDER_ID", cfg.env.get("QBD_DRIVE_FOLDER_ID"))
@@ -270,9 +290,11 @@ def main():
         else:
             log.info("%s: %d rows → %s", f["name"], n, report.table_name(f["report"]))
 
-    # Re-check every year a newly loaded GL or TB speaks to, with all of that
-    # year's files, fetching any loaded on an earlier run.
-    years = sorted({y for f in to_load for y in years_of(f)})
+    # Re-check every year a newly loaded GL or TB speaks to, and every year
+    # still failing, with all of that year's files, fetching any loaded on
+    # an earlier run.
+    years = sorted({y for f in to_load for y in years_of(f)}
+                   | failing_years(bq, cfg, dataset))
     checks, failed = [], []
     for year in years:
         tbs, gls = [], []
