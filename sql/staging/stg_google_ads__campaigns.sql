@@ -21,7 +21,13 @@ WITH latest AS (
 SELECT
   campaign_id,
   customer_id,
-  campaign_name,
+  -- Google names a Local Services campaign itself
+  -- ("LocalServicesCampaign:SystemGenerated:<hex>"), which no one reads.
+  CASE
+    WHEN campaign_advertising_channel_type = 'LOCAL_SERVICES'
+      AND STARTS_WITH(campaign_name, 'LocalServicesCampaign:') THEN 'Local Services Ads'
+    ELSE campaign_name
+  END                                                AS campaign_name,
   campaign_status,
   campaign_serving_status,
   campaign_advertising_channel_type                  AS channel_type,

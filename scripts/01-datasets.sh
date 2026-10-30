@@ -78,19 +78,33 @@ fi
 # is skipped with a warning and this script is re-run after the first load.
 # Explicit columns, so a field Google adds does not change the view.
 # _PARTITIONTIME is the day each row was reported for.
+# GOOGLE_ADS_CUSTOMER_ID may name several accounts (Livewire: Search and
+# Local Services, one transfer each); the view is the UNION ALL of every
+# account's table that has landed, and customer_id tells them apart.
 ads_view() {  # ads_view <view> <report> <description> <columns>
-  local table="p_ads_$2_$GOOGLE_ADS_CUSTOMER_ID"
-  if ! is_dry_run && ! probe $BQ show --format=none "$GCP_PROJECT_ID:raw_google_ads.$table"; then
-    warn "raw_google_ads.$table does not exist yet (the transfer has not run): view raw_google_ads.$1 skipped; re-run this script after the first transfer run"
+  local id table tables="" from=""
+  for id in $GOOGLE_ADS_CUSTOMER_ID; do
+    table="p_ads_$2_$id"
+    if ! is_dry_run && ! probe $BQ show --format=none "$GCP_PROJECT_ID:raw_google_ads.$table"; then
+      warn "raw_google_ads.$table does not exist yet (the transfer has not run): left out of view raw_google_ads.$1; re-run this script after its first transfer run"
+      continue
+    fi
+    tables="$tables $table"
+    # shellcheck disable=SC2016  # backticks are BigQuery identifier quoting, not expansion
+    from="$from${from:+
+UNION ALL
+}SELECT _PARTITIONTIME AS partition_time, $4
+FROM \`$GCP_PROJECT_ID.raw_google_ads.$table\`"
+  done
+  if [ -z "$tables" ]; then
+    warn "no Google Ads report $2 has landed yet: view raw_google_ads.$1 skipped"
     return 0
   fi
-  info "View raw_google_ads.$1 over $table"
-  # shellcheck disable=SC2016  # backticks are BigQuery identifier quoting, not expansion
+  info "View raw_google_ads.$1 over$tables"
   SQL="$(printf '%s' "CREATE OR REPLACE VIEW \`$GCP_PROJECT_ID.raw_google_ads.$1\`
 OPTIONS (description = '$3 Managed by 01-datasets.sh.')
 AS
-SELECT _PARTITIONTIME AS partition_time, $4
-FROM \`$GCP_PROJECT_ID.raw_google_ads.$table\`")"
+$from")"
   run $BQ query --use_legacy_sql=false --format=none "$SQL"
 }
 
