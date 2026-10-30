@@ -209,9 +209,14 @@ load_client() {
       [ -z "$GOOGLE_ADS_CUSTOMER_ID" ] \
         || die "client.env for '$slug': GOOGLE_ADS_CUSTOMER_ID is set but raw_google_ads is not in DATASETS_RAW" ;;
   esac
-  case "$GOOGLE_ADS_CUSTOMER_ID" in
-    *[!0-9]*) die "client.env for '$slug': GOOGLE_ADS_CUSTOMER_ID is digits only, no dashes (got '$GOOGLE_ADS_CUSTOMER_ID')" ;;
-  esac
+  # One account id, or several separated by spaces (a Search account and a
+  # Local Services account each get their own transfer and their own tables).
+  local ads_id
+  for ads_id in $GOOGLE_ADS_CUSTOMER_ID; do
+    case "$ads_id" in
+      *[!0-9]*) die "client.env for '$slug': GOOGLE_ADS_CUSTOMER_ID is digits only, no dashes (got '$ads_id')" ;;
+    esac
+  done
 
   # Always-explicit project, never interactive first-run init. Intentionally
   # word-split at call sites: run $BQ show ...

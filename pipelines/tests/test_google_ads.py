@@ -61,7 +61,7 @@ class TheTwoSettingsAgree(unittest.TestCase):
     def test_livewire_has_both(self):
         env = LIVEWIRE.read_text()
         self.assertRegex(env, r'(?m)^DATASETS_RAW="[^"]*\braw_google_ads\b')
-        self.assertRegex(env, r'(?m)^GOOGLE_ADS_CUSTOMER_ID="\d+"')
+        self.assertRegex(env, r'(?m)^GOOGLE_ADS_CUSTOMER_ID="\d+( \d+)*"')
 
     def test_both_set_loads(self):
         self.assertEqual(load_client("raw_zoho raw_google_ads", "1234567890")[0], 0)
@@ -79,6 +79,15 @@ class TheTwoSettingsAgree(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("raw_google_ads is not in DATASETS_RAW", err)
 
+    def test_several_accounts_load(self):
+        # Livewire: a Search account and a Local Services account.
+        self.assertEqual(load_client("raw_zoho raw_google_ads", "1234567890 2345678901")[0], 0)
+
+    def test_one_bad_id_among_several_is_refused(self):
+        code, err = load_client("raw_zoho raw_google_ads", "1234567890 991-953-3169")
+        self.assertNotEqual(code, 0)
+        self.assertIn("digits only", err)
+
     def test_the_id_as_google_prints_it_is_refused(self):
         # Google Ads shows 991-953-3169; the table name carries 9919533169.
         code, err = load_client("raw_zoho raw_google_ads", "991-953-3169")
@@ -91,7 +100,8 @@ class TheViews(unittest.TestCase):
         self.src = DATASETS.read_text()
 
     def test_they_sit_over_the_transfer_tables(self):
-        self.assertIn('local table="p_ads_$2_$GOOGLE_ADS_CUSTOMER_ID"', self.src)
+        self.assertIn('for id in $GOOGLE_ADS_CUSTOMER_ID; do', self.src)
+        self.assertIn('table="p_ads_$2_$id"', self.src)
         self.assertIn("ads_view campaign_basic_stats CampaignBasicStats", self.src)
         self.assertIn("ads_view campaigns Campaign ", self.src)
 
@@ -100,6 +110,13 @@ class TheViews(unittest.TestCase):
         body = body[:body.index("\n}\n")]
         self.assertIn('probe $BQ show --format=none "$GCP_PROJECT_ID:raw_google_ads.$table"', body)
         self.assertIn("return 0", body)
+        # One account not landed yet leaves the others in the view.
+        self.assertIn("continue", body)
+
+    def test_several_accounts_are_unioned(self):
+        body = self.src[self.src.index("ads_view() {"):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn("UNION ALL", body)
 
     def test_staging_reads_only_the_views(self):
         # A p_ads_ name or a customer id in the SQL is invisible to the
