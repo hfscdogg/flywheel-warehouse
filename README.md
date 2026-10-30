@@ -24,6 +24,8 @@ vendor files ──┘                                                          
 Most sources are scheduled API pulls. Monitoring vendors expose no account
 API, so their reports arrive as files someone drops in a Cloud Storage bucket
 — [docs/vendor-reports.md](docs/vendor-reports.md).
+QuickBooks Desktop's 2003–2022 history arrives the same way, from a
+one-time export in a Drive folder — [docs/qbd-export.md](docs/qbd-export.md).
 
 One GCP project per client. The project is the namespace, so dataset names stay fixed.
 

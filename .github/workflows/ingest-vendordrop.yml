@@ -46,6 +46,17 @@ jobs:
         run: >
           python -m pipelines.vendordrop.ingest
           --client "$CLIENT"
+      # The QuickBooks Desktop history, exported once to a Drive folder
+      # (pipelines/qbd/ingest.py). Runs even when a vendor upload above was
+      # rejected: the two are unrelated files. A listing and nothing else
+      # once every file has loaded.
+      - name: Ingest QuickBooks Desktop export (Drive) → raw_vendor.qbd_*
+        if: ${{ !cancelled() }}
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: >
+          python -m pipelines.qbd.ingest
+          --client "$CLIENT"
 
   # Nothing told anyone when this broke. See .github/workflows/alert.yml.
   alert:
