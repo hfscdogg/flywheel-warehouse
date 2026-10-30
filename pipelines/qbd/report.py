@@ -185,11 +185,14 @@ def parse_csv(data):
 
         if kind == "total":
             closing = first[len("Total "):]
-            # pop to the section this total closes; QuickBooks lower-cases
-            # some names in totals ("Total no accnt"), so compare folded.
+            # pop to the section this total closes: the innermost one of that
+            # name, because a name can repeat down one branch (Insurance >
+            # Automobile > Insurance). QuickBooks lower-cases some names in
+            # totals ("Total no accnt"), so compare folded.
             folded = [s.casefold() for s in stack]
             if closing.casefold() in folded:
-                del stack[folded.index(closing.casefold()):]
+                last = len(folded) - 1 - folded[::-1].index(closing.casefold())
+                del stack[last:]
         section = list(stack)
         if kind == "section":
             stack.append(first)

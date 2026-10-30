@@ -49,6 +49,10 @@ The run fails — and the alert opens an issue — when:
    gap, none cut off, and the one ending 31 December must agree with the
    31 December Trial Balance at every account, subaccounts rolled up.
 
+A year that failed is checked again on every run until it passes, so a
+re-exported piece, or a fix to the parser, clears it without re-uploading
+anything.
+
 When every year from 2003 to 2022 passes and the backup is in the folder,
 the export is complete. Until then QuickBooks Desktop is the only place the
 missing rows exist.
