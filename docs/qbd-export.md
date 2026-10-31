@@ -79,7 +79,7 @@ them must still tie.
 
 ## What the agents can read
 
-`staging.stg_qbd__sales_lines` has every sales line from 2003 to March 2022:
+`staging.stg_vendor__qbd_sales_lines` has every sales line from 2003 to March 2022:
 customer, job, item, quantity, price and amount. Each line is taken from the
 narrowest complete export covering its date, so overlapping exports never
 count twice. 2017 Q1–2019 Q2 is missing from the export and is empty here,
