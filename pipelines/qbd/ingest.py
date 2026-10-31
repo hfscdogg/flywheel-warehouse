@@ -29,8 +29,10 @@ holds back the rest):
   - a report QuickBooks cut off at its CSV row cap (report.ROW_CAP); it must
     be exported again in smaller date ranges;
   - a year whose General Ledger does not tie to its Trial Balance, or whose
-    General Ledger files do not cover the whole year. Re-exported pieces of a
-    year (2015-01-01_2015-06-30 + 2015-07-01_2015-12-31) are checked as one.
+    General Ledger files do not cover the whole year — unless the year is
+    listed in QBD_LEDGER_TOTALS_ONLY, accepted without full ledger detail.
+    Re-exported pieces of a year (2015-01-01_2015-06-30 +
+    2015-07-01_2015-12-31) are checked as one.
 Each check is recorded in qbd_checks either way, so whether the export is
 complete is a query, not a log search.
 
@@ -39,6 +41,9 @@ Env / client.env:
   QBD_MAX_MB            files larger than this are skipped. Default 50: the
                         largest report is about 12 MB, and the backup and
                         portable company file are never downloaded at all.
+  QBD_LEDGER_TOTALS_ONLY  years accepted without full ledger detail, as
+                        "2011-2021" or "2011 2014": a cut-off General
+                        Ledger no longer fails them (check_year).
 """
 
 import logging
@@ -159,7 +164,16 @@ def _d(s):
     return date.fromisoformat(s)
 
 
-def check_year(year, tbs, gls):
+def parse_years(spec):
+    """'2011-2021 2023' -> {2011, …, 2021, 2023}. Empty or None -> set()."""
+    years = set()
+    for part in (spec or "").replace(",", " ").split():
+        lo, _, hi = part.partition("-")
+        years.update(range(int(lo), int(hi or lo) + 1))
+    return years
+
+
+def check_year(year, tbs, gls, totals_only=False):
     """Is year Y's ledger complete? tbs/gls: [(file, records, info)].
 
     Complete means: a Trial Balance as of 31 December; General Ledger files,
@@ -168,6 +182,12 @@ def check_year(year, tbs, gls):
     every account. QuickBooks prints each account's balance as of the end of
     a General Ledger's range, so the piece that ends on 31 December carries
     the year-end figures however the year was split.
+
+    totals_only: the year was accepted without full ledger detail
+    (QBD_LEDGER_TOTALS_ONLY). A General Ledger that is cut off or missing
+    no longer fails it, since the Trial Balance and P&L still give every
+    account's total; it stays recorded in `notes`. A Trial Balance is still
+    required, and a ledger that IS complete must still tie to it.
     """
     result = {"year": year, "ok": False, "problems": [], "differences": []}
     tb = next((t for t in tbs if t[0].get("as_of") == f"{year}-12-31"), None)
@@ -195,6 +215,11 @@ def check_year(year, tbs, gls):
             result["problems"].append(
                 f"{len(diffs)} account(s) differ between the {year} General Ledger "
                 "and Trial Balance")
+    if totals_only and tb is not None and not result["differences"]:
+        result["notes"] = [p + " — accepted: annual totals only"
+                           for p in result["problems"]]
+        result["problems"] = []
+        result["totals_only"] = True
     result["ok"] = not result["problems"]
     result["files"] = sorted(x[0]["name"] for x in (tbs + gls))
     return result
@@ -247,6 +272,7 @@ def main():
         log.info("QBD_DRIVE_FOLDER_ID not set for '%s' — nothing to do", cfg.slug)
         return
     max_bytes = int(util.env_or("QBD_MAX_MB", str(DEFAULT_MAX_MB))) * 1048576
+    totals_only = parse_years(cfg.env.get("QBD_LEDGER_TOTALS_ONLY"))
 
     from ..lib import bq as bq_mod
     bq = bq_mod.client_for(cfg)
@@ -309,10 +335,13 @@ def main():
                 records, info = report.parse(download(session, f["id"]), name)
                 parsed[name] = (f, records, info)
             (tbs if desc["report"] == "trial-balance" else gls).append(parsed[name])
-        result = check_year(year, tbs, gls)
+        result = check_year(year, tbs, gls, totals_only=year in totals_only)
         result["key"] = f"{year}:{run_id}"
         checks.append(result)
-        if result["ok"]:
+        if result.get("totals_only"):
+            log.info("%d: accepted at annual totals (%s)", year,
+                     "; ".join(result["notes"]) or "ledger complete")
+        elif result["ok"]:
             log.info("%d: General Ledger ties to Trial Balance at every account", year)
         else:
             failed.append(year)
