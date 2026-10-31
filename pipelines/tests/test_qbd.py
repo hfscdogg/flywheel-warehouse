@@ -219,6 +219,33 @@ class CheckYear(unittest.TestCase):
         ])
         self.assertTrue(result["ok"], result["problems"])
 
+    def test_a_cut_off_year_accepted_at_totals_passes_and_says_so(self):
+        name = "qbd_general-ledger_accrual_2003-01-01_2003-12-31.csv"
+        f, records, info = piece(name)
+        result = ingest.check_year(2003, [TB03], [(f, records, dict(info, truncated=True))],
+                                   totals_only=True)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["totals_only"])
+        self.assertIn("cut off", result["notes"][0])
+
+    def test_totals_only_still_needs_a_trial_balance(self):
+        result = ingest.check_year(
+            2003, [], [piece("qbd_general-ledger_accrual_2003-01-01_2003-12-31.csv")],
+            totals_only=True)
+        self.assertFalse(result["ok"])
+
+    def test_totals_only_does_not_excuse_a_ledger_that_disagrees(self):
+        tb = TB.replace(b'"Checking",150.00', b'"Checking",151.00')
+        result = ingest.check_year(
+            2003, [piece("qbd_trial-balance_2003-12-31.csv", tb)],
+            [piece("qbd_general-ledger_accrual_2003-01-01_2003-12-31.csv")],
+            totals_only=True)
+        self.assertFalse(result["ok"])
+
+    def test_year_lists(self):
+        self.assertEqual(ingest.parse_years("2011-2013 2015"), {2011, 2012, 2013, 2015})
+        self.assertEqual(ingest.parse_years(None), set())
+
     def test_no_trial_balance_fails(self):
         result = ingest.check_year(
             2003, [], [piece("qbd_general-ledger_accrual_2003-01-01_2003-12-31.csv")])

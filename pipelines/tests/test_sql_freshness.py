@@ -33,6 +33,10 @@ EXEMPT = {
     # nobody can act on. The dealer-site export is the live Alarm.com feed
     # and IS checked.
     "stg_alarmdotcom__customers",
+    # QuickBooks Desktop history, closed in March 2022 and exported once
+    # (docs/qbd-export.md). Nothing new will ever arrive, so its newest
+    # load only gets older; a freshness check would fail forever.
+    "stg_qbd__sales_lines",
 }
 
 # An API source ingested nightly; a missed night is not yet a problem, two is.

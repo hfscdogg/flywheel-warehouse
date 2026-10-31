@@ -66,9 +66,21 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(payload, '$.year')
 ORDER BY year;
 ```
 
-## Not yet
+## Accepted at annual totals
 
-No staging models read `qbd_*` yet, so the agents cannot see this history;
-they read staging and marts, never raw. Staging comes once the export is
-complete, starting with Sales by Customer Detail (the job history) and the
-General Ledger.
+QuickBooks cut the 2011–2021 General Ledger exports off at its row cap.
+On 2026-10-31 we decided not to re-export them. The sales detail is
+complete, the Trial Balance and P&L give every account's total for each of
+those years, and the `.QBB` backup in the folder holds the full ledger if
+transaction-level detail is ever needed. `QBD_LEDGER_TOTALS_ONLY` in
+`client.env` lists those years. They pass the check with a note instead of
+failing it, but they still need a Trial Balance, and a complete ledger for
+them must still tie.
+
+## What the agents can read
+
+`staging.stg_qbd__sales_lines` has every sales line from 2003 to March 2022:
+customer, job, item, quantity, price and amount. Each line is taken from the
+narrowest complete export covering its date, so overlapping exports never
+count twice. 2017 Q1–2019 Q2 is missing from the export and is empty here,
+not zero. For April 2022 onward, use `stg_qbo__invoice_lines`.
