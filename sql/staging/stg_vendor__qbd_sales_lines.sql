@@ -1,4 +1,4 @@
--- stg_qbd__sales_lines — every sales line from QuickBooks Desktop, 2003 to
+-- stg_vendor__qbd_sales_lines — every sales line from QuickBooks Desktop, 2003 to
 -- March 2022, before Livewire moved to QuickBooks Online.
 -- Grain: one row per line of the Sales by Customer Detail report.
 -- Source: raw_vendor.qbd_sales_by_customer_detail, landed from the one-time
@@ -13,7 +13,7 @@
 --
 -- Rows land append-only; a re-uploaded file gets a new Drive id, so the
 -- newest load of each file NAME is the one read.
-CREATE OR REPLACE TABLE staging.stg_qbd__sales_lines
+CREATE OR REPLACE TABLE staging.stg_vendor__qbd_sales_lines
 OPTIONS (description = """
 Every sales line Livewire booked in QuickBooks Desktop, from 2003 until the move to QuickBooks Online in April 2022: one row per line of an invoice, sales receipt, credit memo or statement charge, with the customer, the job, the item sold, quantity, price and amount. This is the job history before 2022; for April 2022 onward use stg_qbo__invoice_lines.
 customer_name matches stg_qbo__customers.display_name by name only (no shared id); about 2,200 of today's customers appear here.
@@ -91,33 +91,33 @@ SELECT
   source_file,
   loaded_at
 FROM narrowest;
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN line_key
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN line_key
   SET OPTIONS (description = "Unique id of this line: the Drive file it came from and its line number in that file.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN line_date
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN line_date
   SET OPTIONS (description = "Date of the transaction the line is on.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN transaction_type
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN transaction_type
   SET OPTIONS (description = "QuickBooks transaction type: Invoice, Sales Receipt, Credit Memo, Stmt Charge and the like.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN transaction_number
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN transaction_number
   SET OPTIONS (description = "Invoice or receipt number as printed; NULL for statement charges. Lines sharing a number and date are one transaction.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN customer_name
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN customer_name
   SET OPTIONS (description = "Customer, the part of the QuickBooks name before the first colon. Matches stg_qbo__customers.display_name for customers who carried over.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN job_name
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN job_name
   SET OPTIONS (description = "Job (project or property) under the customer, the part after the first colon; NULL when the sale was booked to the customer itself.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN full_name
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN full_name
   SET OPTIONS (description = "Full QuickBooks customer:job name as exported.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN item_code
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN item_code
   SET OPTIONS (description = "QuickBooks item code, e.g. 07LABOR1MAN for standard hourly labor: the item with its description in parentheses removed.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN item
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN item
   SET OPTIONS (description = "Item as exported: code followed by its description in parentheses.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN memo
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN memo
   SET OPTIONS (description = "Line description as written on the invoice; often the most specific text about the work done.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN quantity
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN quantity
   SET OPTIONS (description = "Quantity sold; hours for labor items.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN unit_price
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN unit_price
   SET OPTIONS (description = "Price per unit, USD; for percentage items (sales tax) the percentage.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN amount
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN amount
   SET OPTIONS (description = "Line amount, USD. Negative on credit memos and refunds.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN source_file
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN source_file
   SET OPTIONS (description = "Name of the exported report file this line came from.");
-ALTER TABLE staging.stg_qbd__sales_lines ALTER COLUMN loaded_at
+ALTER TABLE staging.stg_vendor__qbd_sales_lines ALTER COLUMN loaded_at
   SET OPTIONS (description = "When the export file was loaded into the warehouse (UTC). The history itself ends in March 2022.");

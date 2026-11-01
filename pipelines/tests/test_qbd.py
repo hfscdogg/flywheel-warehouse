@@ -293,5 +293,22 @@ class DriveSetup(unittest.TestCase):
         self.assertIn("ingest-vendor@livewire-dw.iam.gserviceaccount.com", hint)
 
 
+class StagingModelSource(unittest.TestCase):
+    def test_every_staging_model_reads_the_source_its_name_claims(self):
+        # 06-transform.sh decides whether a model's source is enabled from
+        # its file name alone (stg_<source>__…). stg_qbd__sales_lines read
+        # raw_vendor, so the transform looked for a raw_qbd that does not
+        # exist and skipped the model without failing.
+        import pathlib
+        import re
+        staging = pathlib.Path(__file__).resolve().parents[2] / "sql" / "staging"
+        wrong = []
+        for f in sorted(staging.glob("stg_*__*.sql")):
+            source = f.stem[len("stg_"):].split("__")[0]
+            if not re.search(rf"\braw_{source}\.", f.read_text()):
+                wrong.append(f.name)
+        self.assertEqual(wrong, [], "model name names a source it does not read")
+
+
 if __name__ == "__main__":
     unittest.main()

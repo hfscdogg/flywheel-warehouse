@@ -36,7 +36,7 @@ EXEMPT = {
     # QuickBooks Desktop history, closed in March 2022 and exported once
     # (docs/qbd-export.md). Nothing new will ever arrive, so its newest
     # load only gets older; a freshness check would fail forever.
-    "stg_qbd__sales_lines",
+    "stg_vendor__qbd_sales_lines",
 }
 
 # An API source ingested nightly; a missed night is not yet a problem, two is.
