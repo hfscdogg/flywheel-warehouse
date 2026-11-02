@@ -17,7 +17,7 @@ CREATE OR REPLACE TABLE staging.stg_vendor__qbd_sales_lines
 OPTIONS (description = """
 Every sales line Livewire booked in QuickBooks Desktop, from 2003 until the move to QuickBooks Online in April 2022: one row per line of an invoice, sales receipt, credit memo or statement charge, with the customer, the job, the item sold, quantity, price and amount. This is the job history before 2022; for April 2022 onward use stg_qbo__invoice_lines.
 customer_name matches stg_qbo__customers.display_name by name only (no shared id); about 2,200 of today's customers appear here.
-Known gap: 2017 Q1 to 2019 Q2 is missing from the export, so those quarters are empty here and are not zero sales. Credit memos carry negative amounts. Lines total roughly 80-87% of QuickBooks Total Income in a year: income booked outside invoices (journal entries, deposits) is not a sales line.
+No quarter is missing: 2017 Q1 to 2019 Q2, exported late, loaded on 2026-11-02. Credit memos carry negative amounts. Lines total roughly 74-87% of QuickBooks Total Income in a year: income booked outside invoices (journal entries, deposits) is not a sales line.
 """)
 AS
 WITH files AS (
