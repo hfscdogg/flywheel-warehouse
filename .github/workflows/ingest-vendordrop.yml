@@ -57,6 +57,15 @@ jobs:
         run: >
           python -m pipelines.qbd.ingest
           --client "$CLIENT"
+      # The controller's close sheets in Google Sheets (pipelines/gsheets/),
+      # read through the same Drive access. Lands only a sheet that changed.
+      - name: Ingest Google Sheets → raw_vendor.gsheet_*
+        if: ${{ !cancelled() }}
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: >
+          python -m pipelines.gsheets.ingest
+          --client "$CLIENT"
 
   # Nothing told anyone when this broke. See .github/workflows/alert.yml.
   alert:
