@@ -199,6 +199,24 @@ WITH loaded AS (
   UNION ALL
   SELECT 'stg_vendor__securitycentral_status', 14, 'securitycentral/customercount', MAX(loaded_at), NULL
   FROM staging.stg_vendor__securitycentral_status
+  UNION ALL
+  -- The controller's close sheets in Google Sheets (pipelines/gsheets/). Read
+  -- nightly, but landed only when edited, so the run log says whether the
+  -- ingest is still reading them; a sheet nobody edited is still current.
+  SELECT 'stg_vendor__inventory_deferrals' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_vendor.gsheet_inventory_lines' AS raw_table
+  FROM staging.stg_vendor__inventory_deferrals
+  UNION ALL
+  SELECT 'stg_vendor__inventory_deferral_checks' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_vendor.gsheet_inventory_checks' AS raw_table
+  FROM staging.stg_vendor__inventory_deferral_checks
+  UNION ALL
+  SELECT 'stg_vendor__security_discount_schedule' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_vendor.gsheet_security_deferred' AS raw_table
+  FROM staging.stg_vendor__security_discount_schedule
 ),
 -- The run log (pipelines/lib/bq.py RUNS_TABLE): one row per entity per run,
 -- empty pulls included. Read for the INCREMENTAL API sources only,
@@ -222,6 +240,13 @@ ran AS (
   -- v2_ entities are joined on.
   SELECT CONCAT('raw_dtools.', entity) AS raw_table, MAX(ran_at) AS ran_at
   FROM raw_dtools._flywheel_runs
+  GROUP BY entity
+  UNION ALL
+  -- Only the Google Sheets entities: the vendor uploads and the QuickBooks
+  -- Desktop export land only when a file arrives, which is what they check.
+  SELECT CONCAT('raw_vendor.', entity) AS raw_table, MAX(ran_at) AS ran_at
+  FROM raw_vendor._flywheel_runs
+  WHERE STARTS_WITH(entity, 'gsheet_')
   GROUP BY entity
 ),
 -- Newest of the last load and the last run. GREATEST is NULL if either side
