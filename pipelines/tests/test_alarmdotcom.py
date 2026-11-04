@@ -19,9 +19,20 @@ SECRETS = {
 }
 
 
+class HTTPError(Exception):
+    pass
+
+
 class Resp:
+    url = "https://alarmadmin.alarm.com/fake"
+
     def __init__(self, status, body):
         self.status_code, self._body = status, body
+        self.text = "" if body is None else str(body)
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise HTTPError(self.status_code)
 
     def json(self):
         if self._body is None:
@@ -116,8 +127,9 @@ class SignIn(unittest.TestCase):
 class Pages:
     """GET responses keyed by URL suffix and page number."""
 
-    def __init__(self, id_pages, records, refuse=()):
+    def __init__(self, id_pages, records, refuse=(), terminated=(), bad=()):
         self.id_pages, self.records, self.refuse = id_pages, records, set(refuse)
+        self.terminated, self.bad = set(terminated), set(bad)
         self.calls = []
 
     def get(self, url, headers=None, params=None, timeout=None):
@@ -128,6 +140,10 @@ class Pages:
         cid = int(url.rsplit("/", 1)[1])
         if cid in self.refuse:
             return Resp(403, {"message": "Forbidden"})
+        if cid in self.terminated:
+            return Resp(400, {"message": "This Customer is already terminated."})
+        if cid in self.bad:
+            return Resp(400, {"message": "Something else went wrong."})
         return Resp(200, dict(self.records.get(cid, {"customerId": cid, "firstName": f"c{cid}"})))
 
 
@@ -189,6 +205,23 @@ class Customers(unittest.TestCase):
         records, skipped = ingest.fetch_customers(pages, live_token(), "1087", pause=0)
         self.assertEqual([r["customerId"] for r in records], [11, 13])
         self.assertEqual(skipped, [(12, 403)])
+
+    def test_a_terminated_account_lands_as_a_stub(self):
+        pages = Pages({0: [11, 12]}, {}, terminated={12})
+        records, skipped = ingest.fetch_customers(pages, live_token(), "1087", pause=0)
+        self.assertEqual(records[1], {"customerId": 12, "isTerminated": True,
+                                      "detailUnavailable": "This Customer is already terminated."})
+        self.assertEqual(skipped, [])
+
+    def test_mostly_terminated_does_not_trip_the_refusal_check(self):
+        pages = Pages({0: [11, 12, 13, 14]}, {}, terminated={12, 13, 14})
+        records, skipped = ingest.fetch_customers(pages, live_token(), "1087", pause=0)
+        self.assertEqual(len(records), 4)
+
+    def test_any_other_400_still_fails(self):
+        pages = Pages({0: [11, 12]}, {}, bad={12})
+        with self.assertRaises(HTTPError):
+            ingest.fetch_customers(pages, live_token(), "1087", pause=0)
 
     def test_most_accounts_refused_fails_the_run(self):
         pages = Pages({0: [11, 12, 13]}, {}, refuse={11, 12})
