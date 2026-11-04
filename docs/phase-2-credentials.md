@@ -147,37 +147,57 @@ The sign-in dies on a password change, a revoked session, or roughly 90 days
 unused (the nightly run keeps it alive). The ingest then fails with "refused
 the stored refresh token"; repeat step 3.
 
-## 2b. Alarm.com Partner Portal (~10 min)
+## 2b. Alarm.com Partner Portal (~15 min)
 
-The Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi) uses an
-OAuth **password grant** with a rep's credentials — there is no separate app
-registration.
+The Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi, reference
+at `/PartnerApi/help/docs/v1/` once signed in) uses an OAuth **password grant**
+with a rep's credentials, an app's client id, and the rep's two-factor **web
+service token**. Alarm.com requires two-factor on the rep login used for the
+API (webservices@alarm.com, 2026-08-31); the web service token is how an
+unattended job satisfies it, sent as `x_twofactor_device_id`.
 
-1. Identify (or create) a Partner Portal **rep login** for integration use.
-   Rep permissions gate what the API returns: properties the rep cannot see
-   come back `null` rather than erroring, so use a rep with customer-list
-   access.
-2. Get the `client_id` your dealer account uses for API access (Alarm.com
-   web services provides it: webservices@alarm.com).
-3. Load three secrets:
-   - `flywheel-alarmdotcom-username` (rep username)
-   - `flywheel-alarmdotcom-password` (rep password)
-   - `flywheel-alarmdotcom-client-id`
-4. Set the dealer id as a repo variable (an identifier, not a secret):
+1. **The app (client id).** Partner Portal → My Business → Integrations →
+   Developer Resources → Web API → Manage Apps → Create New. Livewire's app is
+   "LeakDetect", client id `3636d7e1-3141-4c35-866f-0404189cb985` (created
+   2026-08-31). An id Alarm.com did not issue this way fails with
+   `invalid_client`.
+2. **The rep login.** Use a login with customer-list access and two-factor
+   turned on. Rep permissions gate what the API returns: properties the rep
+   cannot see come back `null` rather than erroring.
+3. **The web service token.** Signed in as that rep: profile → Two factor
+   authentication → scroll down → Generate a web service token.
+4. Load four secrets (no echo, nothing in shell history):
+
+   ```sh
+   for s in username password client-id twofactor-device-id; do
+     read -rsp "flywheel-alarmdotcom-$s: " v; echo
+     printf '%s' "$v" | gcloud secrets versions add "flywheel-alarmdotcom-$s" --project livewire-dw --data-file=-
+   done; unset v
+   ```
+
+   `flywheel-alarmdotcom-twofactor-device-id` is the web service token. If
+   its container does not exist yet, `05-ingestion-infra.sh` creates it.
+5. Set the dealer id as a repo variable (an identifier, not a secret):
 
    ```sh
    gh variable set ALARMDOTCOM_DEALER_ID --repo hfscdogg/flywheel-warehouse --body '<dealer-id>'
    ```
 
-5. Verify the token grant before the first run:
+6. Verify the sign-in **once** before the first run. Alarm.com locks a login
+   after repeated failed sign-ins, so do not loop on a failure; read the
+   error and fix the value it points at:
 
    ```sh
+   sv() { gcloud secrets versions access latest --secret="flywheel-alarmdotcom-$1" --project livewire-dw; }
    curl -s -X POST https://alarmadmin.alarm.com/AdminApiAccess/token \
-     -H 'Content-Type: application/x-www-form-urlencoded' \
-     --data-urlencode 'grant_type=password' \
-     --data-urlencode 'username=<rep>' --data-urlencode 'password=<pass>' \
-     --data-urlencode 'client_id=<client-id>' | python3 -m json.tool
+     --data-urlencode grant_type=password --data-urlencode "username=$(sv username)" \
+     --data-urlencode "password=$(sv password)" --data-urlencode "client_id=$(sv client-id)" \
+     --data-urlencode "x_twofactor_device_id=$(sv twofactor-device-id)" \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("OK" if "access_token" in d else d)'
    ```
+
+Tokens last about 15 minutes; the pipeline renews them with the refresh token
+the grant returns, and never retries a refused password grant.
 
 VERIFY on first run: the customer-list path, its pagination, and the response
 envelope come from the public docs, not observed responses. The docs show
