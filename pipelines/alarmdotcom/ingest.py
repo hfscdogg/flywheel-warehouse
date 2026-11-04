@@ -176,6 +176,12 @@ def fetch_customers(http, token, dealer_id, limit=0, pause=None):
     who cannot see one account gets 403 or 404 for it; that account is
     skipped and counted rather than failing the run, unless most of them
     fail, which means the rep or token is wrong rather than one account.
+
+    A terminated account is listed (includeTermed) but its record is not
+    served: 400 {"message": "This Customer is already terminated."} (first
+    live run, 2026-11-04). It lands as a stub, its id with isTerminated
+    true and that message, so the audit still sees an account that existed
+    and ended. Stubs are not refusals and do not count toward the check.
     """
     import time
     pause = ALARMDOTCOM["pause_s"] if pause is None else pause
@@ -189,6 +195,9 @@ def fetch_customers(http, token, dealer_id, limit=0, pause=None):
         resp = _get(http, token, f"{url}/{cid}")
         if resp.status_code in (403, 404):
             skipped.append((cid, resp.status_code))
+        elif resp.status_code == 400 and _terminated(resp):
+            records.append({"customerId": cid, "isTerminated": True,
+                            "detailUnavailable": _message(resp)})
         else:
             util.raise_for_status(resp, f"Alarm.com customer {cid}")
             record = resp.json()
@@ -203,6 +212,18 @@ def fetch_customers(http, token, dealer_id, limit=0, pause=None):
     for cid, status in skipped[:20]:
         log.warning("Alarm.com customer %s: HTTP %s, skipped", cid, status)
     return records, skipped
+
+
+def _message(resp):
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    return str(body.get("message", "")) if isinstance(body, dict) else ""
+
+
+def _terminated(resp):
+    return "terminated" in _message(resp).lower()
 
 
 def api_version():
