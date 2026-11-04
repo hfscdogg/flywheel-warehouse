@@ -28,6 +28,26 @@ monthly costs, and each is audited against billing on its own. A leak is a
 | **Customer Count** | contract, subscriber, status, start date | **weekly, scheduled** — Security Central emails it | the audit's live status: who is still active at the central station |
 | **All Accounts** | the above **plus street address** and account type | on request (SCAN export, not schedulable) | the address, which is the only way to match an account to a Zoho Billing customer |
 
+**Security Central — the monthly statement** (.pdf, emailed on the 25th to
+accounting@ and ap@, subject "Statement EMail"). Arrives on its own, which
+none of the reports above do, and it is a roster: one line per billed
+account and service, with the account holder, street, Security Central
+account number and amount, in three sections: activations since the last
+statement (prorated), disconnects (credited, no account number printed) and
+next month's recurring charges. No city or ZIP, so it does not replace the
+All Accounts roster for address matching; the account number does match
+Alarm.com's CS account exactly.
+
+It reaches the warehouse with nobody touching it. An Apps Script in Henry's
+Gmail ([`scripts/apps-script/save-security-central-statements.gs`](../scripts/apps-script/save-security-central-statements.gs))
+saves the PDF daily into the Drive folder "Security Central Statements
+(warehouse)", shared Viewer with `ingest-vendor`; the warehouse never reads a
+mailbox. `pipelines/scstatement/` reads the folder nightly into
+`staging.stg_vendor__securitycentral_statement`. A statement whose lines do
+not add up to its own section totals, summary counts and amount due lands
+nothing and fails the run. The October 2026 statement: 522 lines, $2,546.60,
+reconciled to the cent.
+
 **Alarm.com — "Custom List"** (dealer site → export → .csv). Carries a full
 address on every row and, on most rows, Security Central's own account
 number (`CS Account Prefix` + `CS Account Number`, e.g. `A1651-1047`). That
