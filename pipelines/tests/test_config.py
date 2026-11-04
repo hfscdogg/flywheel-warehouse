@@ -12,7 +12,7 @@ class TestClientConfig(unittest.TestCase):
         self.assertEqual(cfg.bq_location, "US")
         self.assertEqual(
             cfg.raw_datasets,
-            ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo",
+            ["raw_zoho", "raw_zohobilling", "raw_zohodesk", "raw_dtools", "raw_qbo",
              "raw_vendor", "raw_alarmdotcom", "raw_ga4",
              "raw_google_ads"],
         )
@@ -21,6 +21,7 @@ class TestClientConfig(unittest.TestCase):
         cfg = config.load_client("livewire")
         self.assertEqual(cfg.raw_dataset_for("zoho"), "raw_zoho")
         self.assertEqual(cfg.raw_dataset_for("zohobilling"), "raw_zohobilling")
+        self.assertEqual(cfg.raw_dataset_for("zohodesk"), "raw_zohodesk")
         self.assertIsNone(cfg.raw_dataset_for("hubspot"))
 
     def test_unknown_client(self):

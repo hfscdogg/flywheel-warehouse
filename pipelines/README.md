@@ -70,7 +70,7 @@ lib/secret_store.py  Secret Manager read/write             (imports google-cloud
 lib/web.py        requests session with retry/backoff
 lib/runner.py     shared run scaffolding (args, logging, land+watermark)
 lib/tabular.py    vendor report (.xlsx/.csv) parsing, by declared format — stdlib only
-zoho/ zohobilling/ dtools/ alarmdotcom/ qbo/   one ingest.py per API source
+zoho/ zohobilling/ zohodesk/ dtools/ alarmdotcom/ qbo/   one ingest.py per API source
 vendordrop/       files uploaded to the drop bucket -> raw_vendor
 tests/            stdlib-only unit tests (run in CI without pip installs)
 ```

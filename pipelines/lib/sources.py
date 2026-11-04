@@ -44,6 +44,54 @@ ZOHO_BILLING = {
     "page_size": 200,
 }
 
+ZOHO_DESK = {
+    # Zoho Desk REST API v1 (https://desk.zoho.com/DeskAPIDocument). Desk is
+    # Livewire's system of record for tickets: every web consult booking and
+    # service request is a Desk ticket, worked and closed there. The CRM
+    # Cases module holds a copy that nobody updates (49 of 49 sales cases
+    # since 2026-09-07 still "Unclaimed" on 2026-11-04 while Desk had them
+    # closed), so a consult or ticket metric built on raw_zoho.cases is
+    # wrong by construction. This source is what makes closed tickets, with
+    # their outcome, readable from the warehouse.
+    #
+    # Same OAuth refresh-token flow as Zoho CRM but the Desk.* scope family,
+    # so its own client/refresh-token secrets. Every call carries the org id
+    # in the orgId header (ZOHO_DESK_ORG_ID env var; Desk setup → Developer
+    # Space → API, or GET /api/v1/organizations).
+    #
+    # Tickets are pulled through /tickets/search, the only ticket listing
+    # that filters on modifiedTimeRange ("start,end", both GMT, format
+    # yyyy-MM-ddTHH:mm:ss.SSSZ). Pagination is from/limit, 1-based, limit at
+    # most 100, and HTTP 204 means no more. A search window is walked in
+    # slices of window_days so no single window needs an offset past Desk's
+    # search ceiling. Incremental: one window from the watermark to now.
+    #
+    # VERIFY on the first live run: the search response's ticket shape (the
+    # fields staging reads) and whether `from` is capped. Written from the
+    # docs, not observed; probe.py reads the landed payloads.
+    "api_path": "api/v1",
+    "default_api_domain": "https://desk.zoho.com",
+    "org_header": "orgId",
+    "search_path": "tickets/search",
+    "search_sort": "modifiedTime",
+    # Reference lists, full pull every run; small and they explain the ids
+    # a ticket carries (departmentId, assigneeId, teamId).
+    "reference_entities": [
+        {"name": "departments", "path": "departments", "list_key": "data"},
+        {"name": "agents", "path": "agents", "list_key": "data"},
+        {"name": "teams", "path": "teams", "list_key": "teams"},
+    ],
+    "ticket_entity": "tickets",
+    "id_field": "id",
+    "modified_field": "modifiedTime",
+    "page_size": 100,
+    "window_days": 30,
+    # Where a full refresh starts walking windows from. Livewire's Desk
+    # portal predates the warehouse by years; earlier than any ticket is
+    # harmless (empty windows cost one 204 each).
+    "history_start": "2015-01-01T00:00:00.000Z",
+}
+
 DTOOLS = {
     # D-Tools Cloud API, verified against the live API reference
     # (https://dtcloudapi.d-tools.cloud/apidocs/index.html, linked from

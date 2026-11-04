@@ -48,6 +48,7 @@ in step.
 |--------|--------|
 | Zoho CRM | `stg_zoho__leads`, `stg_zoho__contacts`, `stg_zoho__accounts`, `stg_zoho__deals`, `stg_zoho__meetings` (hours worked) |
 | Zoho Billing | `stg_zohobilling__subscriptions`, `stg_zohobilling__customers` |
+| Zoho Desk | `stg_zohodesk__tickets` (the ticket system of record: status, assignee, closed time, `is_sales_consult`), `stg_zohodesk__departments`, `stg_zohodesk__agents` |
 | Monitoring vendors | `stg_vendor__securitycentral_accounts` (address roster), `stg_vendor__securitycentral_status` (weekly status feed), `stg_vendor__alarmdotcom_accounts` (dealer-site Custom List export), `stg_vendor__parasol_accounts` (monthly invoice, which is the roster) — all from uploaded files, see [docs/vendor-reports.md](../../docs/vendor-reports.md) |
 | Alarm.com | `stg_alarmdotcom__customers` (Partner Portal API, scheduled pipeline; feeds `kpi_subscription_audit` alongside Security Central) |
 | D-Tools Cloud | `stg_dtools__opportunities`, `stg_dtools__quotes`, `stg_dtools__projects` (v1 API, no cost); `stg_dtools__v2_projects`, `stg_dtools__v2_project_proposals` (sold price, cost, quote number), `stg_dtools__v2_po_lines` (actual equipment cost); feed `kpi_project_job_costing` |

@@ -182,6 +182,21 @@ WITH loaded AS (
          CAST(NULL AS STRING) AS raw_table
   FROM staging.stg_zohobilling__subscriptions
   UNION ALL
+  SELECT 'stg_zohodesk__tickets' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_zohodesk.tickets' AS raw_table
+  FROM staging.stg_zohodesk__tickets
+  UNION ALL
+  SELECT 'stg_zohodesk__departments' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_zohodesk__departments
+  UNION ALL
+  SELECT 'stg_zohodesk__agents' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_zohodesk__agents
+  UNION ALL
   SELECT 'stg_vendor__alarmdotcom_accounts', 45, 'alarmdotcom/customerlist', MAX(loaded_at), NULL
   FROM staging.stg_vendor__alarmdotcom_accounts
   UNION ALL
@@ -234,6 +249,12 @@ ran AS (
   UNION ALL
   SELECT CONCAT('raw_zoho.', entity) AS raw_table, MAX(ran_at) AS ran_at
   FROM raw_zoho._flywheel_runs
+  GROUP BY entity
+  UNION ALL
+  -- Desk tickets are incremental on modifiedTime; a quiet night with no
+  -- ticket touched lands nothing and must not read as stale.
+  SELECT CONCAT('raw_zohodesk.', entity) AS raw_table, MAX(ran_at) AS ran_at
+  FROM raw_zohodesk._flywheel_runs
   GROUP BY entity
   UNION ALL
   -- D-Tools v1 is a full pull, but shares the dataset and run log; only the

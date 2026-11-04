@@ -118,7 +118,7 @@ class Freshness(unittest.TestCase):
 # Sources pulled incrementally: their landing tables grow only when a record
 # changes, so MAX(loaded_at) is when something last changed, not when the
 # ingest last ran. The check must read the run log for every one of these.
-INCREMENTAL = ("stg_qbo__", "stg_zoho__", "stg_dtools__v2_")
+INCREMENTAL = ("stg_qbo__", "stg_zoho__", "stg_zohodesk__tickets", "stg_dtools__v2_")
 
 
 def raw_tables_named():

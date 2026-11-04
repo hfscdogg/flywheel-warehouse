@@ -1,0 +1,66 @@
+name: ingest-zohodesk
+
+on:
+  schedule:
+    # With the other API pulls, before the 09:15 UTC transform.
+    - cron: "10 6 * * *"
+  workflow_dispatch:
+    inputs:
+      client:
+        description: Client slug
+        default: livewire
+      full_refresh:
+        description: Ignore the ticket watermark and walk the whole history
+        type: boolean
+        default: false
+
+concurrency:
+  group: ingest-zohodesk-${{ inputs.client || 'livewire' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # WIF token exchange
+  issues: write # alert.yml opens the failure issue; a called
+                # workflow cannot hold a permission its caller lacks
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      # Every dependency is installed, hash-checked, before the WIF token is
+      # minted, so nothing pip fetches ever runs with a credential in reach.
+      - run: pip install --require-hashes -r pipelines/requirements.txt
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          # This job's own account (scripts/lib/common.sh). No fallback: the
+          # retired ingest-writer is gone, and an unset variable should fail
+          # here rather than borrow some other account.
+          service_account: ${{ vars.WIF_SA_INGEST_ZOHODESK }}
+      - name: Ingest Zoho Desk → raw_zohodesk
+        env:
+          # The Desk organization id, required in the orgId header on every
+          # call. Not a secret (it grants nothing by itself); a repository
+          # variable like ZOHO_BILLING_ORG_ID.
+          ZOHO_DESK_ORG_ID: ${{ vars.ZOHO_DESK_ORG_ID }}
+          CLIENT: ${{ inputs.client || 'livewire' }}
+          FULL_REFRESH: ${{ inputs.full_refresh == true && '--full-refresh' || '' }}
+        run: >
+          python -m pipelines.zohodesk.ingest
+          --client "$CLIENT" $FULL_REFRESH
+
+  # Nothing told anyone when this broke. See .github/workflows/alert.yml.
+  alert:
+    needs: ingest
+    if: failure()
+    uses: ./.github/workflows/alert.yml
+    with:
+      workflow: ingest-zohodesk
+    permissions:
+      contents: read
+      issues: write
