@@ -132,29 +132,24 @@ DTOOLS_V2 = {
 }
 
 ALARMDOTCOM = {
-    # Alarm.com Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi).
-    # Auth is an OAuth password grant against a *different* path on the same
-    # host (/AdminApiAccess/token) using a REP's username and password plus a
-    # client id; the response bearer token authorizes PartnerApi calls.
-    # Rep credentials gate visibility: properties a rep cannot see come back
-    # null rather than erroring, so an all-NULL column can mean permissions
-    # rather than a wrong path.
-    # VERIFY on first run: the customer list path, its pagination, and the
-    # response envelope are written from the public docs, not observed
-    # responses. The docs show both /v1/ and /v1.0/ forms; the help page
-    # header states "base url: /PartnerApi, api version: v1", so v1 is the
-    # default and api_version is configurable so a 404 is a one-line fix.
-    # Requests send fields=* because the documented projection has a wildcard,
-    # which implies the unqualified default is narrower than everything.
+    # Alarm.com Partner Portal Web API (https://alarmadmin.alarm.com/PartnerApi,
+    # reference at /PartnerApi/help/docs/v1/, read 2026-11-04). Auth is an
+    # OAuth password grant on /AdminApiAccess/token (see the ingest's Token).
+    # There is no bulk customer read: GET /v1/customers lists the ids a rep
+    # can see (filtered by searchParameters.dealerId), and GET
+    # /v1/customers/{id} returns one full CustomerModel. GET on
+    # /v1/dealers/{id}/customers, the intro page's example, answers 405.
+    # Rep permissions gate visibility: properties a rep cannot see come back
+    # null rather than erroring.
     "token_url": "https://alarmadmin.alarm.com/AdminApiAccess/token",
     "base_url": "https://alarmadmin.alarm.com/PartnerApi",
     "api_version": "v1",
     "entities": [
-        {"name": "customers", "path": "dealers/{dealer_id}/customers",
-         "id_field": "customerId"},
+        {"name": "customers", "id_field": "customerId"},
     ],
     "modified_field": None,  # no modified timestamp documented; full pull
-    "page_size": 200,
+    "page_size": 100,        # ids per list page; the maximum is not documented
+    "pause_s": 0.1,          # between per-customer reads; no rate limit is documented
 }
 
 QBO = {

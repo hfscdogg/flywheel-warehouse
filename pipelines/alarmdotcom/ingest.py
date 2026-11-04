@@ -12,7 +12,6 @@ stopped billing for, which is the entire point.
 Env:
   ALARMDOTCOM_DEALER_ID  required — the dealer whose customers to pull
   ALARMDOTCOM_API_VERSION  optional override (docs show both v1 and v1.0)
-  ALARMDOTCOM_FIELDS  optional override for the `fields` projection (default *)
 """
 
 import logging
@@ -121,44 +120,93 @@ def records_from(body, entity_name):
     return []
 
 
-def fetch_entity(http, token, dealer_id, entity, limit):
-    """All pages of one entity. token is a Token, asked for a bearer per page."""
-    version = util.env_or("ALARMDOTCOM_API_VERSION", ALARMDOTCOM["api_version"])
-    path = entity["path"].format(dealer_id=dealer_id)
-    url = f"{ALARMDOTCOM['base_url']}/{version}/{path}"
-    page_size = ALARMDOTCOM["page_size"]
-    # Ask for every field. The API documents a `fields` projection whose
-    # wildcard is `*` — and a wildcard is only worth documenting if the
-    # default is something narrower. Their own list example asks for
-    # `?fields=customerId,address/street1` rather than relying on a default.
-    # Omitting it risks a partial payload that reads exactly like a wrong
-    # JSON path: an all-NULL address column, and a day spent debugging the
-    # model instead of the request. Same shape as the NULL plan_code in #18
-    # and the absent Billing addresses in #25.
-    fields = util.env_or("ALARMDOTCOM_FIELDS", "*")
-    records, page = [], 1
-    while True:
-        resp = http.get(url, headers={"Authorization": f"Bearer {token.bearer()}"},
-                        params={"page": page, "pageSize": page_size,
-                                "fields": fields}, timeout=60)
+def _get(http, token, url, params=None):
+    return http.get(url, headers={"Authorization": f"Bearer {token.bearer()}"},
+                    params=params, timeout=60)
+
+
+def list_customer_ids(http, token, dealer_id, page_size, max_pages=500):
+    """Every customer id the rep can see for the dealer, terminated included.
+
+    GET /v1/customers "Retrieves customer ids that your login has access to
+    matching the optional search parameters", as [{"customerId": n}, ...],
+    and "Returns 0 if the customer is not found", so 0 is dropped.
+
+    Paging: searchParameters.pageNumber / pageSize. The docs do not say
+    whether pages count from 0 or 1, so this starts at 0 and keeps ids in
+    order without duplicates: if 0 is read as the first page nothing is
+    skipped, and if the API treats it as page 1, page 1 repeats it and adds
+    nothing. It stops at a short page, or at a page after that adds no new
+    id (an API ignoring the page number).
+    Terminated accounts are included (includeTermed): accounts we may still
+    be billed for after they ended are what the audit looks for.
+    """
+    url = f"{ALARMDOTCOM['base_url']}/{api_version()}/customers"
+    ids, seen = [], set()
+    for page in range(max_pages):
+        resp = _get(http, token, url, params={
+            "searchParameters.dealerId": dealer_id,
+            "searchParameters.includeTermed": "true",
+            "searchParameters.pageNumber": page,
+            "searchParameters.pageSize": page_size,
+        })
         if resp.status_code == 204:
             break
-        util.raise_for_status(resp, f"Alarm.com {entity['name']}")
-        batch = records_from(resp.json(), entity["name"])
-        if not batch:
-            break
-        records.extend(batch)
-        if limit and len(records) >= limit:
-            return records[:limit]
-        # A short page is the last page. If the API ignores paging entirely it
-        # returns the same full page forever, so stop once a page repeats.
+        util.raise_for_status(resp, "Alarm.com customer ids")
+        batch = records_from(resp.json(), "customers")
+        new = [r.get("customerId") for r in batch
+               if isinstance(r, dict) and r.get("customerId") and r.get("customerId") not in seen]
+        for cid in new:
+            seen.add(cid)
+            ids.append(cid)
         if len(batch) < page_size:
-            break
-        page += 1
-        if page > 500:  # runaway guard: 100k accounts is far beyond any dealer
-            raise RuntimeError("Alarm.com pagination did not terminate — "
-                               "check whether page/pageSize are the right params")
-    return records
+            return ids
+        # Page 1 repeating page 0 is the API counting from 1; any later page
+        # adding nothing means it is ignoring the page number.
+        if not new and page != 1:
+            return ids
+    raise RuntimeError("Alarm.com customer id paging did not terminate after "
+                       f"{max_pages} pages; check the searchParameters.page* names")
+
+
+def fetch_customers(http, token, dealer_id, limit=0, pause=None):
+    """(records, skipped): the full record of every customer id listed.
+
+    GET /v1/customers/{id} per customer: the API has no bulk read. A rep
+    who cannot see one account gets 403 or 404 for it; that account is
+    skipped and counted rather than failing the run, unless most of them
+    fail, which means the rep or token is wrong rather than one account.
+    """
+    import time
+    pause = ALARMDOTCOM["pause_s"] if pause is None else pause
+    ids = list_customer_ids(http, token, dealer_id, ALARMDOTCOM["page_size"])
+    if limit:
+        ids = ids[:limit]
+    log.info("Alarm.com: %d customer ids for dealer %s", len(ids), dealer_id)
+    url = f"{ALARMDOTCOM['base_url']}/{api_version()}/customers"
+    records, skipped = [], []
+    for cid in ids:
+        resp = _get(http, token, f"{url}/{cid}")
+        if resp.status_code in (403, 404):
+            skipped.append((cid, resp.status_code))
+        else:
+            util.raise_for_status(resp, f"Alarm.com customer {cid}")
+            record = resp.json()
+            if isinstance(record, dict):
+                record.setdefault("customerId", cid)
+                records.append(record)
+        if pause:
+            time.sleep(pause)
+    if ids and len(skipped) > len(ids) / 2:
+        raise RuntimeError(f"Alarm.com refused {len(skipped)} of {len(ids)} customer "
+                           f"records (first: {skipped[:3]}); check the rep's permissions")
+    for cid, status in skipped[:20]:
+        log.warning("Alarm.com customer %s: HTTP %s, skipped", cid, status)
+    return records, skipped
+
+
+def api_version():
+    return util.env_or("ALARMDOTCOM_API_VERSION", ALARMDOTCOM["api_version"])
 
 
 def main():
@@ -193,12 +241,11 @@ def main():
     http = web.session()
     token = Token(http, cfg.project_id)
 
-    total = 0
-    for entity in ALARMDOTCOM["entities"]:
-        records = fetch_entity(http, token, dealer_id, entity, args.limit)
-        total += runner.land(bq_mod, bq, cfg, dataset, entity["name"], records,
-                             entity["id_field"], ALARMDOTCOM["modified_field"], run_id)
-    log.info("done: %d rows total", total)
+    entity = ALARMDOTCOM["entities"][0]
+    records, skipped = fetch_customers(http, token, dealer_id, args.limit)
+    total = runner.land(bq_mod, bq, cfg, dataset, entity["name"], records,
+                        entity["id_field"], ALARMDOTCOM["modified_field"], run_id)
+    log.info("done: %d customers landed, %d skipped (no access)", total, len(skipped))
 
 
 if __name__ == "__main__":
