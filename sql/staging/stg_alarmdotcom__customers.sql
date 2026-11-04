@@ -39,8 +39,17 @@ fields AS (
     JSON_VALUE(payload, '$.dealerId')                         AS dealer_id,
     SAFE_CAST(SUBSTR(JSON_VALUE(payload, '$.joinDate'), 1, 10) AS DATE) AS join_date,
     SAFE_CAST(SUBSTR(JSON_VALUE(payload, '$.termDate'), 1, 10) AS DATE) AS term_date,
-    JSON_VALUE(payload, '$.centralStationInfo.accountNumber') AS central_station_account,
+    -- Security Central's account number as every other source writes it,
+    -- prefix and number joined by a dash (A1651-1074): the API returns the
+    -- two halves separately. NULL when the prefix is missing, since a bare
+    -- number names no account on its own.
+    IF(JSON_VALUE(payload, '$.centralStationInfo.accountPrefix') IS NULL
+         OR JSON_VALUE(payload, '$.centralStationInfo.accountNumber') IS NULL, NULL,
+       CONCAT(JSON_VALUE(payload, '$.centralStationInfo.accountPrefix'), '-',
+              JSON_VALUE(payload, '$.centralStationInfo.accountNumber'))) AS central_station_account,
     SAFE_CAST(JSON_VALUE(payload, '$.servicePlanInfo.totalServicePrice') AS NUMERIC) AS service_plan_price,
+    JSON_VALUE(payload, '$.servicePlanInfo.packageDescription')        AS service_package,
+    SAFE_CAST(SUBSTR(JSON_VALUE(payload, '$.pendingTerminationDateUtc'), 1, 10) AS DATE) AS pending_termination_date,
     _loaded_at                                                AS loaded_at
   FROM latest
 )
@@ -56,6 +65,8 @@ SELECT
   term_date,
   central_station_account,
   service_plan_price,
+  service_package,
+  pending_termination_date,
   street_address,
   city,
   state,
@@ -120,7 +131,7 @@ ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN join_date
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN term_date
   SET OPTIONS (description = "Date the account was terminated; NULL while active.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN central_station_account
-  SET OPTIONS (description = "Central station account number the panel reports under; lines up with the monitoring station's account.");
+  SET OPTIONS (description = "Security Central account number the panel reports under, prefix and number joined (A1651-1074), as Security Central's own reports and stg_vendor__securitycentral_statement.account_number write it: an exact cross-vendor key. NULL when Alarm.com holds no prefix for it.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN service_plan_price
   SET OPTIONS (description = "Total price of the account's current Alarm.com service plan as the API reports it (servicePlanInfo.totalServicePrice), USD. Which side of the bill it is (dealer cost or list price) is not documented; check against an Alarm.com invoice before relying on it.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN street_address
@@ -137,6 +148,10 @@ ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN loaded_at
   SET OPTIONS (description = "When this record was last loaded into the warehouse (UTC).");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN subscriber_name
   SET OPTIONS (description = "Display name used for matching: full name, or the parts joined.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN service_package
+  SET OPTIONS (description = "Alarm.com service package on the account (e.g. Interactive Gold, Commercial).");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN pending_termination_date
+  SET OPTIONS (description = "Date the account is scheduled to terminate; NULL when none is pending. An account pending termination is still active until then.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN is_active_at_vendor
   SET OPTIONS (description = "TRUE when the status counts as active.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN address_key

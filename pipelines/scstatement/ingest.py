@@ -1,7 +1,7 @@
 """Security Central monthly statements (a Drive folder) → raw_vendor.
 
 The statement arrives by email on the 25th. A Google Apps Script in the
-recipient's own Gmail (scripts/apps-script/save-security-central-statements.gs)
+recipient's own Gmail (scripts/apps-script/save-vendor-documents.gs)
 saves each statement PDF into a Drive folder, so the warehouse never reads a
 mailbox. That folder is shared, Viewer, with ingest-vendor, which reads it
 here through the same read-only Drive access as the QuickBooks Desktop

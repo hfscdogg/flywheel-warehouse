@@ -21,6 +21,24 @@ dedupes across vendors: the same address appearing three times is three real
 monthly costs, and each is audited against billing on its own. A leak is a
 (vendor, account) pair with no live subscription, never an address.
 
+## Since 2026-11-04 nobody has to upload anything
+
+The subscription audit (`marts.kpi_subscription_audit`) now reads:
+
+| Vendor | Source | Arrives |
+|--------|--------|---------|
+| Security Central | the monthly statement (`stg_vendor__securitycentral_statement`) | emailed on the 25th, saved to Drive by the Apps Script |
+| Alarm.com | the Partner API (`stg_alarmdotcom__customers`) | nightly |
+| Parasol | the monthly invoice (`stg_vendor__parasol_accounts`) | upload, or emailed and saved to Drive |
+
+The Security Central Customer Count, All Accounts and Customer System
+Recurring reports and the two Alarm.com dealer-site exports below are no
+longer needed and no longer freshness-checked. The drop folders still work if
+one is uploaded. The last All Accounts roster is still read, as history, for
+what the statement does not print (ZIP, contract number, start date, phone);
+upload a fresh one only if many new Security Central accounts show
+BILLED_NO_MATCH for want of a ZIP.
+
 ## The vendor reports
 
 | Report | Carries | How often | Why we need it |
@@ -39,7 +57,7 @@ All Accounts roster for address matching; the account number does match
 Alarm.com's CS account exactly.
 
 It reaches the warehouse with nobody touching it. An Apps Script in Henry's
-Gmail ([`scripts/apps-script/save-security-central-statements.gs`](../scripts/apps-script/save-security-central-statements.gs))
+Gmail ([`scripts/apps-script/save-vendor-documents.gs`](../scripts/apps-script/save-vendor-documents.gs))
 saves the PDF daily into the Drive folder "Security Central Statements
 (warehouse)", shared Viewer with `ingest-vendor`; the warehouse never reads a
 mailbox. `pipelines/scstatement/` reads the folder nightly into
@@ -47,6 +65,14 @@ mailbox. `pipelines/scstatement/` reads the folder nightly into
 not add up to its own section totals, summary counts and amount due lands
 nothing and fails the run. The October 2026 statement: 522 lines, $2,546.60,
 reconciled to the cent.
+
+**Parasol's invoice arrives by email too** (from accounting@getparasol.com
+to ap@, "Parasol's <Month> monthly invoice for: Livewire"), so the same Apps
+Script saves it to the Drive folder "Parasol Invoices (warehouse)", and
+`pipelines/drivedrop/` lands it in exactly the table a bucket upload of
+`parasol/invoice/` does. `DRIVE_DROPS` in `client.env` ties each Drive folder
+to a report format; another emailed report joins by adding a rule to the
+script and an entry there. Uploading to the bucket still works.
 
 **Alarm.com — "Custom List"** (dealer site → export → .csv). Carries a full
 address on every row and, on most rows, Security Central's own account

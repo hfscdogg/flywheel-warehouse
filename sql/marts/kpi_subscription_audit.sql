@@ -35,31 +35,29 @@
 -- summing it across vendors is a real total rather than the Parasol-only
 -- figure this mart used to report.
 --
--- TWO FEEDS, ONE ROW PER ACCOUNT
--- Security Central can schedule the "Customer Count" report weekly but not
--- the "All Accounts" export, and only All Accounts carries an address. So:
---   status  comes from staging.stg_vendor__securitycentral_status  (weekly)
---   address comes from staging.stg_vendor__securitycentral_accounts (occasional)
--- They join on contract number — a FULL OUTER JOIN, so an account that
--- appears in only one feed is still audited rather than silently dropped.
--- `status_source` says which feed the status came from, so a stale roster is
--- visible instead of quietly overriding this week's answer. Before any weekly
--- file has landed the status table is empty and every row reads 'roster' —
--- the audit still answers, off the roster's own status, rather than waiting
--- on a feed that arrives once a week.
---
--- A contract can cover more than one account (same subscriber, two panels —
--- 2 of 586 in the 2026-08-27 files). The weekly feed reports status per
--- contract, so both accounts inherit it; the grain stays one row per account.
+-- WHERE EACH VENDOR'S ACCOUNTS COME FROM (since 2026-11-04)
+-- Nothing here waits on a person fetching a report.
+--   Security Central  the monthly statement emailed on the 25th
+--                     (staging.stg_vendor__securitycentral_statement)
+--   Alarm.com         the Partner API, nightly (staging.stg_alarmdotcom__customers)
+--   Parasol           the monthly invoice (staging.stg_vendor__parasol_accounts)
+-- Each is the vendor's own current list, so an account on it is billed and
+-- one off it is gone. The weekly Customer Count feed, the All Accounts and
+-- recurring billing reports and the Alarm.com exports were all retired from
+-- the audit then. The last All Accounts roster is still read, as history,
+-- for what the statement does not print: ZIP, contract number, start date,
+-- the contact phone, and Security Central's own spelling of the name and
+-- street. It is not expected to be fresh. Switched over measured the same
+-- day: no account on both the old and new audit changed its finding.
 --
 -- Matching to billing is on house number + street name + ZIP (address_key),
 -- the street name suffix-stripped so "Dr" and "Drive" agree. Alarm.com has a
--- second route: its export carries Security Central's account number, an
+-- second route: its record carries Security Central's account number, an
 -- exact key, so a row the address misses can borrow the match of the Security
 -- Central account it is the same property as (`match_via = 'sc_account'`).
 -- Two more keys sit between the addresses and the name: Alarm.com's
--- export carries an email on every row and Security Central's a contact
--- phone on most, and either matched against Zoho Billing's own email and
+-- record carries an email on every account and Security Central's roster a
+-- contact phone on most, and either matched against Zoho Billing's own email and
 -- phone reaches 37 accounts no address or name could
 -- (`match_via = 'email'` / `'phone'`).
 -- Street names
@@ -83,155 +81,142 @@ Before acting on any row check name_overlaps: FALSE means the address probably m
 The QuickBooks customer is resolved independently of the Billing one, from the account's own address, email, phone and name, so the two can disagree. Judge the QuickBooks match by qbo_match_via and qbo_name_overlaps, exactly as you would judge the Billing match by match_via and name_overlaps.
 """)
 AS
-WITH roster AS (
-  SELECT * FROM staging.stg_vendor__securitycentral_accounts
-),
-weekly AS (
-  SELECT * FROM staging.stg_vendor__securitycentral_status
-),
--- One row per account, weekly status winning over the roster's when both
--- feeds carry it. Contract number is the only field both reports share, so
--- it is the join key; where two accounts share one contract the weekly
--- status applies to both, which is what the vendor means by it.
-sc_identity AS (
-  SELECT
-    COALESCE(r.contract_no, w.contract_no)      AS contract_no,
-    COALESCE(r.account_no, w.account_no)        AS account_no,
-    COALESCE(w.subscriber_name, r.subscriber_name) AS subscriber_name,
-    r.street_address,
-    r.city,
-    r.state,
-    r.zip,
-    r.account_type,
-    COALESCE(w.status, r.status)                AS vendor_status,
-    COALESCE(w.is_active_at_vendor, r.is_active_at_vendor) AS is_active_at_vendor,
-    IF(w.contract_no IS NULL, 'roster', 'weekly') AS status_source,
-    COALESCE(w.loaded_at, r.loaded_at)          AS status_as_of,
-    r.contract_no IS NOT NULL                   AS in_roster,
-    COALESCE(r.started_on, w.started_on)        AS started_on,
-    r.address_key
-  FROM roster r
-  FULL OUTER JOIN weekly w ON r.contract_no = w.contract_no
-),
--- What Security Central charges for each account, from the monthly recurring
--- report — the only feed of theirs that carries a price at all. An account is
--- billed as several resource lines (monitoring, plus any scheduled tests), so
--- the account's cost is their sum. monthly_amount is already monthly on every
--- line including the quarterly and yearly ones; see the staging model.
-sc_billing AS (
-  SELECT
-    account_no,
-    SUM(monthly_amount)     AS monthly_cost,
-    MAX(loaded_at)          AS loaded_at,
-    -- Carried so a billing-only account arrives with a name on it. Those are
-    -- the rows the audit most wants a human to look at, and an unnamed one
-    -- cannot be checked against anything.
-    ANY_VALUE(subscriber_name) AS subscriber_name,
-    -- THE DIRECT-PAYER MARKER, and the exclusion list this audit has been
-    -- asking for since it was written. Security Central bills a few customers
-    -- itself rather than billing Livewire for them, and prints how each one
-    -- pays (CHECK, CC-DRAFT, BANK-DRAFT). Those customers ARE paying for
-    -- monitoring -- just not to us and not through Zoho Billing -- so they are
-    -- not a leak, and nothing else in the warehouse says so.
-    --
-    -- LOGICAL_OR across the account's lines: the method is printed per
-    -- resource line, and one marked line makes the account direct-billed.
-    -- Derived here rather than in a CTE of its own because this feed is
-    -- already reduced to one row per account right here; a second read joined
-    -- back on account_no fans out -- the report carries several lines per
-    -- account, which silently inflates every count and every sum downstream.
-    --
-    -- bill_price (what the customer pays Security Central) is non-null on
-    -- exactly the same accounts, so the two agree and either would do. The
-    -- payment method is the better marker of the two: it says how the customer
-    -- pays rather than how much, and it cannot be confused with our cost.
-    LOGICAL_OR(payment_method IS NOT NULL) AS direct_billed
-  FROM staging.stg_vendor__securitycentral_recurring
-  WHERE account_no IS NOT NULL AND account_no != ''
-  GROUP BY account_no
-),
--- FULL OUTER, like the join above and for the same reason: an account
--- Security Central bills us for that reaches neither the roster nor the
--- weekly feed is the most expensive kind of leak there is, and an inner join
--- would drop exactly those rows. They arrive with in_roster FALSE, which is
--- what BILLED_NO_ROSTER exists to report.
+WITH
+-- SECURITY CENTRAL: THE MONTHLY STATEMENT
+-- Since 2026-11-04 Security Central's side of the audit comes from the
+-- statement they email on the 25th (staging.stg_vendor__securitycentral_statement),
+-- saved to Drive with nobody touching it. It is the bill itself: every
+-- account Livewire pays for, one recurring line per service, so an account
+-- on it is active and its lines are what it costs. It replaced three
+-- reports a person had to fetch (All Accounts, Customer Count, Customer
+-- System Recurring), each of which had to be fresh for the audit to be.
 --
--- A billing-only row is active by construction — we are being invoiced for it
--- this month — which is the same reading the Parasol CTE below takes of its
--- invoice.
+-- Direct-billed customers, whom Security Central bills themselves, are not
+-- on it: on the 2026-10-25 statement 0 of the 27 the recurring report marked
+-- direct-billed appear. So every Security Central row here is a cost to us
+-- and direct_billed is FALSE by construction.
 --
--- The QUALIFY guards the sum: where two identity rows share one account
--- number, both would otherwise carry the account's full cost and a SUM across
--- the mart would count it twice. The cost lands on one row; the other reads
--- NULL, meaning "not known here", exactly as it did before this feed existed.
+-- A line billing several months at once (quarterly, 11/01 to 01/31) is
+-- spread over its months, so vendor_monthly_cost stays monthly.
+sc_statement AS (
+  SELECT
+    account_number                                AS account_no,
+    ANY_VALUE(customer_name)                      AS subscriber_name,
+    ANY_VALUE(street)                             AS street_address,
+    STRING_AGG(DISTINCT service, ', ' ORDER BY service) AS account_type,
+    ROUND(SUM(amount / GREATEST(DATE_DIFF(period_end, period_start, MONTH) + 1, 1)), 2)
+                                                  AS monthly_cost,
+    MAX(loaded_at)                                AS loaded_at
+  FROM staging.stg_vendor__securitycentral_statement
+  WHERE is_latest_statement AND section = 'recurring' AND account_number IS NOT NULL
+  GROUP BY account_number
+),
+-- The statement prints a street but no city or ZIP, and the address key needs
+-- the ZIP. The last All Accounts roster Security Central sent has it for 470
+-- of the 477 accounts on the 2026-10-25 statement, and is preferred: it is
+-- Security Central's own record of the property, and Alarm.com's install ZIP
+-- disagrees with it on a handful (4806 Morrison Rd is 23230 in the roster,
+-- 23030 at Alarm.com). Alarm.com, under the same account number, fills the
+-- accounts the roster predates (all 477 with both). The roster is read as
+-- history, not as a feed: it is not expected to be fresh, and its contract
+-- numbers and start dates ride along.
+--
+-- The roster's name and street win too, where it has the account. The
+-- statement prints a billing label, not a record: "DR. SARAH WILMER" at
+-- "27 A BRIGGS DRIVE" (the roster's 27 Briggs Drive) and "SCOTT ROINNEL"
+-- (the roster's Rionnel) each lost a match the roster's spelling makes.
+sc_place AS (
+  SELECT
+    s.* EXCEPT (subscriber_name, street_address),
+    COALESCE(r.subscriber_name, s.subscriber_name) AS subscriber_name,
+    COALESCE(r.street_address, s.street_address)   AS street_address,
+    r.contract_no,
+    r.started_on,
+    COALESCE(r.city, a.city)                      AS city,
+    COALESCE(r.state, a.state)                    AS state,
+    COALESCE(r.zip, a.zip)                        AS zip
+  FROM sc_statement s
+  LEFT JOIN (
+    SELECT central_station_account AS account_no,
+           ANY_VALUE(city) AS city, ANY_VALUE(state) AS state, ANY_VALUE(zip) AS zip
+    FROM staging.stg_alarmdotcom__customers
+    WHERE central_station_account IS NOT NULL AND zip IS NOT NULL
+    GROUP BY central_station_account
+  ) a ON a.account_no = s.account_no
+  LEFT JOIN (
+    SELECT account_no, ANY_VALUE(contract_no) AS contract_no, MIN(started_on) AS started_on,
+           ANY_VALUE(subscriber_name) AS subscriber_name,
+           ANY_VALUE(street_address) AS street_address,
+           ANY_VALUE(city) AS city, ANY_VALUE(state) AS state, ANY_VALUE(zip) AS zip
+    FROM staging.stg_vendor__securitycentral_accounts
+    WHERE account_no IS NOT NULL
+    GROUP BY account_no
+  ) r ON r.account_no = s.account_no
+),
 securitycentral AS (
   SELECT
-    i.contract_no,
-    COALESCE(i.account_no, b.account_no)        AS account_no,
-    COALESCE(i.subscriber_name, b.subscriber_name) AS subscriber_name,
-    i.street_address,
-    i.city,
-    i.state,
-    i.zip,
-    i.account_type,
-    COALESCE(i.vendor_status, 'Billed')         AS vendor_status,
-    COALESCE(i.is_active_at_vendor, TRUE)       AS is_active_at_vendor,
-    COALESCE(i.status_source, 'recurring')      AS status_source,
-    COALESCE(i.status_as_of, b.loaded_at)       AS status_as_of,
-    COALESCE(i.in_roster, FALSE)                AS in_roster,
-    i.started_on,
-    COALESCE(i.address_key, '|')                AS address_key,
-    IF(ROW_NUMBER() OVER (
-         PARTITION BY COALESCE(i.account_no, b.account_no)
-         ORDER BY i.contract_no NULLS LAST
-       ) = 1, b.monthly_cost, NULL)             AS vendor_monthly_cost,
-    -- NOT guarded by the ROW_NUMBER above. A cost must land on one row or a
-    -- SUM double-counts it; a property of the account belongs on every row of
-    -- that account, or a filter on it drops the row the cost is not on.
-    COALESCE(b.direct_billed, FALSE)            AS direct_billed
-  FROM sc_identity i
-  FULL OUTER JOIN sc_billing b ON i.account_no = b.account_no
+    contract_no,
+    account_no,
+    subscriber_name,
+    street_address,
+    city,
+    state,
+    zip,
+    account_type,
+    'Billed'                                      AS vendor_status,
+    TRUE                                          AS is_active_at_vendor,
+    'statement'                                   AS status_source,
+    loaded_at                                     AS status_as_of,
+    TRUE                                          AS in_roster,
+    started_on,
+  -- Identical to the key every other model builds; see
+  -- pipelines/tests/test_sql_address_key.py.
+  CONCAT(
+    COALESCE(REGEXP_EXTRACT(street_address, r'^\s*(\d+)'), ''), '|',
+    COALESCE(REGEXP_REPLACE(REGEXP_REPLACE(
+      REGEXP_REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(
+        LOWER(COALESCE(REGEXP_EXTRACT(street_address, r'^\s*\d+\s+(.*)$'), '')),
+        r'\b(n|s)(?:orth|outh)(e|w)(?:ast|est)\b', r'\1\2'),
+        r'\b(n|s)(?:orth|outh)\b', r'\1'),
+        r'\b(e|w)(?:ast|est)\b', r'\1'),
+      r'\b(st|street|rd|road|dr|drive|ln|lane|ct|court|cir|circle|pl|place|ave|avenue|blvd|boulevard|way|ter|terrace|trl|trail|pkwy|parkway|hwy|highway|apt|unit|ste|suite)\b\.?', ''),
+      r'[^a-z0-9]+', ''), ''), '|',
+    COALESCE(REGEXP_EXTRACT(zip, r'(\d{5})'), '')
+  )  AS address_key,
+    monthly_cost                                  AS vendor_monthly_cost,
+    FALSE                                         AS direct_billed
+  FROM sc_place
 ),
--- Alarm.com comes from the dealer-site "Custom List" export rather than the
--- Partner API: the export landed first while the API waits on a working
--- client_id, and it is the better feed anyway — an address on every row, and
--- Security Central's own account number on 502 of 597, which is an exact
--- cross-vendor key where the address match is only an approximation. When
--- the API is credentialed its staging model joins in here; today it is empty
--- and the export is the whole picture.
--- Alarm.com bills an account as a base fee plus a row per add-on switched on
--- for it, between 1 and 31 rows, so the account's cost is their sum. Only the
--- recurring rows count: the same export carries prorations and activation
--- fees, which are real money but not a monthly rate.
-adc_billing AS (
-  SELECT customer_id, SUM(charge_amount) AS monthly_cost
-  FROM staging.stg_vendor__alarmdotcom_billing
-  WHERE is_recurring
-  GROUP BY customer_id
-),
+-- ALARM.COM: THE PARTNER API
+-- Since 2026-11-04 from the Partner API (staging.stg_alarmdotcom__customers),
+-- pulled nightly, which replaced the dealer-site Custom List and billing
+-- exports a person had to download. Every field the exports gave the audit is
+-- on the API record: the full install address, Security Central's account
+-- number (an exact cross-vendor key), the email, and the plan price, which
+-- matched the billing export's recurring total to the cent on 581 of 586
+-- accounts (2026-11-04). Terminated accounts are left out, as the export left
+-- them out; one pending termination is still listed, and inactive.
 alarmdotcom AS (
   SELECT
-    a.sc_account_no                             AS contract_no,
-    a.customer_id                               AS account_no,
-    a.subscriber_name,
-    a.street_address,
-    a.city,
-    a.state,
-    a.zip,
-    a.service_package                           AS account_type,
-    IF(a.is_active_at_vendor, 'Active', 'Pending Termination')
-                                                AS vendor_status,
-    a.is_active_at_vendor,
-    'export'                                    AS status_source,
-    a.loaded_at                                 AS status_as_of,
-    TRUE                                        AS in_roster,
-    a.started_on,
-    a.address_key,
-    -- LEFT, not inner: an account on the dealer list with no charge row is
-    -- still an account, and reads NULL rather than disappearing.
-    b.monthly_cost                              AS vendor_monthly_cost
-  FROM staging.stg_vendor__alarmdotcom_accounts a
-  LEFT JOIN adc_billing b ON a.customer_id = b.customer_id
+    central_station_account                       AS contract_no,
+    customer_id                                   AS account_no,
+    subscriber_name,
+    street_address,
+    city,
+    state,
+    zip,
+    service_package                               AS account_type,
+    IF(pending_termination_date IS NULL, 'Active', 'Pending Termination')
+                                                  AS vendor_status,
+    pending_termination_date IS NULL              AS is_active_at_vendor,
+    'api'                                         AS status_source,
+    loaded_at                                     AS status_as_of,
+    TRUE                                          AS in_roster,
+    join_date                                     AS started_on,
+    address_key,
+    service_plan_price                            AS vendor_monthly_cost
+  FROM staging.stg_alarmdotcom__customers
+  WHERE NOT COALESCE(is_terminated, FALSE)
 ),
 -- Parasol bills from an invoice that doubles as the roster, so every account
 -- is active by construction and every one carries its own rate. That rate is
@@ -261,14 +246,12 @@ parasol AS (
 -- most of these are STRING, so reordering one CTE would quietly swap city for
 -- state instead of failing. Adding a vendor means adding a CTE and one arm
 -- here, both of which name every column.
--- direct_billed is FALSE, never NULL, on the two vendors that have no
--- direct-billing arrangement to report -- the same choice
+-- direct_billed is FALSE, never NULL, on every vendor (Security Central's
+-- statement leaves out the customers it bills directly) -- the same choice
 -- qbo_monitoring_revenue makes, and for the same reason. A three-valued
 -- advisory column is a trap: the obvious way to use this one is
--- `WHERE NOT direct_billed`, and NULL would silently drop every Alarm.com and
--- Parasol row from that filter. FALSE here means "no direct-billing evidence",
--- which on those two vendors is all that can be said; the column description
--- says so rather than letting a reader infer that each was checked.
+-- `WHERE NOT direct_billed`, and NULL would silently drop rows from that
+-- filter.
 accounts AS (
   SELECT
     'securitycentral' AS vendor,
@@ -611,8 +594,8 @@ vendor_contact AS (
     a.customer_id            AS account_no,
     LOWER(TRIM(a.email))     AS email_key,
     CAST(NULL AS STRING)     AS phone_key
-  FROM staging.stg_vendor__alarmdotcom_accounts a
-  WHERE TRIM(COALESCE(a.email, '')) != ''
+  FROM staging.stg_alarmdotcom__customers a
+  WHERE TRIM(COALESCE(a.email, '')) != '' AND NOT COALESCE(a.is_terminated, FALSE)
   UNION ALL
   SELECT
     'securitycentral',
@@ -658,7 +641,7 @@ customer_by_contact AS (
 -- absent from Billing entirely and still be invoiced for monitoring every
 -- month. Measured 2026-09-17, 128 of the 230 BILLED_NO_SUBSCRIPTION rows have
 -- monitoring revenue in QuickBooks. With the 17 Security Central bills
--- direct (see direct_billed, derived in sc_billing above) and the 2 that are
+-- direct (see direct_billed; then from the recurring report) and the 2 that are
 -- both, 87 of the 230 are left genuinely unexplained. Most of the leak list
 -- is wrong.
 --
@@ -938,8 +921,8 @@ billing_twins AS (
   WHERE key_kind = 'name' OR holders <= 4
   GROUP BY customer_id
 ),
--- Alarm.com's export carries Security Central's own account number on 502 of
--- 597 rows (CS Account Prefix + CS Account Number, e.g. A1651-1047), and the
+-- Alarm.com's record carries Security Central's own account number (502 of
+-- 597 rows in the old export; CS Account Prefix + Number, e.g. A1651-1047), and the
 -- alarmdotcom CTE above puts it in contract_no. This maps that number to the
 -- Security Central account's address, so an Alarm.com row whose own address
 -- reaches no customer can borrow the address of the Security Central account
@@ -948,12 +931,22 @@ billing_twins AS (
 -- One row per account number: two Security Central rows can share one (the
 -- same account with two contacts), and without this a single Alarm.com
 -- account would fan out into several audit rows.
+--
+-- The last All Accounts roster is the fallback. The bridge needs Security
+-- Central's record of the property, not its bill, and an account can leave
+-- the statement while its Alarm.com side carries on: A1651-1248 (30 Ampthill
+-- Rd) is off the 2026-10-25 statement, and Alarm.com's 23238 for it reaches
+-- no customer where the roster's 23226 does.
 sc_account_address AS (
   SELECT account_no, address_key
-  FROM securitycentral
+  FROM (
+    SELECT account_no, address_key, 1 AS pref FROM securitycentral
+    UNION ALL
+    SELECT account_no, address_key, 2 FROM staging.stg_vendor__securitycentral_accounts
+  )
   WHERE account_no IS NOT NULL AND REGEXP_CONTAINS(address_key, r'^\d+\|[a-z0-9]+\|\d{5}$')
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY account_no ORDER BY address_key
+    PARTITION BY account_no ORDER BY pref, address_key
   ) = 1
 ),
 -- Each account resolved to a Billing customer, by its own address first and
@@ -1222,37 +1215,37 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_no
   SET OPTIONS (description = "The vendor's own account number for this account.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN contract_no
-  SET OPTIONS (description = "Security Central: the contract number. Alarm.com: Security Central's account number for the same property, an exact cross-vendor key. Parasol: NULL.");
+  SET OPTIONS (description = "Security Central: the contract number, from the last All Accounts roster (NULL for an account newer than it). Alarm.com: Security Central's account number for the same property, an exact cross-vendor key. Parasol: NULL.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN subscriber_name
-  SET OPTIONS (description = "Name on the vendor's record for this account.");
+  SET OPTIONS (description = "Name on the vendor's record for this account. Security Central: as the All Accounts roster spells it where the roster has the account, else as the statement prints it (upper case).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN street_address
-  SET OPTIONS (description = "Service address per the vendor.");
+  SET OPTIONS (description = "Service address per the vendor. Security Central: the roster's, else the statement's.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN city
   SET OPTIONS (description = "Service city per the vendor.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN state
   SET OPTIONS (description = "Service state per the vendor.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN zip
-  SET OPTIONS (description = "Service ZIP per the vendor; may carry ZIP+4 for Alarm.com.");
+  SET OPTIONS (description = "Service ZIP per the vendor; may carry ZIP+4 for Alarm.com. Security Central's statement prints none: the roster's, else Alarm.com's for the same Security Central account number.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN account_type
-  SET OPTIONS (description = "Security Central: Residential, Commercial or Commercial Fire. Alarm.com: the service package. Parasol: the service tier, Essential or Enhanced.");
+  SET OPTIONS (description = "Security Central: the services billed on the statement, comma-separated (Monitoring, Weekly Test, Open/Close Log...). Alarm.com: the service package. Parasol: the service tier, Essential or Enhanced.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_status
-  SET OPTIONS (description = "The vendor's own status word. Only Active counts as active; Deactivated and Inactive do not.");
+  SET OPTIONS (description = "The vendor's own status. Security Central: Billed (on the latest statement). Alarm.com: Active, or Pending Termination (scheduled to end; counted inactive). Parasol: Billed.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_source
-  SET OPTIONS (description = "Where vendor_status came from: weekly (Security Central weekly Customer Count feed), roster (Security Central All Accounts export, used when the weekly feed has no row), recurring (Security Central billing report, for an account that reaches neither of those but is still being invoiced), export (Alarm.com dealer-site export), invoice (Parasol monthly invoice).");
+  SET OPTIONS (description = "Where the account came from: statement (Security Central's monthly statement), api (Alarm.com Partner API), invoice (Parasol monthly invoice).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN status_as_of
-  SET OPTIONS (description = "When that status was loaded into the warehouse (UTC).");
+  SET OPTIONS (description = "When that source was loaded into the warehouse (UTC).");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN in_roster
-  SET OPTIONS (description = "FALSE when the account is known only from a feed that carries no address, so no billing match was possible — including a Security Central account that appears in the recurring billing report but in neither the roster nor the weekly feed. TRUE for every Alarm.com and Parasol row.");
+  SET OPTIONS (description = "TRUE on every row: every source now carries an address. Kept so queries filtering on it keep working; BILLED_NO_ROSTER no longer occurs.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN started_on
-  SET OPTIONS (description = "Account start date per the vendor. NULL for Parasol, whose invoice does not carry one.");
+  SET OPTIONS (description = "Account start date per the vendor. Security Central: from the roster, NULL for an account newer than it. Alarm.com: the join date. NULL for Parasol, whose invoice does not carry one.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN vendor_monthly_cost
-  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD, from that vendor's own billing feed: Security Central's recurring report, Alarm.com's billing export, Parasol's invoice. Already summed over the several lines a vendor bills one account as. NULL means the cost is not known for that account — its vendor's billing feed has not been uploaded, or carries no row for it — and never that the account is free.");
+  SET OPTIONS (description = "What this vendor charges for THIS account per month, USD, from that vendor's own bill: Security Central's statement (its recurring lines, a quarterly or longer line spread over its months), Alarm.com's plan price on the API record (equal to the billing export's to the cent on 581 of 586 accounts, 2026-11-04), Parasol's invoice. Already summed over the several lines a vendor bills one account as. NULL means the cost is not known for that account, never that it is free.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_id
   SET OPTIONS (description = "Zoho Billing customer matched to this account. NULL when no match was found.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN matched_customer_name
   SET OPTIONS (description = "Display name of the matched Zoho Billing customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN match_via
-  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, via Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by name), qbo (vendor address to a QuickBooks billing address, then to Billing by name), email (the account's own email matched exactly one Billing customer; Alarm.com only, the one export carrying one), phone (the same by contact phone, last ten digits; Security Central only), name (the subscriber name, as written or turned from 'Last, First', matched exactly one Billing customer, where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm one against the property before acting on it. Because email and phone outrank name, an account that once matched by name may now match by contact, to a different customer.");
+  SET OPTIONS (description = "How the billing customer was reached, strongest first: sc_account (Alarm.com only, via Security Central's account number, an exact key), billing (a Billing address directly), crm (vendor address to a Zoho CRM account, then to Billing by name), qbo (vendor address to a QuickBooks billing address, then to Billing by name), email (the account's own email matched exactly one Billing customer; Alarm.com only, the one source carrying one), phone (the same by contact phone, last ten digits; Security Central only, from its roster), name (the subscriber name, as written or turned from 'Last, First', matched exactly one Billing customer, where nothing above resolved). NULL when unmatched. A name match is the WEAKEST: it says two records share a name, not that they are the same household, so confirm one against the property before acting on it. Because email and phone outrank name, an account that once matched by name may now match by contact, to a different customer.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN name_overlaps
   SET OPTIONS (description = "TRUE when a word of the vendor's subscriber name appears in the matched customer's name. FALSE is a strong signal the address matched the WRONG household; never act on such a row without checking it by hand. An address match like that is replaced by the customer the account's own email or phone reaches wherever that customer's name DOES agree, so a FALSE that remains had no better match. Carries no information where match_via is name, which matched on the name to begin with — judge those rows by the address instead.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN active_subscriptions
@@ -1276,7 +1269,7 @@ ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_invoic
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN qbo_monitoring_last_settled
   SET OPTIONS (description = "Date of the most recent such monitoring invoice that carries no remaining balance. This is the strongest paid-signal available: QuickBooks payments carry no link to the invoice they settle, so the monitoring LINE cannot be traced to a payment — only the invoice it sat on can be shown to be fully settled. All 918 rows invoiced within the last twelve months are settled (2026-09-18). NULL means no monitoring invoice has been settled, which on a recent invoice may mean nothing more than that it is not due yet.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN direct_billed
-  SET OPTIONS (description = "TRUE when Security Central bills this account's customer DIRECTLY instead of billing Livewire, from the payment method (CHECK, CC-DRAFT, BANK-DRAFT) on the account's lines in its recurring billing report. Such a customer IS paying for monitoring, just not to us and not through Zoho Billing, so the row is not a leak however its finding reads. This is the strongest evidence here and the only kind needing no match at all: it is keyed on the vendor's own account number, where qbo_monitoring_revenue rests on a name or address reaching the right QuickBooks customer. Measured 2026-09-18: TRUE on 27 rows, 4 with monitoring revenue too, none on the leak list. FALSE means no direct-billing evidence, and on an Alarm.com or Parasol row only that: neither vendor reports such an arrangement, so the marker is Security Central's alone. Never NULL, so `WHERE NOT direct_billed` is safe. TRUE sends the row to PAID_OUTSIDE_BILLING.");
+  SET OPTIONS (description = "FALSE on every row since 2026-11-04. It was TRUE where Security Central billed the customer directly, read from its recurring billing report; the audit now reads Security Central's statement, which is Livewire's own bill and leaves those customers out (0 of 27 on the 2026-10-25 statement), so they are no longer rows here. Never NULL; kept so `WHERE NOT direct_billed` keeps working.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_duplicate_profile
   SET OPTIONS (description = "TRUE when ANOTHER Zoho Billing profile sharing this customer's name, email or phone holds active subscriptions that the matched profile does not. Zoho Billing grows duplicate profiles — a phone call or a CRM case can create a second one carrying the name and nothing else — so an account matches the empty twin while the subscription sits on the real profile. This is the only evidence column saying the MATCH is wrong rather than that the revenue is elsewhere, and the only one whose remedy is outside the warehouse: merge the two profiles in Zoho and the row resolves itself. billing_twin_via says which key reached the twin and billing_twin_name which profile holds the subscriptions. A twin found by name alone can be an unrelated household with the same name, so check addresses before merging; one found by email or phone is the same contact. An email or phone shared by more than four profiles is a placeholder, never a key. TRUE sends the row to BILLED_DUPLICATE_PROFILE.");
 ALTER TABLE marts.kpi_subscription_audit ALTER COLUMN billing_twin_via
