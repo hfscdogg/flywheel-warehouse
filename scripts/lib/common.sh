@@ -295,7 +295,7 @@ source_secrets() {
     zoho)        echo "flywheel-zoho-client-id flywheel-zoho-client-secret flywheel-zoho-refresh-token" ;;
     zohobilling) echo "flywheel-zohobilling-client-id flywheel-zohobilling-client-secret flywheel-zohobilling-refresh-token" ;;
     dtools)      echo "flywheel-dtools-api-key flywheel-dtools-auth-basic flywheel-dtools-v2-refresh-token" ;;
-    alarmdotcom) echo "flywheel-alarmdotcom-username flywheel-alarmdotcom-password flywheel-alarmdotcom-client-id" ;;
+    alarmdotcom) echo "flywheel-alarmdotcom-username flywheel-alarmdotcom-password flywheel-alarmdotcom-client-id flywheel-alarmdotcom-twofactor-device-id" ;;
     qbo)         echo "flywheel-qbo-client-id flywheel-qbo-client-secret flywheel-qbo-refresh-token flywheel-qbo-realm-id" ;;
     vendor)      echo "" ;;  # files in a bucket, no credentials
     *) die "no ingest pipeline is defined for raw_$1 (scripts/lib/common.sh source_secrets)" ;;
