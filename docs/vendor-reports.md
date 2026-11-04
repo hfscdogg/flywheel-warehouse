@@ -39,7 +39,7 @@ All Accounts roster for address matching; the account number does match
 Alarm.com's CS account exactly.
 
 It reaches the warehouse with nobody touching it. An Apps Script in Henry's
-Gmail ([`scripts/apps-script/save-security-central-statements.gs`](../scripts/apps-script/save-security-central-statements.gs))
+Gmail ([`scripts/apps-script/save-vendor-documents.gs`](../scripts/apps-script/save-vendor-documents.gs))
 saves the PDF daily into the Drive folder "Security Central Statements
 (warehouse)", shared Viewer with `ingest-vendor`; the warehouse never reads a
 mailbox. `pipelines/scstatement/` reads the folder nightly into
@@ -47,6 +47,14 @@ mailbox. `pipelines/scstatement/` reads the folder nightly into
 not add up to its own section totals, summary counts and amount due lands
 nothing and fails the run. The October 2026 statement: 522 lines, $2,546.60,
 reconciled to the cent.
+
+**Parasol's invoice arrives by email too** (from accounting@getparasol.com
+to ap@, "Parasol's <Month> monthly invoice for: Livewire"), so the same Apps
+Script saves it to the Drive folder "Parasol Invoices (warehouse)", and
+`pipelines/drivedrop/` lands it in exactly the table a bucket upload of
+`parasol/invoice/` does. `DRIVE_DROPS` in `client.env` ties each Drive folder
+to a report format; another emailed report joins by adding a rule to the
+script and an entry there. Uploading to the bucket still works.
 
 **Alarm.com — "Custom List"** (dealer site → export → .csv). Carries a full
 address on every row and, on most rows, Security Central's own account

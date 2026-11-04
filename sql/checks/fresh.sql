@@ -280,6 +280,7 @@ SELECT
   DATE_DIFF(CURRENT_DATE(), DATE(newest), DAY) AS age_days,
   max_age_days,
   CASE
+    WHEN table_name = 'stg_vendor__parasol_accounts' THEN 'no new Parasol invoice: check the Apps Script that saves it from email to Drive (docs/vendor-reports.md), or upload to gs://<vendor-drop-bucket>/parasol/invoice/'
     WHEN drop_prefix IS NOT NULL THEN CONCAT('upload to gs://<vendor-drop-bucket>/', drop_prefix, '/')
     WHEN STARTS_WITH(table_name, 'stg_ga4__') THEN 'GA4 export stopped: check the BigQuery link in GA4 Admin'
     WHEN table_name = 'stg_vendor__securitycentral_statement' THEN 'no new statement in the Drive folder: check the Apps Script that saves the emailed statement (docs/vendor-reports.md)'
