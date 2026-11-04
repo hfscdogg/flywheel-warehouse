@@ -22,13 +22,16 @@
 -- rather than only what is wrong. NULL for API sources: those are a workflow
 -- to re-run, not a file to find.
 --
--- NOT LISTED: staging.stg_alarmdotcom__customers. It is empty by design until
--- the Alarm.com Partner API is credentialed, so MAX(loaded_at) is NULL and it
--- would fail this check every night for a reason nobody can act on. The
--- dealer-site export is the live Alarm.com feed and IS checked here.
--- pipelines/tests/test_sql_freshness.py holds that exemption and fails if any
--- other staging table with a loaded_at column goes unchecked.
+-- pipelines/tests/test_sql_freshness.py fails if a staging table with a
+-- loaded_at column goes unchecked here and is not exempted there.
 WITH loaded AS (
+  -- Alarm.com Partner API, credentialed 2026-11-04: a full pull every night,
+  -- so loaded_at is the run time.
+  SELECT 'stg_alarmdotcom__customers' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_alarmdotcom__customers
+  UNION ALL
   SELECT 'stg_dtools__opportunities' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          CAST(NULL AS STRING) AS raw_table
@@ -200,6 +203,13 @@ WITH loaded AS (
   SELECT 'stg_vendor__securitycentral_status', 14, 'securitycentral/customercount', MAX(loaded_at), NULL
   FROM staging.stg_vendor__securitycentral_status
   UNION ALL
+  -- Emailed on the 25th and saved to Drive by an Apps Script; 45 days is a
+  -- missed month plus room.
+  SELECT 'stg_vendor__securitycentral_statement' AS table_name, 45 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         CAST(NULL AS STRING) AS raw_table
+  FROM staging.stg_vendor__securitycentral_statement
+  UNION ALL
   -- The controller's close sheets in Google Sheets (pipelines/gsheets/). Read
   -- nightly, but landed only when edited, so the run log says whether the
   -- ingest is still reading them; a sheet nobody edited is still current.
@@ -272,6 +282,7 @@ SELECT
   CASE
     WHEN drop_prefix IS NOT NULL THEN CONCAT('upload to gs://<vendor-drop-bucket>/', drop_prefix, '/')
     WHEN STARTS_WITH(table_name, 'stg_ga4__') THEN 'GA4 export stopped: check the BigQuery link in GA4 Admin'
+    WHEN table_name = 'stg_vendor__securitycentral_statement' THEN 'no new statement in the Drive folder: check the Apps Script that saves the emailed statement (docs/vendor-reports.md)'
     WHEN STARTS_WITH(table_name, 'stg_google_ads__') THEN 'Google Ads transfer stopped: check its run history in BigQuery > Data transfers'
     ELSE 'ingest workflow has not run'
   END AS fix

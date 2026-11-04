@@ -28,11 +28,6 @@ STAGING = ROOT / "sql" / "staging"
 # Tables deliberately not freshness-checked. Each needs a reason that is about
 # the DATA, not about the check being inconvenient.
 EXEMPT = {
-    # Empty by design until the Alarm.com Partner API is credentialed, so
-    # MAX(loaded_at) is NULL and it would fail every night for something
-    # nobody can act on. The dealer-site export is the live Alarm.com feed
-    # and IS checked.
-    "stg_alarmdotcom__customers",
     # QuickBooks Desktop history, closed in March 2022 and exported once
     # (docs/qbd-export.md). Nothing new will ever arrive, so its newest
     # load only gets older; a freshness check would fail forever.

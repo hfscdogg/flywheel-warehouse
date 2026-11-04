@@ -66,6 +66,15 @@ jobs:
         run: >
           python -m pipelines.gsheets.ingest
           --client "$CLIENT"
+      # Security Central's monthly statement, saved from email to a Drive
+      # folder by an Apps Script (pipelines/scstatement/).
+      - name: Ingest Security Central statements (Drive) → raw_vendor
+        if: ${{ !cancelled() }}
+        env:
+          CLIENT: ${{ inputs.client || 'livewire' }}
+        run: >
+          python -m pipelines.scstatement.ingest
+          --client "$CLIENT"
 
   # Nothing told anyone when this broke. See .github/workflows/alert.yml.
   alert:
