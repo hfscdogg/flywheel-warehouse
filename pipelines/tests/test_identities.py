@@ -31,6 +31,7 @@ REPO = "hfscdogg/flywheel-warehouse"
 SOURCES = {
     "zoho": ({"ingest-zoho.yml"}, "WIF_SA_INGEST_ZOHO"),
     "zohobilling": ({"ingest-zohobilling.yml"}, "WIF_SA_INGEST_ZOHOBILLING"),
+    "zohodesk": ({"ingest-zohodesk.yml"}, "WIF_SA_INGEST_ZOHODESK"),
     "dtools": ({"ingest-dtools.yml", "ingest-dtools-v2.yml"}, "WIF_SA_INGEST_DTOOLS"),
     "qbo": ({"ingest-qbo.yml", "ingest-qbo-reports.yml"}, "WIF_SA_INGEST_QBO"),
     "alarmdotcom": ({"ingest-alarmdotcom.yml"}, "WIF_SA_INGEST_ALARMDOTCOM"),
@@ -220,7 +221,7 @@ class Workflows(unittest.TestCase):
     def test_each_pipeline_reads_only_its_own_sources_secrets(self):
         # The account can read nothing else, so a pipeline that reached for
         # another source's secret would fail on its first run after cutover.
-        dirs = {"zoho": "zoho", "zohobilling": "zohobilling", "dtools": "dtools",
+        dirs = {"zoho": "zoho", "zohobilling": "zohobilling", "zohodesk": "zohodesk", "dtools": "dtools",
                 "qbo": "qbo", "alarmdotcom": "alarmdotcom"}
         for src, d in dirs.items():
             with self.subTest(source=src):

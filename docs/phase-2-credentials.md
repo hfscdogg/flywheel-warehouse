@@ -98,6 +98,46 @@ incrementally: cancelled and expired subscriptions are exactly what the
 subscription audit needs, and a modified-time watermark would stop
 refreshing rows that stopped changing.
 
+## 1c. Zoho Desk (~10 min)
+
+Desk is the ticket system of record: every web consult booking and service
+request is worked and closed there, while the CRM Cases copy is never
+updated. Desk uses the `Desk.*` scope family, so it needs its own Self
+Client credentials like Billing does.
+
+1. [Zoho API Console](https://api-console.zoho.com/) → **Add Client** →
+   **Self Client** (or reuse the existing client and generate a code with
+   the Desk scopes).
+2. Generate a code with scope
+   `Desk.tickets.READ,Desk.search.READ,Desk.basic.READ,Desk.settings.READ`
+   (search lists tickets by modified time; basic covers departments and
+   agents; settings covers teams).
+3. Exchange it for a refresh token exactly as in step 3 above.
+4. Load the three values:
+   - `flywheel-zohodesk-client-id`
+   - `flywheel-zohodesk-client-secret`
+   - `flywheel-zohodesk-refresh-token`
+5. Find the **organization id** — Desk → **Setup → Developer Space → API**
+   (shown as Org ID), or `GET https://desk.zoho.com/api/v1/organizations`
+   with the token from step 3. Every API call carries it in the `orgId`
+   header.
+6. Set it as a repo variable (it is an identifier, not a secret):
+
+   ```sh
+   gh variable set ZOHO_DESK_ORG_ID --repo hfscdogg/flywheel-warehouse --body '<org-id>'
+   ```
+
+Tickets are pulled **incrementally** on `modifiedTime` through the search
+endpoint, in 30-day windows on a first run or `--full-refresh`; departments,
+agents and teams are small and land in full every night. The first run is a
+verification run: the ticket field paths in `stg_zohodesk__tickets.sql` are
+written from the Desk API docs, and `probe` reads the landed payloads so any
+that came back under another name can be fixed in staging alone.
+
+> Non-US Zoho tenant? Set `ZOHO_DESK_API_DOMAIN` (`https://desk.zoho.eu`,
+> `.in`, …) on the workflow; the token response's `api_domain` is the CRM
+> host, not Desk's.
+
 ## 2. D-Tools Cloud (~5 min)
 
 1. In D-Tools Cloud: **Settings → Integrations / API** → generate an API key.
@@ -284,7 +324,7 @@ only if the bucket is named something else.
 ## 5. Smoke run
 
 Trigger each workflow manually (Actions tab → `ingest-zoho` /
-`ingest-zohobilling` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-qbo`
+`ingest-zohobilling` / `ingest-zohodesk` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-qbo`
 / `ingest-vendordrop` → **Run workflow**). `ingest-vendordrop` is a no-op
 until someone uploads a file, which is the correct result. Then confirm rows landed:
 

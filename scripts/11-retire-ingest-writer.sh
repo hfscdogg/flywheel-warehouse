@@ -101,7 +101,7 @@ remove_resource_binding "iam service-accounts" "$SA_INGEST_WRITER_EMAIL" \
 # Every connector's, whether or not this client ingests it: the old script
 # granted all sixteen.
 info "Removing secret access"
-for src in zoho zohobilling dtools alarmdotcom qbo; do
+for src in zoho zohobilling zohodesk dtools alarmdotcom qbo; do
   for s in $(source_secrets "$src"); do
     remove_resource_binding secrets "$s" "serviceAccount:$SA_INGEST_WRITER_EMAIL" \
       roles/secretmanager.secretAccessor
