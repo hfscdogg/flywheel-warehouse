@@ -185,23 +185,8 @@ WITH loaded AS (
          CAST(NULL AS STRING) AS raw_table
   FROM staging.stg_zohobilling__subscriptions
   UNION ALL
-  SELECT 'stg_vendor__alarmdotcom_accounts', 45, 'alarmdotcom/customerlist', MAX(loaded_at), NULL
-  FROM staging.stg_vendor__alarmdotcom_accounts
-  UNION ALL
-  SELECT 'stg_vendor__alarmdotcom_billing', 45, 'alarmdotcom/billing', MAX(loaded_at), NULL
-  FROM staging.stg_vendor__alarmdotcom_billing
-  UNION ALL
   SELECT 'stg_vendor__parasol_accounts', 45, 'parasol/invoice', MAX(loaded_at), NULL
   FROM staging.stg_vendor__parasol_accounts
-  UNION ALL
-  SELECT 'stg_vendor__securitycentral_accounts', 45, 'securitycentral/allaccounts', MAX(loaded_at), NULL
-  FROM staging.stg_vendor__securitycentral_accounts
-  UNION ALL
-  SELECT 'stg_vendor__securitycentral_recurring', 45, 'securitycentral/recurring', MAX(loaded_at), NULL
-  FROM staging.stg_vendor__securitycentral_recurring
-  UNION ALL
-  SELECT 'stg_vendor__securitycentral_status', 14, 'securitycentral/customercount', MAX(loaded_at), NULL
-  FROM staging.stg_vendor__securitycentral_status
   UNION ALL
   -- Emailed on the 25th and saved to Drive by an Apps Script; 45 days is a
   -- missed month plus room.

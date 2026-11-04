@@ -32,6 +32,16 @@ EXEMPT = {
     # (docs/qbd-export.md). Nothing new will ever arrive, so its newest
     # load only gets older; a freshness check would fail forever.
     "stg_vendor__qbd_sales_lines",
+    # Hand-fetched vendor reports retired 2026-11-04, when the subscription
+    # audit moved to the Alarm.com Partner API and Security Central's emailed
+    # statement (both checked above). Nobody uploads these any more, so they
+    # only get older. The last All Accounts roster is still read, as history
+    # for the ZIP, contract number and phone the statement does not print.
+    "stg_vendor__alarmdotcom_accounts",
+    "stg_vendor__alarmdotcom_billing",
+    "stg_vendor__securitycentral_accounts",
+    "stg_vendor__securitycentral_recurring",
+    "stg_vendor__securitycentral_status",
 }
 
 # An API source ingested nightly; a missed night is not yet a problem, two is.

@@ -21,6 +21,24 @@ dedupes across vendors: the same address appearing three times is three real
 monthly costs, and each is audited against billing on its own. A leak is a
 (vendor, account) pair with no live subscription, never an address.
 
+## Since 2026-11-04 nobody has to upload anything
+
+The subscription audit (`marts.kpi_subscription_audit`) now reads:
+
+| Vendor | Source | Arrives |
+|--------|--------|---------|
+| Security Central | the monthly statement (`stg_vendor__securitycentral_statement`) | emailed on the 25th, saved to Drive by the Apps Script |
+| Alarm.com | the Partner API (`stg_alarmdotcom__customers`) | nightly |
+| Parasol | the monthly invoice (`stg_vendor__parasol_accounts`) | upload, or emailed and saved to Drive |
+
+The Security Central Customer Count, All Accounts and Customer System
+Recurring reports and the two Alarm.com dealer-site exports below are no
+longer needed and no longer freshness-checked. The drop folders still work if
+one is uploaded. The last All Accounts roster is still read, as history, for
+what the statement does not print (ZIP, contract number, start date, phone);
+upload a fresh one only if many new Security Central accounts show
+BILLED_NO_MATCH for want of a ZIP.
+
 ## The vendor reports
 
 | Report | Carries | How often | Why we need it |

@@ -23,7 +23,10 @@ lines AS (
     JSON_VALUE(payload, '$.section')                                 AS section,
     JSON_VALUE(payload, '$.customer_name')                           AS customer_name,
     JSON_VALUE(payload, '$.street')                                  AS street,
-    JSON_VALUE(payload, '$.account_number')                          AS printed_account_number,
+    -- Printed without its dash (A16511523); written here as Security
+    -- Central's other reports and Alarm.com write it (A1651-1523).
+    REGEXP_REPLACE(JSON_VALUE(payload, '$.account_number'),
+                   r'^([A-Z]\d{4})(\d+)$', r'\1-\2')               AS printed_account_number,
     JSON_VALUE(payload, '$.service')                                 AS service,
     SAFE.PARSE_DATE('%Y-%m-%d', JSON_VALUE(payload, '$.period_start')) AS period_start,
     SAFE.PARSE_DATE('%Y-%m-%d', JSON_VALUE(payload, '$.period_end'))   AS period_end,
@@ -68,7 +71,7 @@ ALTER TABLE staging.stg_vendor__securitycentral_statement ALTER COLUMN customer_
 ALTER TABLE staging.stg_vendor__securitycentral_statement ALTER COLUMN street
   SET OPTIONS (description = "Street address of the monitored property, as printed. No city or ZIP on the statement.");
 ALTER TABLE staging.stg_vendor__securitycentral_statement ALTER COLUMN account_number
-  SET OPTIONS (description = "Security Central account number (e.g. A16511523). Equals Alarm.com's CS account prefix and number. NULL on disconnect lines, which print none.");
+  SET OPTIONS (description = "Security Central account number, prefix and number joined (A1651-1523; the statement prints it without the dash). Equals stg_alarmdotcom__customers.central_station_account and the account number in Security Central's other reports. NULL on disconnect lines, which print none.");
 ALTER TABLE staging.stg_vendor__securitycentral_statement ALTER COLUMN service
   SET OPTIONS (description = "What the line bills: Monitoring, a scheduled test (Weekly Test, Bi-Weekly Test, Test Monthly), Open/Close Log, or a package (Security Package with Cellular, Smart Home with Cellular).");
 ALTER TABLE staging.stg_vendor__securitycentral_statement ALTER COLUMN period_start
