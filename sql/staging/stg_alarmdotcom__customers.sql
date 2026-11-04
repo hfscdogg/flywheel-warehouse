@@ -1,18 +1,18 @@
 -- stg_alarmdotcom__customers — latest record per Alarm.com customer account.
 -- Grain: one row per customerId.
--- Source: raw_alarmdotcom.customers (append-only; payload = Partner API record).
+-- Source: raw_alarmdotcom.customers (append-only; payload = the Partner API
+--   CustomerModel from GET /v1/customers/{id}, one per customer).
 --
--- VERIFY on first run: field paths are written from the Partner Portal API
--- docs, not observed responses. Two things can produce an all-NULL column
--- here and they are worth telling apart — a wrong path, or a rep credential
--- without permission for that property (the API returns null rather than an
--- error in that case).
+-- Field paths follow the CustomerModel in the API reference
+-- (/PartnerApi/help/docs/v1/, read 2026-11-04). A rep credential without
+-- permission for a property gets null rather than an error, so an all-NULL
+-- column can mean the rep cannot see it.
 --
 -- Shaped to line up with stg_vendor__securitycentral_accounts so both
 -- vendors can feed one audit: same address_key, same is_active_at_vendor.
 CREATE OR REPLACE TABLE staging.stg_alarmdotcom__customers
 OPTIONS (description = """
-Alarm.com customers as returned by the Partner API, one row per customer id. EMPTY until the Partner API is credentialed; the dealer-site export in stg_vendor__alarmdotcom_accounts is the live Alarm.com feed and is what the audit uses. Prefer that table.
+Alarm.com customers as returned by the Partner API, one row per customer id, refreshed nightly, terminated accounts included (is_terminated). Carries each account's service plan price and central station account number, which the dealer-site export in stg_vendor__alarmdotcom_accounts does not; that export is still what the subscription audit reads.
 """)
 AS
 WITH latest AS (
@@ -29,14 +29,18 @@ fields AS (
     JSON_VALUE(payload, '$.firstName')                        AS first_name,
     JSON_VALUE(payload, '$.lastName')                         AS last_name,
     LOWER(JSON_VALUE(payload, '$.email'))                     AS email,
-    JSON_VALUE(payload, '$.customerName')                     AS customer_name,
-    JSON_VALUE(payload, '$.status')                           AS status,
-    JSON_VALUE(payload, '$.address.street1')                  AS street_address,
-    JSON_VALUE(payload, '$.address.street2')                  AS street_address_2,
-    JSON_VALUE(payload, '$.address.city')                     AS city,
-    JSON_VALUE(payload, '$.address.state')                    AS state,
-    JSON_VALUE(payload, '$.address.postalCode')               AS zip,
+    JSON_VALUE(payload, '$.companyName')                      AS customer_name,
+    SAFE_CAST(JSON_VALUE(payload, '$.isTerminated') AS BOOL)  AS is_terminated,
+    JSON_VALUE(payload, '$.installAddress.street1')           AS street_address,
+    JSON_VALUE(payload, '$.installAddress.street2')           AS street_address_2,
+    JSON_VALUE(payload, '$.installAddress.city')              AS city,
+    JSON_VALUE(payload, '$.installAddress.state')             AS state,
+    JSON_VALUE(payload, '$.installAddress.zip')               AS zip,
     JSON_VALUE(payload, '$.dealerId')                         AS dealer_id,
+    SAFE_CAST(SUBSTR(JSON_VALUE(payload, '$.joinDate'), 1, 10) AS DATE) AS join_date,
+    SAFE_CAST(SUBSTR(JSON_VALUE(payload, '$.termDate'), 1, 10) AS DATE) AS term_date,
+    JSON_VALUE(payload, '$.centralStationInfo.accountNumber') AS central_station_account,
+    SAFE_CAST(JSON_VALUE(payload, '$.servicePlanInfo.totalServicePrice') AS NUMERIC) AS service_plan_price,
     _loaded_at                                                AS loaded_at
   FROM latest
 )
@@ -46,7 +50,12 @@ SELECT
   last_name,
   email,
   customer_name,
-  status,
+  CASE is_terminated WHEN TRUE THEN 'terminated' WHEN FALSE THEN 'active' END AS status,
+  is_terminated,
+  join_date,
+  term_date,
+  central_station_account,
+  service_plan_price,
   street_address,
   city,
   state,
@@ -57,12 +66,10 @@ SELECT
     NULLIF(TRIM(CONCAT(COALESCE(first_name, ''), ' ', COALESCE(last_name, ''))), ''),
     customer_name
   )                                                           AS subscriber_name,
-  -- Alarm.com has no single documented "active" flag; absent a status value
-  -- treat the account as active, since its presence on the dealer's customer
-  -- list is what we are billed for. Revisit once the first run shows what
-  -- status actually contains.
-  COALESCE(LOWER(status) NOT IN ('cancelled', 'canceled', 'inactive', 'terminated'), TRUE)
-                                                              AS is_active_at_vendor,
+  -- isTerminated is the API's own flag. Absent it (a rep that cannot see it)
+  -- the account counts as active: its presence on the dealer's customer list
+  -- is what we are billed for.
+  NOT COALESCE(is_terminated, FALSE)                          AS is_active_at_vendor,
   -- Address match key: house number | street name (suffix-stripped) | ZIP5.
   --
   -- The street name is NOT optional. An earlier version keyed on house number
@@ -103,9 +110,19 @@ ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN last_name
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN email
   SET OPTIONS (description = "Customer email.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN customer_name
-  SET OPTIONS (description = "Full name as the API returns it.");
+  SET OPTIONS (description = "Company name on the account, for business customers; NULL for most homes.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN status
-  SET OPTIONS (description = "Account status word from the API.");
+  SET OPTIONS (description = "'terminated' or 'active', from the API's isTerminated flag; NULL when the rep cannot see it.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN is_terminated
+  SET OPTIONS (description = "TRUE when Alarm.com shows the account terminated. Terminated accounts are kept so the audit can find ones still billed.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN join_date
+  SET OPTIONS (description = "Date the account joined Alarm.com.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN term_date
+  SET OPTIONS (description = "Date the account was terminated; NULL while active.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN central_station_account
+  SET OPTIONS (description = "Central station account number the panel reports under; lines up with the monitoring station's account.");
+ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN service_plan_price
+  SET OPTIONS (description = "Total price of the account's current Alarm.com service plan as the API reports it (servicePlanInfo.totalServicePrice), USD. Which side of the bill it is (dealer cost or list price) is not documented; check against an Alarm.com invoice before relying on it.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN street_address
   SET OPTIONS (description = "Service address street line.");
 ALTER TABLE staging.stg_alarmdotcom__customers ALTER COLUMN city

@@ -113,22 +113,106 @@ class SignIn(unittest.TestCase):
             token(http).bearer()
 
 
-class Paging(unittest.TestCase):
-    def test_each_page_asks_for_a_current_bearer(self):
+class Pages:
+    """GET responses keyed by URL suffix and page number."""
+
+    def __init__(self, id_pages, records, refuse=()):
+        self.id_pages, self.records, self.refuse = id_pages, records, set(refuse)
+        self.calls = []
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.calls.append((url.rsplit("/v1/", 1)[1], dict(params or {}), headers["Authorization"]))
+        if url.endswith("/customers"):
+            page = params["searchParameters.pageNumber"]
+            return Resp(200, [{"customerId": i} for i in self.id_pages.get(page, [])])
+        cid = int(url.rsplit("/", 1)[1])
+        if cid in self.refuse:
+            return Resp(403, {"message": "Forbidden"})
+        return Resp(200, dict(self.records.get(cid, {"customerId": cid, "firstName": f"c{cid}"})))
+
+
+def live_token():
+    t = token(FakeHttp([grant("a1")]))
+    t.bearer()
+    return t
+
+
+class CustomerIds(unittest.TestCase):
+    def test_filters_by_dealer_and_includes_terminated(self):
+        pages = Pages({0: [1, 2]}, {})
+        ingest.list_customer_ids(pages, live_token(), "1087", page_size=5)
+        _, params, auth = pages.calls[0]
+        self.assertEqual(params["searchParameters.dealerId"], "1087")
+        self.assertEqual(params["searchParameters.includeTermed"], "true")
+        self.assertEqual(params["searchParameters.pageSize"], 5)
+        self.assertEqual(auth, "Bearer a1")
+
+    def test_zero_based_paging_reads_every_page(self):
+        pages = Pages({0: [1, 2], 1: [3, 4], 2: [5]}, {})
+        self.assertEqual(ingest.list_customer_ids(pages, live_token(), "1087", 2), [1, 2, 3, 4, 5])
+
+    def test_one_based_paging_loses_nothing_and_counts_nothing_twice(self):
+        # Page 0 read as page 1: the repeat adds nothing and paging carries on.
+        pages = Pages({0: [1, 2], 1: [1, 2], 2: [3, 4], 3: [5]}, {})
+        self.assertEqual(ingest.list_customer_ids(pages, live_token(), "1087", 2), [1, 2, 3, 4, 5])
+
+    def test_an_api_ignoring_the_page_number_stops(self):
+        class Same(Pages):
+            def get(self, url, headers=None, params=None, timeout=None):
+                return Resp(200, [{"customerId": 1}, {"customerId": 2}])
+        self.assertEqual(ingest.list_customer_ids(Same({}, {}), live_token(), "1087", 2), [1, 2])
+
+    def test_zero_means_not_found(self):
+        pages = Pages({0: [0]}, {})
+        self.assertEqual(ingest.list_customer_ids(pages, live_token(), "1087", 2), [])
+
+    def test_paging_that_never_ends_raises(self):
+        class Endless(Pages):
+            def get(self, url, headers=None, params=None, timeout=None):
+                n = params["searchParameters.pageNumber"]
+                return Resp(200, [{"customerId": 2 * n + 1}, {"customerId": 2 * n + 2}])
+        with self.assertRaises(RuntimeError):
+            ingest.list_customer_ids(Endless({}, {}), live_token(), "1087", 2, max_pages=5)
+
+
+class Customers(unittest.TestCase):
+    def test_reads_each_customer_once(self):
+        pages = Pages({0: [11, 12]}, {11: {"customerId": 11, "firstName": "Ann"}})
+        records, skipped = ingest.fetch_customers(pages, live_token(), "1087", pause=0)
+        self.assertEqual([r["customerId"] for r in records], [11, 12])
+        self.assertEqual(records[0]["firstName"], "Ann")
+        self.assertEqual(skipped, [])
+        self.assertEqual([c[0] for c in pages.calls[1:]], ["customers/11", "customers/12"])
+
+    def test_an_account_the_rep_cannot_read_is_skipped(self):
+        pages = Pages({0: [11, 12, 13]}, {}, refuse={12})
+        records, skipped = ingest.fetch_customers(pages, live_token(), "1087", pause=0)
+        self.assertEqual([r["customerId"] for r in records], [11, 13])
+        self.assertEqual(skipped, [(12, 403)])
+
+    def test_most_accounts_refused_fails_the_run(self):
+        pages = Pages({0: [11, 12, 13]}, {}, refuse={11, 12})
+        with self.assertRaises(RuntimeError):
+            ingest.fetch_customers(pages, live_token(), "1087", pause=0)
+
+    def test_limit_caps_the_detail_reads(self):
+        pages = Pages({0: [11, 12, 13]}, {})
+        records, _ = ingest.fetch_customers(pages, live_token(), "1087", limit=2, pause=0)
+        self.assertEqual(len(records), 2)
+
+    def test_each_read_asks_for_a_current_bearer(self):
         clock = Clock()
-        full = Resp(200, [{"customerId": i} for i in range(ingest.ALARMDOTCOM["page_size"])])
-        http = FakeHttp([grant("a1"), grant("a2")], pages=[full, Resp(200, [{"customerId": -1}])])
-        t = token(http, clock)
-        real_get = http.get
+        t = token(FakeHttp([grant("a1"), grant("a2"), grant("a3")]), clock)
+        pages = Pages({0: [11, 12]}, {})
+        real = pages.get
 
         def get(url, headers=None, params=None, timeout=None):
-            r = real_get(url, headers=headers, params=params, timeout=timeout)
-            clock.t += 900                            # each page outlives the token
+            r = real(url, headers=headers, params=params, timeout=timeout)
+            clock.t += 900                             # each call outlives the token
             return r
-        http.get = get
-        records = ingest.fetch_entity(http, t, "D1", ingest.ALARMDOTCOM["entities"][0], 0)
-        self.assertEqual(len(records), ingest.ALARMDOTCOM["page_size"] + 1)
-        self.assertEqual(http.gets, ["Bearer a1", "Bearer a2"])
+        pages.get = get
+        ingest.fetch_customers(pages, t, "1087", pause=0)
+        self.assertEqual([c[2] for c in pages.calls], ["Bearer a1", "Bearer a2", "Bearer a3"])
 
 
 class Secrets(unittest.TestCase):

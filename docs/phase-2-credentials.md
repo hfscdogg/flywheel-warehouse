@@ -199,24 +199,19 @@ unattended job satisfies it, sent as `x_twofactor_device_id`.
 Tokens last about 15 minutes; the pipeline renews them with the refresh token
 the grant returns, and never retries a refused password grant.
 
-VERIFY on first run: the customer-list path, its pagination, and the response
-envelope come from the public docs, not observed responses. The docs show
-both `/v1/` and `/v1.0/` forms — if the run 404s, set the
-`ALARMDOTCOM_API_VERSION` repo variable to `v1.0` rather than editing code.
-
-Requests send `fields=*`. The API documents a `fields` projection with `*` as
-"all fields", and their own list example asks for
-`?fields=customerId,address/street1` rather than relying on a default — so the
-unqualified response is probably narrower than everything, and a partial
-payload reads exactly like a wrong JSON path. If `*` is rejected, set the
-`ALARMDOTCOM_FIELDS` repo variable to an explicit list
-(`customerId,firstName,lastName,email,customerName,status,dealerId,address(street1,street2,city,state,postalCode)`)
-rather than editing code.
+How the customers are read (reference: `/PartnerApi/help/docs/v1/`, read
+2026-11-04). There is no bulk customer read. `GET /v1/customers` lists the
+ids the rep can see, filtered by `searchParameters.dealerId` (the portal's
+numeric "DID", 1087 for Livewire, not the login name) and paged by
+`searchParameters.pageNumber`/`pageSize`, terminated accounts included. Then
+`GET /v1/customers/{id}` returns each full record: name, `installAddress`,
+`isTerminated`, join and termination dates, `centralStationInfo` and
+`servicePlanInfo`. A customer the rep cannot read (403 or 404) is skipped
+and logged; most of them failing fails the run. `GET
+/v1/dealers/{id}/customers`, the help page's intro example, answers 405.
 
 A rep without permission for a property gets `null` rather than an error, so
-an all-NULL column has three possible causes worth telling apart: the wrong
-JSON path, a projection that did not include the field, or a rep who cannot
-see it.
+an all-NULL column can mean the rep cannot see that field.
 
 ## 3. QuickBooks Online (~15 min)
 
