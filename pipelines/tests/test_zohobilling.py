@@ -153,6 +153,33 @@ class TestFetchCustomerDetails(unittest.TestCase):
         self.assertEqual(landed, 7)
         self.assertEqual([len(b) for b in batches], [3, 3, 1])
 
+    def test_a_run_cut_short_lands_what_it_fetched_before_failing(self):
+        # From 2026-10-27 every run died on a Zoho throttle ten seconds in,
+        # before a batch filled, and landed nothing: the watermark froze and
+        # each night re-fetched the same 798 customers. Whatever stops the
+        # loop, the partial batch lands first, so the next run moves on.
+        class ThrottledAfter(FakeHttp):
+            def get(self, url, headers, timeout):
+                if len(self.calls) == 3:
+                    raise RuntimeError("HTTP 429, retry after 3600s")
+                return super().get(url, headers, timeout)
+        batches = []
+        with self.assertRaises(RuntimeError):
+            fetch_customer_details(ThrottledAfter(), "tok0", "https://api", "org",
+                                   listed(10), None, 0, batch_size=200,
+                                   land=lambda b: batches.append(list(b)) or len(b))
+        self.assertEqual([[r["customer_id"] for r in b] for b in batches], [["1", "2", "3"]])
+
+    def test_a_failed_land_is_not_landed_twice(self):
+        calls = []
+        def land(b):
+            calls.append(len(b))
+            raise RuntimeError("BigQuery unavailable")
+        with self.assertRaises(RuntimeError):
+            fetch_customer_details(FakeHttp(), "tok0", "https://api", "org",
+                                   listed(4), None, 0, batch_size=2, land=land)
+        self.assertEqual(calls, [2])
+
     def test_batches_arrive_oldest_first(self):
         _, batches = self.fetch(FakeHttp(), 5, batch_size=2)
         ids_in_order = [r["customer_id"] for b in batches for r in b]

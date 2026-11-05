@@ -190,12 +190,14 @@ class RetryAfterTooLong(RuntimeError):
     """The server asked for a wait longer than RETRY_AFTER_CAP_SECONDS."""
 
 
-def check_retry_after(seconds, status, url):
-    """Return the Retry-After wait, or raise if it is over the cap."""
-    if seconds is not None and seconds > RETRY_AFTER_CAP_SECONDS:
+def check_retry_after(seconds, status, url, cap=None):
+    """Return the Retry-After wait, or raise if it is over the cap
+    (RETRY_AFTER_CAP_SECONDS unless the source's session set its own)."""
+    cap = RETRY_AFTER_CAP_SECONDS if cap is None else cap
+    if seconds is not None and seconds > cap:
         raise RetryAfterTooLong(
             f"HTTP {status} from {url or '?'} asked to retry after "
-            f"{seconds:.0f}s, over the {RETRY_AFTER_CAP_SECONDS}s cap; "
+            f"{seconds:.0f}s, over the {cap}s cap; "
             "failing now rather than sleeping (likely a rate-limit quota)"
         )
     return seconds

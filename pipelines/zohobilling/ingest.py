@@ -33,6 +33,15 @@ DETAIL_WATERMARK_ENTITY = "customers_detail"
 #: Detail records land this many at a time, so a run that stops early --
 #: budget, token, runner -- keeps everything fetched up to the last batch.
 DETAIL_BATCH_SIZE = 200
+# Zoho Billing answers a burst of per-customer GETs with HTTP 429 and
+# Retry-After: 1800. Until 2026-10-27 the session slept that out and the
+# detail fetch carried on inside its budget. The shared 300s cap (#114, for
+# D-Tools' six-hour stall) turned it into a crash ten seconds in, before the
+# first batch landed, so the detail watermark froze at 2026-10-25 and every
+# nightly run from Oct 27 failed on the same 798 customers. Thirty minutes is
+# Zoho's ordinary throttle here, not a stall, and the 240-minute budget plus
+# the job's 350-minute timeout leave room for it.
+ZOHO_RETRY_AFTER_CAP_SECONDS = 1800
 
 #: Minutes of detail fetching per run before stopping and leaving the rest
 #: for the next one. GitHub Actions kills a job at 360; the list pull and the
@@ -172,7 +181,6 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
     fetched -- every customer on a first run, a handful after the backfill.
     --full-refresh refetches all. Returns (records landed, finished).
     """
-    modified = ZOHO_BILLING["modified_field"]
     stale = detail_fetch_order(customers_needing_detail(listed, since))
     if limit:
         stale = stale[:limit]
@@ -180,7 +188,29 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
              "" if since is None else f" (modified since {since})")
 
     started = clock()
-    landed, batch = 0, []
+    batch = []
+    try:
+        landed, finished = _fetch_details_loop(
+            http, token, api_domain, org_id, stale, land, refresh_token,
+            budget_seconds, batch_size, clock, started, batch)
+    except Exception:
+        # Whatever stopped the run (a throttle over the cap, a network
+        # error, a bad record), what was fetched is kept: the next run then
+        # resumes after it instead of re-fetching the same customers.
+        if batch:
+            log.warning("customers: run stopped; landing the %d details fetched "
+                        "since the last batch before failing", len(batch))
+            _land_and_clear(land, batch)
+        raise
+    return landed, finished
+
+
+def _fetch_details_loop(http, token, api_domain, org_id, stale, land, refresh_token,
+                        budget_seconds, batch_size, clock, started, batch):
+    """The detail loop. `batch` is the caller's list, filled and emptied in
+    place, so the caller can land a partial batch if this raises."""
+    modified = ZOHO_BILLING["modified_field"]
+    landed = 0
     for n, listed_customer in enumerate(stale, 1):
         customer_id = listed_customer.get("customer_id")
         if not customer_id:
@@ -222,20 +252,26 @@ def fetch_customer_details(http, token, api_domain, org_id, listed, since, limit
                 record[modified] = stamp
             batch.append(record)
         if len(batch) >= batch_size:
-            landed += land(batch)
-            batch = []
+            landed += _land_and_clear(land, batch)
             log.info("customers: %d/%d details fetched", n, len(stale))
         if budget_seconds is not None and clock() - started >= budget_seconds and n < len(stale):
             if batch:
-                landed += land(batch)
-                batch = []
+                landed += _land_and_clear(land, batch)
             log.warning("customers: detail budget of %ds spent after %d of %d; "
                         "%d remain for the next run", budget_seconds, n,
                         len(stale), len(stale) - n)
             return landed, False
     if batch:
-        landed += land(batch)
+        landed += _land_and_clear(land, batch)
     return landed, True
+
+
+def _land_and_clear(land, batch):
+    """Land a copy of the batch and empty it first, so a land that fails is
+    not handed the same records again by the caller's clean-up."""
+    records = list(batch)
+    batch.clear()
+    return land(records)
 
 
 def _customer_gone(resp):
@@ -296,7 +332,7 @@ def main():
             "ZOHO_BILLING_ORG_ID is not set — every Billing API call needs the "
             "org header (find it via GET /organizations or Billing settings)")
 
-    http = web.session()
+    http = web.session(retry_after_cap=ZOHO_RETRY_AFTER_CAP_SECONDS)
     token, api_domain = get_access_token(http, cfg.project_id)
     bq = bq_mod.client_for(cfg)
 

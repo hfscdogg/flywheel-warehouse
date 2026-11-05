@@ -117,6 +117,24 @@ class RetryAfterCap(unittest.TestCase):
     def test_cap_is_well_under_the_job_limit(self):
         self.assertLessEqual(util.RETRY_AFTER_CAP_SECONDS, 600)
 
+    def test_a_per_call_cap_overrides_the_shared_one(self):
+        self.assertEqual(util.check_retry_after(1800.0, 429, "u", cap=1800), 1800.0)
+        with self.assertRaises(util.RetryAfterTooLong):
+            util.check_retry_after(1801.0, 429, "u", cap=1800)
+
+    def test_zoho_billing_alone_raises_the_cap_and_fits_its_job(self):
+        # Read as text so the stdlib-only CI job checks the wiring too.
+        src = (ROOT / "pipelines/zohobilling/ingest.py").read_text()
+        self.assertIn("web.session(retry_after_cap=ZOHO_RETRY_AFTER_CAP_SECONDS)", src)
+        cap = int(re.search(r"ZOHO_RETRY_AFTER_CAP_SECONDS = (\d+)", src).group(1))
+        budget = int(re.search(r"DETAIL_BUDGET_MINUTES_DEFAULT = (\d+)", src).group(1))
+        wf = (ROOT / ".github/workflows/ingest-zohobilling.yml").read_text()
+        timeout = int(re.search(r"timeout-minutes: (\d+)", wf).group(1))
+        # One full throttle wait past the budget still ends inside the job.
+        self.assertLess(budget + cap / 60, timeout)
+        for other in ("dtools/ingest.py", "dtools/v2.py", "zoho/ingest.py", "qbo/ingest.py"):
+            self.assertNotIn("retry_after_cap", (ROOT / "pipelines" / other).read_text(), other)
+
     def test_session_uses_the_capped_retry(self):
         # Read as text so the stdlib-only CI job checks the wiring too.
         src = (ROOT / "pipelines/lib/web.py").read_text()
@@ -151,6 +169,38 @@ class RetryAfterCapEndToEnd(unittest.TestCase):
         s, url = self.serve("1")
         resp = s.get(url, timeout=10, proxies={"http": None, "https": None})
         self.assertEqual((resp.status_code, Handler.hits), (200, 2))
+
+    def test_a_sessions_own_cap_sleeps_through_a_longer_wait(self):
+        # Zoho Billing's ordinary throttle is Retry-After: 1800. Its session
+        # raises the cap to that; every other session keeps 300.
+        Handler.retry_after, Handler.hits = "1800", 0
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        s = web.session(retry_after_cap=1800)
+        s.mount("http://", s.get_adapter("https://example.com"))
+        slept = []
+        with mock.patch("urllib3.util.retry.time.sleep", side_effect=slept.append):
+            resp = s.get(f"http://127.0.0.1:{srv.server_address[1]}/x", timeout=10,
+                         proxies={"http": None, "https": None})
+        self.assertEqual((resp.status_code, Handler.hits), (200, 2))
+        self.assertIn(1800.0, slept)
+
+    def test_a_sessions_own_cap_still_fails_above_it(self):
+        Handler.retry_after, Handler.hits = "3600", 0
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        s = web.session(retry_after_cap=1800)
+        s.mount("http://", s.get_adapter("https://example.com"))
+        no_sleep = mock.patch("urllib3.util.retry.time.sleep",
+                              side_effect=AssertionError("slept on Retry-After"))
+        with no_sleep, self.assertRaises(util.RetryAfterTooLong) as cm:
+            s.get(f"http://127.0.0.1:{srv.server_address[1]}/x", timeout=10,
+                  proxies={"http": None, "https": None})
+        self.assertIn("over the 1800s cap", str(cm.exception))
 
 
 if __name__ == "__main__":
