@@ -60,6 +60,25 @@ class Script(unittest.TestCase):
         # stop the daily save.
         self.assertIn("function saveSecurityCentralStatements()", script)
 
+    def test_the_parasol_rule_takes_the_1plan_invoice_and_nothing_else(self):
+        # The October 2026 invoice came from ADI accounting, not
+        # accounting@getparasol.com, as IN2129859.pdf: the rule must find
+        # that thread, and its file filter must keep everything else out.
+        import pathlib, re
+        root = pathlib.Path(__file__).resolve().parents[2]
+        script = (root / "scripts" / "apps-script" / "save-vendor-documents.gs").read_text()
+        rule = script[script.index("name: 'Parasol invoice'"):]
+        query = re.search(r"query: '([^']+)'", rule).group(1)
+        self.assertIn("subject:invoice", query)
+        self.assertIn("Parasol", query)
+        pattern = re.search(r"fileName: /(.+)/i,", rule).group(1).replace("\\\\", "\\")
+        name_ok = re.compile(pattern, re.I)
+        for good in ("IN2129859.pdf", "Parasol_Invoice_May_2026.pdf", "invoice-123.pdf"):
+            self.assertTrue(name_ok.match(good), good)
+        for bad in ("image001.pdf", "W9.pdf", "flyer.pdf"):
+            self.assertFalse(name_ok.match(bad), bad)
+        self.assertIn("rule.fileName.test(name)", script)
+
 
 if __name__ == "__main__":
     unittest.main()

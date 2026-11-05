@@ -29,8 +29,17 @@ const RULES = [
   {
     name: 'Parasol invoice',
     folderId: '1ySe-ZKAqJtMMcsQoVsqz9pV9N-MuzbJ2',
-    // "Parasol's May 2026 monthly invoice for: Livewire"
-    query: 'from:accounting@getparasol.com subject:"monthly invoice"',
+    // Parasol bills through 1Plan since October 2026, and its invoices now
+    // arrive from more than one sender: accounting@getparasol.com ("Parasol's
+    // May 2026 monthly invoice for: Livewire"), 1Plan, and ADI accounting
+    // replying in a thread with accounting@getparasol.com on copy (the
+    // October invoice, IN2129859, came that way on 2026-11-05). So match an
+    // invoice email that mentions Parasol or comes from Parasol or 1Plan,
+    // not one sender address.
+    query: 'subject:invoice (Parasol OR from:getparasol.com OR from:1plan.net)',
+    // Only invoice PDFs: 1Plan names them IN<number>.pdf. Anything else the
+    // thread carries would make the nightly load fail as "parsed to no rows".
+    fileName: /^(IN\d+|.*parasol.*|.*invoice.*)\.pdf$/i,
   },
 ];
 
@@ -44,6 +53,7 @@ function saveVendorDocuments() {
         for (const attachment of message.getAttachments()) {
           const name = attachment.getName();
           if (!/\.pdf$/i.test(name)) continue;         // skip flyers and the like
+          if (rule.fileName && !rule.fileName.test(name)) continue;
           if (folder.getFilesByName(name).hasNext()) continue;
           folder.createFile(attachment.copyBlob()).setName(name);
           console.log(rule.name + ': saved ' + name);
