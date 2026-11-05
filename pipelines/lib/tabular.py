@@ -154,6 +154,115 @@ _ZIP = re.compile(r"\b\d{5}\b")
 _NAME_ICONS = re.compile(r"[y+]{1,3}(?=\s*\||\s*$)")
 
 
+# Since October 2026 Parasol bills through 1Plan, and the invoice is a
+# different document: a SERVICE DETAIL section per tier, each account drawn
+# as five runs (client, location, service address, the OVRC account as
+# "Last, First ** | label", amount), with a stated count, rate and subtotal
+# per tier. The OVRC line is the old invoice's "Last, First | label", so
+# SUBSCRIBER and LABEL come from it and ACCOUNT stays the same key an account
+# had on the old invoice. The parse reconciles every tier against the
+# document's own count and subtotal and raises on any difference, so a layout
+# it misreads lands nothing rather than an audit short of accounts.
+_1PLAN_TIER = re.compile(r"^(\d+) services\s*\|\s*(\d+\.\d\d) each\s*\|\s*(\S+)$")
+_1PLAN_SUBTOTAL = re.compile(r"^(\w[\w ]*) subtotal$")
+_1PLAN_AMOUNT = re.compile(r"^-?\$?\d{1,3}(?:,\d{3})*\.\d\d$")
+# The ZIP is missing on some lines ("11013 Lantern Way, Richmond, VA"); the
+# account still lands, unmatchable by ZIP, rather than being dropped.
+_1PLAN_ADDRESS = re.compile(r"^(?P<street>.+?),\s*(?P<city>[^,]+),\s*(?P<state>[A-Z]{2})"
+                            r"(?:,\s*(?P<zip>\d{5})(?:-\d{4})?)?$")
+_1PLAN_NOISE = re.compile(r"^(IN\d+|Page \d+ of \d+|SERVICE DETAIL|CLIENT, LOCATION & SERVICE ADDRESS|"
+                          r"OVRC ACCOUNT|AMOUNT|Livewire, LLC)$")
+_OVRC_MARKS = re.compile(r"\*+")
+_1PLAN_CONTINUED = re.compile(r"\s+CONTINUED$")
+
+
+def _money(text):
+    return float(text.replace("$", "").replace(",", ""))
+
+
+def parse_parasol_1plan(lines):
+    """Accounts from a 1Plan-issued Parasol invoice (October 2026 on)."""
+    start = lines.index("SERVICE DETAIL")
+    records, pending = [], []
+    tier = rate = None
+    expected = {}
+    seen = {}
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        if line == "PLATFORM AND INCLUDED SERVICES":
+            break
+        head = _1PLAN_TIER.match(lines[i + 1]) if i + 1 < len(lines) else None
+        if head:
+            # Every page repeats the heading as "<tier>  CONTINUED".
+            tier, rate = _1PLAN_CONTINUED.sub("", line), head.group(2)
+            expected.setdefault(tier, {"count": int(head.group(1)), "rate": rate,
+                                       "sku": head.group(3)})
+            seen.setdefault(tier, {"count": 0, "total": 0.0})
+            pending = []
+            i += 2
+            continue
+        sub = _1PLAN_SUBTOTAL.match(line)
+        if sub and sub.group(1) in expected and i + 1 < len(lines):
+            expected[sub.group(1)]["subtotal"] = _money(lines[i + 1])
+            pending = []
+            i += 2
+            continue
+        if _1PLAN_NOISE.match(line) or tier is None:
+            i += 1
+            continue
+        if _1PLAN_AMOUNT.match(line) and any("|" in p for p in pending):
+            at = max(n for n, p in enumerate(pending) if "|" in p)
+            # A long OVRC label wraps: its tail is drawn after the OVRC run
+            # ("... | Ruth's Chris Steak", "House") and belongs to the label.
+            ovrc = " ".join(pending[at:])
+            rest = pending[:at]
+            address = next((p for p in rest if _1PLAN_ADDRESS.match(p)), "")
+            names = [p for p in rest if p != address]
+            sub_name, _, label = ovrc.partition("|")
+            parts = _1PLAN_ADDRESS.match(address)
+            street = normalize_street(parts.group("street")) if parts else ""
+            csz = (f"{parts.group('city')}, {parts.group('state')} {parts.group('zip') or ''}".strip()
+                   if parts else "")
+            subscriber = _OVRC_MARKS.sub("", sub_name).strip()
+            label = _OVRC_MARKS.sub("", label).strip()
+            records.append({
+                "SUBSCRIBER": subscriber,
+                "LABEL": label,
+                "CLIENT": names[0] if names else "",
+                "LOCATION": " ".join(names[1:]),
+                "STREET": street,
+                "CITY_STATE_ZIP": csz,
+                "TIER": tier,
+                "RATE": f"{_money(line):.2f}",
+                "OVRC_ACCOUNT": ovrc.strip(),
+                "ACCOUNT": account_key(subscriber, street, csz, label),
+            })
+            seen[tier]["count"] += 1
+            seen[tier]["total"] += _money(line)
+            pending = []
+            i += 1
+            continue
+        pending.append(line)
+        i += 1
+
+    if not expected:
+        raise ValueError("1Plan invoice: no SERVICE DETAIL tiers found")
+    for name, want in expected.items():
+        got = seen.get(name, {"count": 0, "total": 0.0})
+        if got["count"] != want["count"]:
+            raise ValueError(f"1Plan invoice: {name} lists {want['count']} services, "
+                             f"parsed {got['count']}")
+        if "subtotal" in want and abs(got["total"] - want["subtotal"]) > 0.005:
+            raise ValueError(f"1Plan invoice: {name} subtotal {want['subtotal']:.2f}, "
+                             f"parsed lines sum to {got['total']:.2f}")
+    keys = [r["ACCOUNT"] for r in records]
+    if len(keys) != len(set(keys)):
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        raise ValueError(f"1Plan invoice: account keys collide: {dupes[:5]}")
+    return records
+
+
 def parse_parasol_invoice(data, spec):
     """Line items from a Parasol invoice PDF.
 
@@ -165,6 +274,8 @@ def parse_parasol_invoice(data, spec):
     is watching.
     """
     lines = pdftext.lines(data, spec["pdf_probe"])
+    if "SERVICE DETAIL" in lines and "1Plan" in lines:
+        return parse_parasol_1plan(lines)
     marks = [i for i, l in enumerate(lines) if _PARASOL_ITEM.match(l)]
     records = []
     for n, start in enumerate(marks):

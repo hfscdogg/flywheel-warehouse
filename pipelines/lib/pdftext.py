@@ -15,8 +15,12 @@ import re
 import zlib
 
 # Text-showing operators: (str) Tj, and [(a) -250 (b)] TJ for kerned runs.
-_SHOW = re.compile(rb"\[(?:[^\[\]]*)\]\s*TJ|\((?:\\.|[^()\\])*\)\s*Tj", re.S)
-_LITERAL = re.compile(rb"\((?:\\.|[^()\\])*\)", re.S)
+# A string is a literal (str) or a hex string <48656c6c6f>: some generators
+# (1Plan's invoices, written by Prawn) draw every run as hex, and a reader
+# that knows only literals sees an empty page.
+_HEX = rb"<[0-9A-Fa-f\s]*>"
+_SHOW = re.compile(rb"\[(?:[^\[\]]*)\]\s*TJ|\((?:\\.|[^()\\])*\)\s*Tj|" + _HEX + rb"\s*Tj", re.S)
+_LITERAL = re.compile(rb"\((?:\\.|[^()\\])*\)|" + _HEX, re.S)
 _STREAM = re.compile(rb"stream\r?\n(.*?)endstream", re.S)
 _ESCAPE = re.compile(rb"\\([()\\])")
 _PRINTABLE = re.compile(r"[ -~]")
@@ -38,6 +42,25 @@ def content_streams(data):
             yield raw
 
 
+def _string(token, shift):
+    """One string operand, literal or hex, to text."""
+    if token[:1] == b"<":
+        hexdigits = re.sub(rb"\s", b"", token[1:-1])
+        if len(hexdigits) % 2:
+            hexdigits += b"0"          # the spec pads an odd final digit with 0
+        return _decode_bytes(bytes.fromhex(hexdigits.decode("ascii")), shift)
+    return _decode(token[1:-1], shift)
+
+
+def _decode_bytes(raw, shift):
+    out = []
+    for byte in raw:
+        char = chr((byte + shift) & 0xFF)
+        if _PRINTABLE.match(char):
+            out.append(char)
+    return "".join(out)
+
+
 def _decode(raw, shift):
     """One PDF string literal to text, applying the font's code shift.
 
@@ -49,13 +72,7 @@ def _decode(raw, shift):
     on an unprintable code point after shifting; dropping unprintables handles
     both cases without needing to know which one this file uses.
     """
-    text = _ESCAPE.sub(rb"\1", raw)
-    out = []
-    for byte in text:
-        char = chr((byte + shift) & 0xFF)
-        if _PRINTABLE.match(char):
-            out.append(char)
-    return "".join(out)
+    return _decode_bytes(_ESCAPE.sub(rb"\1", raw), shift)
 
 
 def detect_shift(data, probe):
@@ -70,7 +87,7 @@ def detect_shift(data, probe):
     """
     blob = b"\n".join(content_streams(data))
     for shift in range(-128, 128):
-        sample = "".join(_decode(m.group(0)[1:-1], shift)
+        sample = "".join(_string(m.group(0), shift)
                          for m in _LITERAL.finditer(blob[:400_000]))
         if probe in sample:
             return shift
@@ -90,7 +107,7 @@ def lines(data, probe):
     out = []
     for stream in content_streams(data):
         for show in _SHOW.finditer(stream):
-            text = "".join(_decode(m.group(0)[1:-1], shift)
+            text = "".join(_string(m.group(0), shift)
                            for m in _LITERAL.finditer(show.group(0)))
             text = text.strip()
             if text:
@@ -115,7 +132,7 @@ _PLACE = re.compile(
     rb"|(?:-?[\d.]+\s+){4}(?P<tmx>-?[\d.]+)\s+(?P<tmy>-?[\d.]+)\s+Tm\b"
     rb"|(?P<tdx>-?[\d.]+)\s+(?P<tdy>-?[\d.]+)\s+T[dD]\b"
     rb"|(?P<star>T\*)"
-    rb"|(?P<show>\[(?:[^\[\]]*)\]\s*TJ|\((?:\\.|[^()\\])*\)\s*Tj)",
+    rb"|(?P<show>\[(?:[^\[\]]*)\]\s*TJ|\((?:\\.|[^()\\])*\)\s*Tj|<[0-9A-Fa-f\s]*>\s*Tj)",
     re.S)
 
 # Two runs are on the same row when their baselines are within this many text
@@ -152,7 +169,7 @@ def rows(data, probe):
             elif m.group("star") is not None:
                 y -= leading
             else:
-                text = "".join(_decode(lit.group(0)[1:-1], shift)
+                text = "".join(_string(lit.group(0), shift)
                                for lit in _LITERAL.finditer(m.group("show")))
                 text = text.strip()
                 if text:

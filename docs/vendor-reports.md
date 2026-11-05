@@ -87,6 +87,18 @@ what each account costs, so a Parasol leak carries its own dollar figure.
 Parsing an invoice is not elegant; ask Parasol for a CSV or portal export
 and retire this when one exists.
 
+**Since October 2026 Parasol bills through 1Plan** (portal.1plan.net), and
+the invoice is a new document: a SERVICE DETAIL section per tier with each
+account's client, location, service address, OVRC account and amount, and
+the tier's count, rate and subtotal. `tabular.parse_parasol_1plan` reads it
+and reconciles every tier against those printed counts and subtotals; any
+difference raises, so a misread invoice lands nothing. The OVRC line is the
+old invoice's "Last, First | label", so an account keeps the key it had
+before the change. The October invoice (IN2129859) parses to 283 accounts,
+179 Enhanced and 104 Essential, $5,928.17, matching both subtotals. 1Plan's
+monthly email may come from a different sender than accounting@getparasol.com:
+if the Apps Script stops saving it, add the new sender to its Parasol rule.
+
 ### What each account costs
 
 All three vendors bill per account, and each publishes its prices in a
