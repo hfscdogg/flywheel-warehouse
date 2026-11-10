@@ -167,3 +167,43 @@ QBO = {
     "modified_field": "MetaData.LastUpdatedTime",
     "page_size": 1000,
 }
+
+ISOLVED = {
+    # iSolved, the payroll and time system Livewire reaches through Dominion
+    # Payroll: who clocked how many hours, by day and pay item. The same REST
+    # API the weekly utilization email reads (hfscdogg/forecast-utilization,
+    # deluge/fetch_isolved_timecards.dg, verified live 2026-08-14).
+    # Auth is an OAuth client-credentials grant: POST /api/token with the
+    # client id and secret as HTTP Basic.
+    # Timecards: GET /api/clients/{client}/legals/{legal}/timecardData with
+    # startDate/endDate as full datetimes and a page parameter; the list
+    # comes back under "results", one record per employee
+    # (employeeFirstName, employeeLastName, timecardData[] of day records,
+    # each with payItems[] of payItemName and payItemHours).
+    # The client and legal ids in the path are identifiers the payroll
+    # provider issues, not secrets; they live in client.env (ISOLVED_*).
+    #
+    # Pulled ONE DAY PER REQUEST, so the day a record belongs to is the day
+    # that was asked for: the name of the date field inside a day record was
+    # never written down, and a guess there would file hours under the wrong
+    # day without failing.
+    #
+    # VERIFY on the first live run: the page parameter's first value (0 or
+    # 1) and whether a one-day window returns only that day. The ingest
+    # tolerates either paging; the window is checked by comparing a week's
+    # hours with the utilization email's Hours Worked.
+    "default_base_url": "https://dominionpayroll.net/rest",
+    "token_path": "/api/token",
+    "timecard_path": "/api/clients/{client}/legals/{legal}/timecardData",
+    # timecards: one row per employee per day pulled. timecard_days: one row
+    # per day pulled, so staging can tell a day whose timecards were all
+    # removed from a day that was not asked for.
+    "entities": [{"name": "timecards"}, {"name": "timecard_days"}],
+    # A timecard can be corrected until its pay period is processed, so each
+    # night re-pulls this many days back. Five weeks covers a two-week pay
+    # period and its corrections.
+    "lookback_days": 35,
+    "batch_days": 31,   # days landed per load, so a long backfill keeps its progress
+    "max_pages": 20,    # per day; a whole company's day fits in one or two
+    "pause_s": 0.1,     # between requests; no rate limit is documented
+}

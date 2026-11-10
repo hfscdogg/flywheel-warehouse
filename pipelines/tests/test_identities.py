@@ -34,6 +34,7 @@ SOURCES = {
     "dtools": ({"ingest-dtools.yml", "ingest-dtools-v2.yml"}, "WIF_SA_INGEST_DTOOLS"),
     "qbo": ({"ingest-qbo.yml", "ingest-qbo-reports.yml"}, "WIF_SA_INGEST_QBO"),
     "alarmdotcom": ({"ingest-alarmdotcom.yml"}, "WIF_SA_INGEST_ALARMDOTCOM"),
+    "isolved": ({"ingest-isolved.yml"}, "WIF_SA_INGEST_ISOLVED"),
     "vendor": ({"ingest-vendordrop.yml"}, "WIF_SA_INGEST_VENDOR"),
 }
 # READER_USERS in clients/livewire/client.env: people, read-only.
@@ -221,7 +222,7 @@ class Workflows(unittest.TestCase):
         # The account can read nothing else, so a pipeline that reached for
         # another source's secret would fail on its first run after cutover.
         dirs = {"zoho": "zoho", "zohobilling": "zohobilling", "dtools": "dtools",
-                "qbo": "qbo", "alarmdotcom": "alarmdotcom"}
+                "qbo": "qbo", "alarmdotcom": "alarmdotcom", "isolved": "isolved"}
         for src, d in dirs.items():
             with self.subTest(source=src):
                 text = "".join(p.read_text() for p in (ROOT / "pipelines" / d).glob("*.py"))

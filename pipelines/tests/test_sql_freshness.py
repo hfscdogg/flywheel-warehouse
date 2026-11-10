@@ -42,6 +42,11 @@ EXEMPT = {
     "stg_vendor__securitycentral_accounts",
     "stg_vendor__securitycentral_recurring",
     "stg_vendor__securitycentral_status",
+    # iSolved timecards, added 2026-11-10 and not yet pulled live: the
+    # payroll API credential is still to be loaded, and until a first run
+    # lands the table has no load to age. Move it to fresh.sql (3 days, a
+    # full window every night) once that run has landed.
+    "stg_isolved__timecard_hours",
 }
 
 # An API source ingested nightly; a missed night is not yet a problem, two is.

@@ -14,7 +14,7 @@ class TestClientConfig(unittest.TestCase):
             cfg.raw_datasets,
             ["raw_zoho", "raw_zohobilling", "raw_dtools", "raw_qbo",
              "raw_vendor", "raw_alarmdotcom", "raw_ga4",
-             "raw_google_ads"],
+             "raw_google_ads", "raw_isolved"],
         )
 
     def test_source_enablement(self):

@@ -155,7 +155,7 @@ revoke_writer() {
 # this client ingests that source, and the endpoint token (07).
 flywheel_secrets() {
   local src s
-  for src in zoho zohobilling dtools alarmdotcom qbo; do
+  for src in zoho zohobilling dtools alarmdotcom isolved qbo; do
     for s in $(source_secrets "$src"); do printf '%s\n' "$s"; done
   done
   printf '%s\n' "$TOKEN_SECRET"

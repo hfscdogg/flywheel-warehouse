@@ -13,8 +13,9 @@ This repo does two jobs at once:
 Zoho CRM ──────┐
 Zoho Billing   │
 D-Tools Cloud  ├──▶  raw_zoho / raw_zohobilling / raw_dtools /  ──▶ staging ──▶ marts
-QuickBooks     │     raw_qbo / raw_alarmdotcom / raw_vendor                      │
+QuickBooks     │     raw_qbo / raw_alarmdotcom / raw_isolved / raw_vendor        │
 Alarm.com      │         (ingest-<source> SA, one each)                         │
+iSolved        │                                                                 │
 vendor files ──┘                                                                 ▼
  (drop bucket)                                              Hermes agents (hermes-reader SA:
                                                             read-only, marts + staging under
