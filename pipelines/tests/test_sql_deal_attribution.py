@@ -54,6 +54,16 @@ class ChannelGroups(unittest.TestCase):
         src = (MARTS / "kpi_deal_attribution.sql").read_text()
         self.assertIn("NULLIF(UPPER(TRIM(marketing_channel)), '') AS ch", src)
 
+    def test_unreviewed_service_calls_are_existing_and_flagged(self):
+        src = (MARTS / "kpi_deal_attribution.sql").read_text()
+        rule = src.index("WHEN d.is_unreviewed AND d.is_service_call")
+        # Must come after every reviewed group and before Not reviewed, so a
+        # reviewed channel always wins.
+        self.assertGreater(rule, src.index("THEN 'Unattributed / unknown'"))
+        self.assertLess(rule, src.index("THEN 'Not reviewed'"))
+        self.assertIn("THEN 'Existing / repeat clients'", src[rule:rule + 120])
+        self.assertIn("AS channel_inferred", src)
+
 
 if __name__ == "__main__":
     unittest.main()
