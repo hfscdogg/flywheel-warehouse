@@ -15,6 +15,16 @@
 -- $943,635), marketing ($811,077 / $228,780) and unattributed ($49,080 /
 -- $20,422). channel_group is the dashboard's grouping of those values.
 --
+-- Service calls (Deal_Name or Stage contains "service call", almost all
+-- $199) are created automatically and are rarely reviewed, so they swelled
+-- Not reviewed (218 of 363 in 2026 as of 2026-11-10). The team files
+-- reviewed service calls as Existing/Repeat Client (579 of 581), and
+-- attr_potentials in livewire-attribution already does the same (Brian,
+-- 2026-10-28), so an unreviewed one is grouped there too and flagged
+-- channel_inferred. A reviewed Marketing Channel always wins. This moves those deals out of Not
+-- reviewed relative to Brian's dashboard; channel_inferred = FALSE gives the
+-- dashboard's original grouping back.
+--
 -- New vs existing client depends on the range being looked at, so the table
 -- carries the contact's first-ever deal date and the reader compares it
 -- with the range start; a stored flag would be right for one range only.
@@ -32,9 +42,17 @@ WITH deals AS (
   FROM staging.stg_zoho__deals
   WHERE NOT COALESCE(is_test_record, FALSE)
 ),
+flagged AS (
+  SELECT *,
+    -- The rule attr_potentials uses (livewire-attribution), so the two agree.
+    REGEXP_CONTAINS(LOWER(CONCAT(COALESCE(deal_name, ''), ' ', COALESCE(stage, ''))),
+                    r'service call')                             AS is_service_call,
+    (ch IS NULL OR ch = 'NOT REVIEWED')                          AS is_unreviewed
+  FROM deals
+),
 first_deal AS (
   SELECT contact_id, MIN(DATE(created_at)) AS contact_first_deal_date
-  FROM deals
+  FROM flagged
   WHERE contact_id IS NOT NULL
   GROUP BY contact_id
 )
@@ -58,12 +76,17 @@ SELECT
       THEN 'Marketing & website'
     WHEN d.ch = "UNKNOWN/CAN'T DETERMINE"
       THEN 'Unattributed / unknown'
+    -- An unreviewed service call: grouped as the team files reviewed ones.
+    WHEN d.is_unreviewed AND d.is_service_call
+      THEN 'Existing / repeat clients'
     WHEN d.ch IS NULL OR d.ch = 'NOT REVIEWED'
       THEN 'Not reviewed'
     -- A value added to the picklist later lands here, visibly, rather than
     -- inside a group it may not belong to.
     ELSE 'Other (unmapped)'
   END                                 AS channel_group,
+  d.is_unreviewed AND d.is_service_call AS channel_inferred,
+  d.is_service_call,
   d.stage,
   CASE WHEN d.is_won THEN 'won' WHEN d.is_lost THEN 'lost' ELSE 'open' END
                                       AS outcome,
@@ -75,7 +98,7 @@ SELECT
   d.account_id,
   d.account_name,
   CURRENT_TIMESTAMP()                 AS computed_at
-FROM deals d
+FROM flagged d
 LEFT JOIN first_deal f USING (contact_id);
 
 ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN deal_id
@@ -87,7 +110,11 @@ ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN owner_name
 ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN marketing_channel
   SET OPTIONS (description = "The CRM Marketing Channel value as recorded, e.g. Website inquiry, Referral - Builder/Trade, Not reviewed. The team reviews and records it on each deal since 2026-04-01; before that it is almost always NULL. NULL when blank.");
 ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN channel_group
-  SET OPTIONS (description = "The dashboard's channel grouping: Existing / repeat clients; Referrals & business dev (builder/trade and client referrals, outbound business development); Marketing & website (website inquiry, paid Google, direct and other marketing channels); Unattributed / unknown; Not reviewed (includes NULL, so nearly every deal before 2026-04-01). Other (unmapped) means a channel value this table does not know yet: report it rather than guessing its group.");
+  SET OPTIONS (description = "The dashboard's channel grouping: Existing / repeat clients; Referrals & business dev (builder/trade and client referrals, outbound business development); Marketing & website (website inquiry, paid Google, direct and other marketing channels); Unattributed / unknown; Not reviewed (includes NULL, so nearly every deal before 2026-04-01; unreviewed service calls are grouped as Existing / repeat clients instead, see channel_inferred). Other (unmapped) means a channel value this table does not know yet: report it rather than guessing its group.");
+ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN channel_inferred
+  SET OPTIONS (description = "TRUE when channel_group was inferred rather than reviewed: an unreviewed service call grouped as Existing / repeat clients. Filter channel_inferred = FALSE to match Brian's dashboard grouping.");
+ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN is_service_call
+  SET OPTIONS (description = "TRUE when Deal_Name or Stage contains service call, the rule attr_potentials uses.");
 ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN stage
   SET OPTIONS (description = "Current CRM pipeline stage.");
 ALTER TABLE marts.kpi_deal_attribution ALTER COLUMN outcome
