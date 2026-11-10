@@ -213,6 +213,76 @@ and logged; most of them failing fails the run. `GET
 A rep without permission for a property gets `null` rather than an error, so
 an all-NULL column can mean the rep cannot see that field.
 
+## 2c. iSolved timecards (~10 min)
+
+Payroll and time tracking run on iSolved, reached through Dominion Payroll's
+REST API (`https://dominionpayroll.net/rest`). `pipelines/isolved/` pulls
+hours per employee, day and pay item into `raw_isolved`, read as
+`staging.stg_isolved__timecard_hours`. Hours only: no pay rates.
+
+The API client is the one the weekly utilization email already uses
+(hfscdogg/forecast-utilization): its id and secret are the Zoho Creator app
+variables `ISOLVED_CLIENT_ID` and `ISOLVED_CLIENT_SECRET`. Decided
+2026-11-10 to reuse that client rather than ask Dominion for a second, so
+**rotating it means updating both places** or one of the two stops.
+
+1. Add the source and create its dataset, account and secret containers.
+   `raw_isolved` is already in Livewire's `DATASETS_RAW`:
+
+   ```sh
+   ./scripts/setup.sh livewire
+   ./scripts/05-ingestion-infra.sh livewire
+   ```
+
+2. Load the two secrets, copied from the Creator app variables (no echo,
+   nothing in shell history):
+
+   ```sh
+   for s in client-id client-secret; do
+     read -rsp "flywheel-isolved-$s: " v; echo
+     printf '%s' "$v" | gcloud secrets versions add "flywheel-isolved-$s" --project livewire-dw --data-file=-
+   done; unset v
+   ```
+
+3. Point the workflow at its account:
+
+   ```sh
+   gh variable set WIF_SA_INGEST_ISOLVED --repo hfscdogg/flywheel-warehouse --body 'ingest-isolved@livewire-dw.iam.gserviceaccount.com'
+   ```
+
+4. Verify the sign-in before the first run:
+
+   ```sh
+   sv() { gcloud secrets versions access latest --secret="flywheel-isolved-$1" --project livewire-dw; }
+   curl -s -X POST https://dominionpayroll.net/rest/api/token \
+     -u "$(sv client-id):$(sv client-secret)" --data grant_type=client_credentials \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin); print("OK" if "access_token" in d else d)'
+   ```
+
+5. Run `ingest-isolved` by hand (Actions tab). The first run pulls the last
+   five weeks. **Check it before trusting it**: add up one finished week of
+   `is_time_on_clock` hours per person and compare with Hours Worked plus
+   OT in that Monday's Utilization Actuals email. They should agree. If the
+   warehouse is higher by a multiple, the API is returning more than the one
+   day each request asks for (see `ISOLVED` in `pipelines/lib/sources.py`).
+
+   ```sh
+   bq query --use_legacy_sql=false \
+     'SELECT employee_name, SUM(hours) AS hours
+      FROM `livewire-dw.staging.stg_isolved__timecard_hours`
+      WHERE is_time_on_clock AND work_date BETWEEN "2026-11-02" AND "2026-11-08"
+      GROUP BY 1 ORDER BY 1'
+   ```
+
+6. Once that agrees, backfill: run `ingest-isolved` again with
+   **full_refresh** ticked. It pulls from `ISOLVED_HISTORY_START` in
+   `client.env`. Then move `stg_isolved__timecard_hours` from `EXEMPT` in
+   `pipelines/tests/test_sql_freshness.py` into `sql/checks/fresh.sql`, so a
+   stopped feed turns the transform red like every other source.
+
+The client and legal ids in the API path (`ISOLVED_CLIENT_PATH_ID`,
+`ISOLVED_LEGAL_ID`) are identifiers, not secrets, and live in `client.env`.
+
 ## 3. QuickBooks Online (~15 min)
 
 > **Livewire status: live since 2026-08-21.** All four QBO secrets hold
@@ -299,7 +369,7 @@ only if the bucket is named something else.
 ## 5. Smoke run
 
 Trigger each workflow manually (Actions tab → `ingest-zoho` /
-`ingest-zohobilling` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-qbo`
+`ingest-zohobilling` / `ingest-dtools` / `ingest-alarmdotcom` / `ingest-isolved` / `ingest-qbo`
 / `ingest-vendordrop` → **Run workflow**). `ingest-vendordrop` is a no-op
 until someone uploads a file, which is the correct result. Then confirm rows landed:
 

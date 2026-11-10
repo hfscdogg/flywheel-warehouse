@@ -1,7 +1,7 @@
 # pipelines/ — Phase 2 (ingestion)
 
-Scheduled pulls from Zoho CRM, Zoho Billing, D-Tools Cloud, Alarm.com, and
-QuickBooks Online into the `raw_*` datasets, plus one file-based source
+Scheduled pulls from Zoho CRM, Zoho Billing, D-Tools Cloud, Alarm.com, iSolved,
+and QuickBooks Online into the `raw_*` datasets, plus one file-based source
 (`vendordrop`). One GitHub Actions workflow per source
 (`.github/workflows/ingest-*.yml`): cron-scheduled (06:00–06:50 UTC, before
 the 09:15 transform), manually triggerable via `workflow_dispatch`, one
@@ -55,6 +55,12 @@ the 09:15 transform), manually triggerable via `workflow_dispatch`, one
   with a summary row shaped exactly like a record, and guessing wrong loads a
   fake customer instead of failing. See
   [docs/vendor-reports.md](../docs/vendor-reports.md).
+- **iSolved timecards change after the fact.** A missed punch or an
+  approval edits a day already pulled, and the API has no modified-time
+  filter, so `isolved/ingest.py` re-pulls the last five weeks every night,
+  one day per request, and staging reads each day from the newest run that
+  pulled it. Setup and the first-run check:
+  [docs/phase-2-credentials.md](../docs/phase-2-credentials.md) section 2c.
 - **D-Tools endpoints are VERIFY-on-first-run.** Paths/pagination in
   `lib/sources.py` are best-effort; the fetcher is generic, so a wrong path
   is a one-line fix in `sources.py`.
@@ -70,7 +76,7 @@ lib/secret_store.py  Secret Manager read/write             (imports google-cloud
 lib/web.py        requests session with retry/backoff
 lib/runner.py     shared run scaffolding (args, logging, land+watermark)
 lib/tabular.py    vendor report (.xlsx/.csv) parsing, by declared format — stdlib only
-zoho/ zohobilling/ dtools/ alarmdotcom/ qbo/   one ingest.py per API source
+zoho/ zohobilling/ dtools/ alarmdotcom/ isolved/ qbo/   one ingest.py per API source
 vendordrop/       files uploaded to the drop bucket -> raw_vendor
 tests/            stdlib-only unit tests (run in CI without pip installs)
 ```
