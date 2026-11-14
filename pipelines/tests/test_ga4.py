@@ -31,8 +31,12 @@ SESSIONS = ROOT / "sql" / "staging" / "stg_ga4__sessions.sql"
 TRAFFIC = ROOT / "sql" / "marts" / "kpi_website_traffic.sql"
 
 
-def load_client(raw, export):
-    """Run load_client on a throwaway client; (exit status, stderr)."""
+def load_client(raw, export, extra="", then=""):
+    """Run load_client on a throwaway client; (exit status, stderr).
+
+    `extra` is appended to client.env, so a later setting overrides
+    Livewire's; `then` runs after load_client and its stdout replaces stderr
+    as the second value when the load succeeds."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = pathlib.Path(tmp)
         (tmp / "scripts" / "lib").mkdir(parents=True)
@@ -45,10 +49,12 @@ def load_client(raw, export):
         # clients have no raw_google_ads, so it goes too.
         env = re.sub(r'^GOOGLE_ADS_CUSTOMER_ID=.*$', '', env, flags=re.M)
         (tmp / "clients" / "t").mkdir(parents=True)
-        (tmp / "clients" / "t" / "client.env").write_text(env)
+        (tmp / "clients" / "t" / "client.env").write_text(env + "\n" + extra)
         r = subprocess.run(
-            ["bash", "-c", f'. "{tmp}/scripts/lib/common.sh"; load_client t'],
+            ["bash", "-c", f'. "{tmp}/scripts/lib/common.sh"; load_client t; {then}'],
             capture_output=True, text=True)
+        if then and r.returncode == 0:
+            return r.returncode, r.stdout
         return r.returncode, r.stderr
 
 
@@ -132,32 +138,90 @@ class TheSessions(unittest.TestCase):
         # crosses midnight into two.
         self.assertRegex(SESSIONS.read_text(), r"(?m)^  GROUP BY user_pseudo_id, ga_session_id$")
 
-    def test_the_mart_reads_the_sessions(self):
+    def test_the_mart_reads_the_sessions_and_the_clients_events(self):
         self.assertEqual(set(re.findall(r"\bstaging\.\w+", TRAFFIC.read_text())),
-                         {"staging.stg_ga4__sessions"})
+                         {"staging.stg_ga4__sessions", "staging.ga4_key_events"})
 
 
 class TheLeads(unittest.TestCase):
-    """GA4's own standard names (form_submit, generate_lead) never fire on
-    Livewire's site. Leads are the property's key events as marked in GA4
-    Admin on 2026-09-25, so the mart counts exactly those."""
+    """Leads are the property's own key events, and every client names them
+    differently. Partner Technology's warehouse, copied from this template,
+    counted Livewire's form_submission and phone_link_click and so showed 0
+    forms for a week that had a real lead (2026-11-09). The names now live in
+    each client's client.env and reach the mart as data."""
 
-    KEY_EVENTS = {"Chat", "email_link_click", "form_submission",
-                  "phone_call", "phone_link_click", "visit_bookings"}
+    LIVEWIRE_KEY = {"Chat", "email_link_click", "form_submission",
+                    "phone_call", "phone_link_click", "visit_bookings"}
 
-    def test_key_events_are_the_propertys(self):
-        sql = TRAFFIC.read_text()
-        block = re.search(r"WHERE n IN \(([^)]*)\)\) AS has_key_event", sql, re.S)
-        self.assertIsNotNone(block, "the key-event test has gone")
-        self.assertEqual(set(re.findall(r"'([^']+)'", block.group(1))), self.KEY_EVENTS)
+    def test_the_mart_names_no_event(self):
+        # Any quoted string in the build half other than a kind is an event
+        # name baked into SQL every client shares.
+        sql = TRAFFIC.read_text().split("\nALTER TABLE")[0]
+        body = sql[sql.index("AS\nWITH"):]
+        self.assertEqual(set(re.findall(r"'([^']+)'", body)),
+                         {"key", "form", "phone", "booking"})
 
-    def test_the_breakdown_names_real_events(self):
-        # Every event the mart counts by name must be a key event; a name
-        # the site never sends is a column that is always zero.
-        sql = TRAFFIC.read_text()
-        named = set(re.findall(r"'(\w+)' IN UNNEST\(event_names\)", sql))
-        self.assertTrue(named)
-        self.assertLessEqual(named, self.KEY_EVENTS)
+    def test_livewire_keeps_its_own_names(self):
+        code, out = load_client("raw_zoho raw_ga4", "analytics_1", then=(
+            'printf "%s|%s|%s|%s" "$GA4_KEY_EVENTS" "$GA4_FORM_EVENTS" '
+            '"$GA4_PHONE_EVENTS" "$GA4_BOOKING_EVENTS"'))
+        self.assertEqual(code, 0, out)
+        key, form, phone, booking = out.split("|")
+        self.assertEqual(set(key.split()), self.LIVEWIRE_KEY)
+        self.assertEqual(form.split(), ["form_submission"])
+        self.assertEqual(set(phone.split()), {"phone_call", "phone_link_click"})
+        self.assertEqual(booking.split(), ["visit_bookings"])
+
+    def test_the_key_events_are_required(self):
+        code, err = load_client("raw_zoho raw_ga4", "analytics_1", 'GA4_KEY_EVENTS=""')
+        self.assertNotEqual(code, 0)
+        self.assertIn("GA4_KEY_EVENTS is not set", err)
+
+    def test_the_form_event_is_required(self):
+        code, err = load_client("raw_zoho raw_ga4", "analytics_1", 'GA4_FORM_EVENTS=""')
+        self.assertNotEqual(code, 0)
+        self.assertIn("GA4_FORM_EVENTS is not set", err)
+
+    def test_no_phone_event_is_fine(self):
+        # SoundVision's pages have no tap-to-call link (2026-11-10).
+        code, err = load_client("raw_zoho raw_ga4", "analytics_1", 'GA4_PHONE_EVENTS=""')
+        self.assertEqual(code, 0, err)
+
+    def test_a_lead_must_be_a_key_event(self):
+        code, err = load_client("raw_zoho raw_ga4", "analytics_1",
+                                'GA4_FORM_EVENTS="consultation_form_submit"')
+        self.assertNotEqual(code, 0)
+        self.assertIn("GA4_FORM_EVENTS names 'consultation_form_submit', which is not in GA4_KEY_EVENTS", err)
+
+    def test_a_name_that_could_break_the_sql_is_refused(self):
+        for bad in ("form'); DROP TABLE x; --", "1form", "a-b", "x" * 41):
+            with self.subTest(bad=bad):
+                code, err = load_client(
+                    "raw_zoho raw_ga4", "analytics_1",
+                    f"GA4_KEY_EVENTS=\"form_submission {bad}\"")
+                self.assertNotEqual(code, 0)
+                self.assertIn("is not a GA4 event name", err)
+
+    def test_without_ga4_the_names_are_not_checked(self):
+        self.assertEqual(load_client("raw_zoho", "", 'GA4_FORM_EVENTS=""')[0], 0)
+
+    def test_another_clients_names_build_their_own_table(self):
+        pt = ('GA4_KEY_EVENTS="consultation_form_submit phone_click"\n'
+              'GA4_FORM_EVENTS="consultation_form_submit"\n'
+              'GA4_PHONE_EVENTS="phone_click"\nGA4_BOOKING_EVENTS=""')
+        code, sql = load_client("raw_zoho raw_ga4", "analytics_1", pt,
+                                then="ga4_key_events_sql")
+        self.assertEqual(code, 0, sql)
+        self.assertIn("CREATE OR REPLACE TABLE staging.ga4_key_events", sql)
+        self.assertEqual(set(re.findall(r"\('(\w+)', '(\w+)'\)", sql)), {
+            ("consultation_form_submit", "key"), ("phone_click", "key"),
+            ("consultation_form_submit", "form"), ("phone_click", "phone")})
+        self.assertNotIn("form_submission'", sql)
+
+    def test_the_transform_builds_the_table_before_the_marts(self):
+        src = (ROOT / "scripts" / "06-transform.sh").read_text()
+        self.assertLess(src.index("ga4_key_events_sql | bq_query"),
+                        src.index('info "Transform: marts"'))
 
 
 if __name__ == "__main__":
