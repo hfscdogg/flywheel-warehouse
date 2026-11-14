@@ -426,6 +426,17 @@ else
     fi
     run_sql "$f"
   done
+  # The client's GA4 lead events, from client.env, before the marts that
+  # count them. Skipped on a validate pass, which builds nothing.
+  if source_enabled ga4 && ! is_validate; then
+    info "Transform: this client's GA4 lead events"
+    if is_dry_run; then
+      log "[dry-run] $BQ query   # CREATE OR REPLACE TABLE staging.ga4_key_events from client.env"
+    else
+      log "  \$ bq query   # staging.ga4_key_events from client.env"
+      ga4_key_events_sql | bq_query
+    fi
+  fi
   info "Transform: marts"
   for f in "$REPO_ROOT"/sql/marts/*.sql; do
     [ -f "$f" ] || die "no mart models found under sql/marts/"

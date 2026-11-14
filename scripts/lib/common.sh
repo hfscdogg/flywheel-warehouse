@@ -196,6 +196,27 @@ load_client() {
         || die "client.env for '$slug': GA4_EXPORT_DATASET is set but raw_ga4 is not in DATASETS_RAW" ;;
   esac
 
+  # Which GA4 events count as leads is the client's own: each property names
+  # its key events in GA4 Admin, and a site builder (Wix, Squarespace) or a
+  # developer picks the names. Livewire's are form_submission and
+  # phone_link_click; Partner Technology's are consultation_form_submit and
+  # phone_click. Copying one client's names into another's warehouse counted
+  # every form and phone tap there as zero (2026-11-09), so with GA4 on, the
+  # client's names are required here and checked before anything is built.
+  #   GA4_KEY_EVENTS     every key event marked in GA4 Admin (required)
+  #   GA4_FORM_EVENTS    the ones that are a form submitted (required)
+  #   GA4_PHONE_EVENTS   the ones that are a phone tap or call (optional)
+  #   GA4_BOOKING_EVENTS the ones that are a bookings-page visit (optional)
+  # The last three must each be among the key events: a lead the property
+  # does not mark as a key event is a column GA4 itself disagrees with.
+  GA4_KEY_EVENTS="${GA4_KEY_EVENTS:-}"
+  GA4_FORM_EVENTS="${GA4_FORM_EVENTS:-}"
+  GA4_PHONE_EVENTS="${GA4_PHONE_EVENTS:-}"
+  GA4_BOOKING_EVENTS="${GA4_BOOKING_EVENTS:-}"
+  case " $DATASETS_RAW " in
+    *" raw_ga4 "*) check_ga4_events "$slug" ;;
+  esac
+
   # Google Ads is not ingested either: BigQuery's own Data Transfer writes
   # raw_google_ads.p_ads_<Report>_<customer id>, and 01-datasets.sh puts
   # views with plain names over the reports staging reads. The views need
@@ -246,6 +267,64 @@ load_client() {
 # THIS account only (10-endpoint-deployer.sh). Called from both
 # 07-hermes-endpoint.sh deploy and 10-endpoint-deployer.sh, so either one
 # leaves a client able to build; both are idempotent.
+# check_ga4_events <slug> — the client's GA4 lead events are set and sane.
+# GA4 event names are letters, digits and underscores, start with a letter
+# and run to 40 characters. Checking that here is also what makes
+# ga4_key_events_sql safe to build from them: nothing else reaches the SQL.
+check_ga4_events() {
+  local slug="$1" ev kind list
+  [ -n "$GA4_KEY_EVENTS" ] \
+    || die "client.env for '$slug': raw_ga4 is in DATASETS_RAW but GA4_KEY_EVENTS is not set (GA4 Admin > Events, the ones marked key)"
+  [ -n "$GA4_FORM_EVENTS" ] \
+    || die "client.env for '$slug': raw_ga4 is in DATASETS_RAW but GA4_FORM_EVENTS is not set (the key event the contact form sends)"
+  for ev in $GA4_KEY_EVENTS $GA4_FORM_EVENTS $GA4_PHONE_EVENTS $GA4_BOOKING_EVENTS; do
+    printf '%s' "$ev" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,39}$' \
+      || die "client.env for '$slug': '$ev' is not a GA4 event name (letters, digits and _, starting with a letter, up to 40)"
+  done
+  for kind in FORM PHONE BOOKING; do
+    eval "list=\$GA4_${kind}_EVENTS"
+    for ev in $list; do
+      case " $GA4_KEY_EVENTS " in
+        *" $ev "*) : ;;
+        *) die "client.env for '$slug': GA4_${kind}_EVENTS names '$ev', which is not in GA4_KEY_EVENTS" ;;
+      esac
+    done
+  done
+}
+
+# ga4_key_events_sql — the statement that writes the client's GA4 lead
+# events into staging.ga4_key_events, one row per (event, kind), for
+# marts.kpi_website_traffic to count against. The SQL tree stays the same
+# for every client (06-transform.sh); what differs between clients lives in
+# client.env and reaches BigQuery as data, through this table.
+# Only names check_ga4_events has passed are interpolated.
+ga4_key_events_sql() {
+  local rows="" kind list ev
+  for kind in key form phone booking; do
+    case "$kind" in
+      key)     list="$GA4_KEY_EVENTS" ;;
+      form)    list="$GA4_FORM_EVENTS" ;;
+      phone)   list="$GA4_PHONE_EVENTS" ;;
+      booking) list="$GA4_BOOKING_EVENTS" ;;
+    esac
+    for ev in $list; do
+      rows="$rows${rows:+,
+  }('$ev', '$kind')"
+    done
+  done
+  cat <<SQL
+CREATE OR REPLACE TABLE staging.ga4_key_events (
+  event_name STRING OPTIONS (description = "A GA4 event name exactly as the property sends it, e.g. form_submission or consultation_form_submit."),
+  kind STRING OPTIONS (description = "What the event means for leads: key (marked as a key event in GA4 Admin), form (a form submitted), phone (a phone tap or call) or booking (a bookings-page visit). An event can have several rows, one per kind.")
+)
+OPTIONS (description = "This client's GA4 lead events, written by the transform from client.env (GA4_KEY_EVENTS, GA4_FORM_EVENTS, GA4_PHONE_EVENTS, GA4_BOOKING_EVENTS). marts.kpi_website_traffic counts forms, phone taps and key events against this list, so each client's own event names are counted rather than another's.")
+AS
+SELECT event_name, kind FROM UNNEST(ARRAY<STRUCT<event_name STRING, kind STRING>>[
+  $rows
+]);
+SQL
+}
+
 converge_endpoint_builder() {
   info "Build service account: $SA_ENDPOINT_BUILDER_EMAIL (runs the source build)"
   if probe gcloud iam service-accounts describe "$SA_ENDPOINT_BUILDER_EMAIL" --project "$GCP_PROJECT_ID"; then
