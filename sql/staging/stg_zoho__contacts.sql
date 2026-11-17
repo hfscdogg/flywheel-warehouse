@@ -22,6 +22,7 @@ SELECT
   JSON_VALUE(payload, '$.Full_Name')                         AS full_name,
   LOWER(JSON_VALUE(payload, '$.Email'))                      AS email,
   JSON_VALUE(payload, '$.Phone')                             AS phone,
+  JSON_VALUE(payload, '$.Mobile')                            AS mobile,
   JSON_VALUE(payload, '$.Account_Name.id')                   AS account_id,
   JSON_VALUE(payload, '$.Account_Name.name')                 AS account_name,
   JSON_VALUE(payload, '$.Owner.name')                        AS owner_name,
@@ -43,6 +44,8 @@ ALTER TABLE staging.stg_zoho__contacts ALTER COLUMN email
   SET OPTIONS (description = "Contact email.");
 ALTER TABLE staging.stg_zoho__contacts ALTER COLUMN phone
   SET OPTIONS (description = "Contact phone.");
+ALTER TABLE staging.stg_zoho__contacts ALTER COLUMN mobile
+  SET OPTIONS (description = "Contact mobile phone, when recorded separately from phone.");
 ALTER TABLE staging.stg_zoho__contacts ALTER COLUMN account_id
   SET OPTIONS (description = "Account the contact belongs to; joins to stg_zoho__accounts.");
 ALTER TABLE staging.stg_zoho__contacts ALTER COLUMN account_name

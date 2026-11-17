@@ -79,6 +79,19 @@ email/newsletter, website inquiry, direct), so "what did marketing bring in"
 means the same thing here as in Zoho. Deals with no channel set appear as
 `(unset)` — a high share there means CRM data entry, not a data bug.
 
+## kpi_crm_phone_index — CRM phone numbers as match keys (Zoho CRM)
+
+One row per (`phone_key`, `record_type`, `record_id`): every lead phone,
+contact phone and mobile, and account phone, hashed with
+`SHA256('flywheel-phone:' || ten_digits)`, with the record's creation date and
+its deals. The kitchen's weekly brief hashes each CallRail caller the same way
+to say which first-time callers became CRM records, which were already
+customers and which never reached the CRM, and later which turned into deals,
+with no one tagging calls. `records_sharing_phone` flags household and shared
+office numbers. The key is reversible by brute force, so this is personal
+data like the rest of the CRM. `pipelines/tests/test_sql_crm_phone_index.py`
+pins the normalisation the kitchen mirrors.
+
 ## kpi_paid_media — Google Ads spend per campaign per day (Google Ads)
 
 One row per (date, campaign): cost in USD, clicks, impressions,
