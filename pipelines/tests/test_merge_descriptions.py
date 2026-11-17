@@ -70,14 +70,25 @@ class Apply(unittest.TestCase):
         merge.apply(fields, dict(merge.descriptions(MODEL)))
         self.assertNotIn("description", fields[2])
 
-    def test_walks_nested_records(self):
+    def test_nested_fields_are_addressed_by_dotted_path(self):
+        model = MODEL + ('ALTER TABLE staging.stg_x ALTER COLUMN wrap.b\n'
+                         '  SET OPTIONS (description = "Inside the record.");\n')
+        fields = [{"name": "a", "type": "STRING"}, {"name": "b", "type": "STRING"},
+                  {"name": "wrap", "type": "RECORD",
+                   "fields": [{"name": "b", "type": "STRING"}]}]
+        missing = merge.apply(fields, dict(merge.descriptions(model)))
+        self.assertEqual(missing, {})
+        self.assertEqual(fields[2]["fields"][0]["description"], "Inside the record.")
+        # the top-level b keeps its own description, not the nested one's
+        self.assertEqual(fields[1]["description"],
+                         "The second one, with a comma, and a - dash.")
+
+    def test_a_bare_name_does_not_describe_a_nested_field(self):
         fields = [{"name": "a", "type": "STRING"},
                   {"name": "wrap", "type": "RECORD",
                    "fields": [{"name": "b", "type": "STRING"}]}]
         missing = merge.apply(fields, dict(merge.descriptions(MODEL)))
-        self.assertEqual(missing, {})
-        self.assertEqual(fields[1]["fields"][0]["description"],
-                         "The second one, with a comma, and a - dash.")
+        self.assertEqual(missing, {"b": "The second one, with a comma, and a - dash."})
 
 
 class EveryRealModel(unittest.TestCase):

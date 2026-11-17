@@ -255,7 +255,7 @@ class TestDescriptionsAreOneTrailingBlock(unittest.TestCase):
                         continue
                     self.assertRegex(
                         line,
-                        r"^(?:(?:ALTER TABLE )?(?:marts|staging)\.\w+ ALTER COLUMN \w+"
+                        r"^(?:(?:ALTER TABLE )?(?:marts|staging)\.\w+ ALTER COLUMN \w+(?:\.\w+)*"
                         r"|  SET OPTIONS \(description = \".*\"\);)$",
                         "a line after the first ALTER is not part of a column "
                         "description; 06-transform.sh would pace it as one")
