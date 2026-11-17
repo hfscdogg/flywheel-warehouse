@@ -117,5 +117,15 @@ ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN records_sharing_phone
   SET OPTIONS (description = "How many rows carry this phone_key. 1 is a clean match; more is a household (account plus contact) or a shared line such as a builder's office, so a match is less certain.");
 ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals
   SET OPTIONS (description = "Every non-test deal on the contact or its account (or on the account), oldest first: deal_id, created_date, outcome (won, lost or open, the stage lists of stg_zoho__deals), amount (USD) and is_service_call. Empty for leads and for records with no deals.");
+ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals.deal_id
+  SET OPTIONS (description = "Zoho CRM deal id. The same deal can appear on a contact row and its account row: count DISTINCT deal_id.");
+ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals.created_date
+  SET OPTIONS (description = "Date the deal was created (UTC). A deal created on or after a call is one the call may have led to.");
+ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals.outcome
+  SET OPTIONS (description = "won, lost or open, from the corrected stage lists the deal marts use.");
+ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals.amount
+  SET OPTIONS (description = "Deal amount, USD.");
+ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN deals.is_service_call
+  SET OPTIONS (description = "TRUE when the deal name or stage contains service call: a service visit, not a new sale.");
 ALTER TABLE marts.kpi_crm_phone_index ALTER COLUMN computed_at
   SET OPTIONS (description = "When this row was built (UTC).");

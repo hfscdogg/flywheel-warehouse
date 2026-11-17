@@ -25,8 +25,13 @@ import sys
 
 # The same layout pipelines/tests/test_sql_marts_described.py enforces:
 # ALTER TABLE <ds>.<table> ALTER COLUMN <col>\n  SET OPTIONS (description = "...");
+# <col> may be a dotted path (deals.deal_id) for a field inside a RECORD
+# column. BigQuery itself has no ALTER for nested fields, but these statements
+# are never run: this script reads them and sets the whole schema at once,
+# and the check after the build (sql/checks/described.sql) reads
+# COLUMN_FIELD_PATHS, so it requires nested fields to be described too.
 _ALTER = re.compile(
-    r'^ALTER TABLE (?:\w+)\.(?:\w+) ALTER COLUMN (\w+)\n'
+    r'^ALTER TABLE (?:\w+)\.(?:\w+) ALTER COLUMN (\w+(?:\.\w+)*)\n'
     r'  SET OPTIONS \(description = "([^"]*)"\);$',
     re.M)
 
@@ -35,19 +40,19 @@ def descriptions(sql):
     return {m.group(1): m.group(2) for m in _ALTER.finditer(sql)}
 
 
-def apply(fields, wanted):
+def apply(fields, wanted, prefix=""):
     """Set descriptions on `fields` in place; return the names not found.
 
-    Only top-level columns are described in this repo, but nested RECORD
-    fields are walked anyway so a future nested column is described rather
-    than silently reported missing.
+    A field inside a RECORD is addressed by its dotted path from the top
+    (deals.deal_id), so two records with a field of the same name cannot
+    take each other's description.
     """
     for field in fields:
-        name = field.get("name")
-        if name in wanted:
-            field["description"] = wanted.pop(name)
+        path = prefix + field.get("name", "")
+        if path in wanted:
+            field["description"] = wanted.pop(path)
         if field.get("fields"):
-            apply(field["fields"], wanted)
+            apply(field["fields"], wanted, path + ".")
     return wanted
 
 
