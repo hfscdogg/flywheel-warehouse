@@ -7,9 +7,11 @@ in again) and the resumable fetch (land out of order and the watermark skips
 records that never landed, with nothing reporting it).
 """
 
+import datetime
 import pathlib
 import re
 import unittest
+import zlib
 
 from pipelines.dtools import signin, v2
 from pipelines.lib import config
@@ -318,7 +320,222 @@ class QuoteNumber(unittest.TestCase):
     def test_time_entries_are_not_pulled(self):
         # D-Tools records hours sold; hours worked are Zoho CRM meetings.
         self.assertNotIn("time_entries", DTOOLS_V2)
-        self.assertEqual(v2.ENTITIES, [v2.PROJECTS, v2.PROPOSALS, v2.PURCHASE_ORDERS])
+        self.assertEqual(v2.ENTITIES, [v2.PROJECTS, v2.PROPOSALS, v2.PURCHASE_ORDERS,
+                                       v2.BILLING])
+
+
+def proj(i, modified="2026-11-01T00:00:00Z", completed="2026-10-01T00:00:00Z"):
+    return {"id": str(i), "modifiedDate": modified, "completedDate": completed}
+
+
+def billed(project, invoices=(), change_orders=()):
+    return {"project_id": project["id"],
+            "project_modified_date": project["modifiedDate"],
+            "invoices": list(invoices), "change_orders": list(change_orders)}
+
+
+def invoice(total, paid=None, **over):
+    return {"number": "INV-1", "totalAmount": total, "paidAmount": paid, **over}
+
+
+class OwesMoney(unittest.TestCase):
+    def test_an_invoice_paid_short_of_its_total_is_owed(self):
+        p = proj(1)
+        self.assertTrue(v2.owes_money(billed(p, [invoice(1000.0)])))
+        self.assertTrue(v2.owes_money(billed(p, [invoice(1000.0, 400.0)])))
+        self.assertTrue(v2.owes_money(billed(p, [invoice(50.0, 50.0), invoice(20.0)])))
+
+    def test_paid_in_full_archived_or_absent_is_not(self):
+        p = proj(1)
+        self.assertFalse(v2.owes_money(billed(p, [invoice(1000.0, 1000.0)])))
+        self.assertFalse(v2.owes_money(billed(p, [invoice(1000.0, archived=True)])))
+        self.assertFalse(v2.owes_money(billed(p)))
+        self.assertFalse(v2.owes_money(None))
+
+    def test_a_float_cent_does_not_keep_a_paid_invoice_open(self):
+        self.assertFalse(v2.owes_money(billed(proj(1), [invoice(0.3, 0.1 + 0.2)])))
+
+
+class DueForSweep(unittest.TestCase):
+    """Which projects are asked for their invoices tonight. Too few and a
+    payment is never seen, with nothing reporting it; all of them and the
+    nightly makes thousands of calls to learn nothing."""
+
+    DAY = datetime.date(2026, 11, 20)
+
+    def why(self, project, landed, day=None, recheck=7):
+        return v2.due_for_sweep(project, landed, day or self.DAY, recheck)
+
+    def quiet_day(self, project, recheck=7):
+        """A date that is not this project's recheck day."""
+        slot = zlib.crc32(project["id"].encode()) % recheck
+        d = self.DAY
+        while d.toordinal() % recheck == slot:
+            d += datetime.timedelta(days=1)
+        return d
+
+    def test_never_landed_is_swept(self):
+        self.assertEqual(self.why(proj(1), None), "new")
+
+    def test_a_project_changed_since_it_landed_is_swept(self):
+        p = proj(1)
+        landed = billed({**p, "modifiedDate": "2026-10-01T00:00:00Z"})
+        self.assertEqual(self.why(p, landed), "modified")
+
+    def test_the_same_instant_spelled_two_ways_is_not_a_change(self):
+        p = proj(1, modified="2026-11-01T00:00:00Z")
+        landed = billed({**p, "modifiedDate": "2026-11-01T00:00:00+00:00"})
+        self.assertIsNone(self.why(p, landed, self.quiet_day(p)))
+
+    def test_an_open_project_is_swept_every_night(self):
+        p = proj(1, completed=None)
+        self.assertEqual(self.why(p, billed(p), self.quiet_day(p)), "open")
+
+    def test_a_completed_project_still_owing_is_swept_every_night(self):
+        # The receivables case: job done, final invoice outstanding, and the
+        # payment arriving is not known to move the project's modified date.
+        p = proj(1)
+        self.assertEqual(self.why(p, billed(p, [invoice(900.0)]), self.quiet_day(p)),
+                         "unpaid")
+
+    def test_a_settled_completed_project_waits_for_its_recheck_day(self):
+        p = proj(1)
+        landed = billed(p, [invoice(900.0, 900.0)])
+        week = [self.DAY + datetime.timedelta(days=i) for i in range(7)]
+        self.assertEqual([self.why(p, landed, d) for d in week].count("recheck"), 1)
+        self.assertEqual([self.why(p, landed, d) for d in week].count(None), 6)
+
+    def test_rechecks_are_spread_over_the_week_not_stacked_on_one_night(self):
+        week = [self.DAY + datetime.timedelta(days=i) for i in range(7)]
+        per_day = [sum(1 for i in range(700)
+                       if self.why(proj(i), billed(proj(i)), d) == "recheck") for d in week]
+        self.assertEqual(sum(per_day), 700)
+        self.assertLess(max(per_day), 200)
+
+
+def billing_api(listed, invoices=None, change_orders=None, missing=(), odd=()):
+    invoices, change_orders = invoices or {}, change_orders or {}
+
+    def get(url, params):
+        if url.endswith("/projects"):
+            return Resp(200, {"projects": listed, "totalProjects": len(listed)})
+        pid = url.split("/projects/")[1].split("/")[0]
+        if pid in missing:
+            return Resp(404)
+        if pid in odd:
+            return Resp(200, {"error": "nope"})
+        if url.endswith("/invoices"):
+            return Resp(200, {"items": invoices.get(pid)})
+        if url.endswith("/change-orders"):
+            return Resp(200, {"items": change_orders.get(pid, [])})
+        raise AssertionError(f"unexpected GET {url}")
+    return api_with(get)
+
+
+class Spy(Recorder):
+    """A Recorder that also keeps the records it was handed."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.records = []
+
+    def __call__(self, entity, records, id_field, modified_field):
+        n = super().__call__(entity, records, id_field, modified_field)
+        self.records.extend(records)
+        return n
+
+
+class RunBilling(unittest.TestCase):
+    DAY = DueForSweep.DAY
+
+    def run_it(self, listed, landed=None, limit=0, land=None, **kw):
+        land = land or Spy()
+        api, http, _ = billing_api(listed, **kw)
+        n = v2.run_billing(api, land, lambda: landed or {}, limit, today=self.DAY)
+        return land, http, n
+
+    def test_a_first_run_lands_every_project_with_its_invoices_and_change_orders(self):
+        listed = [proj(1), proj(2)]
+        land, http, n = self.run_it(
+            listed, invoices={"1": [invoice(500.0, 500.0)]},
+            change_orders={"1": [{"number": 3, "price": 120.0}]})
+        self.assertEqual(n, 2)
+        self.assertEqual(land.calls, [(v2.BILLING, ["1", "2"])])
+        one, two = land.records
+        self.assertEqual(one["invoices"][0]["paidAmount"], 500.0)
+        self.assertEqual(one["change_orders"][0]["price"], 120.0)
+        self.assertEqual(one["project_modified_date"], "2026-11-01T00:00:00Z")
+        # A project with nothing billed still lands, as an empty record.
+        self.assertEqual((two["invoices"], two["change_orders"]), ([], []))
+        self.assertIn("https://api.d-tools.cloud/api/v2/projects/1/invoices",
+                      [g[0] for g in http.gets])
+
+    def test_the_project_list_is_read_whole_not_since_a_watermark(self):
+        _, http, _ = self.run_it([proj(1)])
+        listing = [g for g in http.gets if g[0].endswith("/projects")]
+        self.assertNotIn("fromModifiedDate", listing[0][2])
+        self.assertEqual(listing[0][2]["includeArchived"], "true")
+
+    def test_only_projects_due_are_asked(self):
+        settled, owing = proj(1), proj(2)
+        quiet = DueForSweep().quiet_day(settled)
+        landed = {"1": billed(settled, [invoice(10.0, 10.0)]),
+                  "2": billed(owing, [invoice(10.0)])}
+        land = Spy()
+        api, http, _ = billing_api([settled, owing], invoices={"2": [invoice(10.0, 10.0)]})
+        v2.run_billing(api, land, lambda: landed, today=quiet)
+        self.assertEqual(land.calls, [(v2.BILLING, ["2"])])
+        self.assertFalse([g for g in http.gets if "/projects/1/" in g[0]])
+        # And what lands is the payment, which is the point of asking.
+        self.assertFalse(v2.owes_money(land.records[0]))
+
+    def test_nothing_due_still_reaches_land(self):
+        # It creates the table and writes the run log the freshness check reads.
+        p = proj(1)
+        land = Spy()
+        api, _, _ = billing_api([p])
+        v2.run_billing(api, land, lambda: {"1": billed(p)},
+                       today=DueForSweep().quiet_day(p))
+        self.assertEqual(land.calls, [(v2.BILLING, [])])
+
+    def test_a_project_deleted_since_listing_is_skipped(self):
+        land, _, _ = self.run_it([proj(1), proj(2)], missing={"1"})
+        self.assertEqual(land.calls, [(v2.BILLING, ["2"])])
+
+    def test_an_unexpected_shape_fails_rather_than_landing_as_no_invoices(self):
+        # {"error": ...} landed as [] would read as a project owing nothing.
+        with self.assertRaises(RuntimeError) as cm:
+            self.run_it([proj(1)], odd={"1"})
+        self.assertIn("items", str(cm.exception))
+
+    def test_a_failure_keeps_every_earlier_batch_and_the_next_run_resumes(self):
+        listed = [proj(i, modified=f"2026-11-0{i}T00:00:00Z") for i in range(1, 4)]
+        land = Spy(fail_on=lambda e, rs: any(r["project_id"] == "3" for r in rs))
+        v2.BATCH_SIZE, saved = 2, v2.BATCH_SIZE
+        try:
+            with self.assertRaises(RuntimeError):
+                self.run_it(listed, land=land)
+            self.assertEqual(land.calls, [(v2.BILLING, ["1", "2"])])
+            # Next night: what landed is settled and not due; 3 never landed.
+            landed = {r["project_id"]: r for r in land.records}
+            quiet = self.DAY
+            while any(v2.due_for_sweep(p, landed[p["id"]], quiet, 7) for p in listed[:2]):
+                quiet += datetime.timedelta(days=1)
+            again = Spy()
+            api, _, _ = billing_api(listed)
+            v2.run_billing(api, again, lambda: landed, today=quiet)
+            self.assertEqual(again.calls, [(v2.BILLING, ["3"])])
+        finally:
+            v2.BATCH_SIZE = saved
+
+    def test_limit_caps_the_projects_swept(self):
+        land, _, _ = self.run_it([proj(i) for i in range(1, 6)], limit=2)
+        self.assertEqual(len(land.records), 2)
+
+    def test_a_bare_array_is_read_as_the_items(self):
+        api, _, _ = api_with(lambda u, p: Resp(200, [{"number": "INV-9"}]))
+        self.assertEqual(v2.fetch_items(api, "/projects/{id}/invoices", "1"),
+                         [{"number": "INV-9"}])
 
 
 class ZohoMeetings(unittest.TestCase):

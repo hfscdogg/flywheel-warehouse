@@ -1,7 +1,8 @@
 name: ingest-dtools-v2
 
-# D-Tools Cloud API v2: project cost, margin and quote number, and purchase
-# order costs, into raw_dtools.v2_*. See pipelines/dtools/v2.py.
+# D-Tools Cloud API v2: project cost, margin and quote number, purchase
+# order costs, and each project's invoices and change orders, into
+# raw_dtools.v2_*. See pipelines/dtools/v2.py.
 #
 # Nightly from 2026-10-04: the first full load (2026-10-03) was read and the
 # job-costing models built on it. Before the 07:00 UTC transform, after the
@@ -17,7 +18,7 @@ on:
         description: Client slug
         default: livewire
       full_refresh:
-        description: Ignore watermarks; re-fetch every project and purchase order
+        description: Ignore watermarks; re-fetch every project, purchase order and project's billing
         type: boolean
         default: false
       limit:

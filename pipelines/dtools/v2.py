@@ -13,6 +13,12 @@ has had quoted price and no cost. v2 exposes cost, one landing table each:
 - v2_purchase_orders: purchase order detail, whose products carry unitCost and
   the projectId they were bought for. One GET per changed purchase order.
 
+- v2_project_billing: a project's invoices (the payment requests sent from
+  D-Tools, with what was asked, what was paid and when) and its change
+  orders, landed together wrapped with the project id. Two GETs per project,
+  for the projects due_for_sweep picks: an invoice can be paid without its
+  project's modified date moving, so this one does not ride the watermark.
+
 Time entries are not pulled: D-Tools records hours sold, and hours worked
 live in Zoho CRM (meetings on a deal).
 
@@ -28,6 +34,8 @@ everything for one load at the end and lost an hour's work to a 401.
 """
 
 import logging
+import zlib
+from datetime import datetime, timezone
 
 from ..lib import runner, util
 from ..lib.sources import DTOOLS_V2
@@ -37,7 +45,8 @@ log = logging.getLogger("flywheel.ingest.dtools_v2")
 PROJECTS = "v2_projects"
 PROPOSALS = "v2_project_proposals"
 PURCHASE_ORDERS = "v2_purchase_orders"
-ENTITIES = [PROJECTS, PROPOSALS, PURCHASE_ORDERS]
+BILLING = "v2_project_billing"
+ENTITIES = [PROJECTS, PROPOSALS, PURCHASE_ORDERS, BILLING]
 
 REQUIRED_ENV = ("DTOOLS_V2_TENANT_ID", "DTOOLS_V2_CLIENT_ID", "DTOOLS_V2_SCOPE")
 BATCH_SIZE = 100
@@ -252,6 +261,135 @@ def run_purchase_orders(api, land, watermark, limit=0):
     return total
 
 
+def fetch_items(api, path, project_id):
+    """A project's invoices or change orders, or None when the project is gone.
+
+    Anything that is not a list of items raises: an unexpected shape landing
+    as "no invoices" would read downstream as a project that owes nothing.
+    """
+    resp = api.get(path.format(id=project_id))
+    if resp.status_code == 404:
+        log.warning("%s %s: 404, skipped", path, project_id)
+        return None
+    util.raise_for_status(resp, f"D-Tools v2 {path} {project_id}")
+    body = resp.json()
+    key = DTOOLS_V2["billing"]["items_key"]
+    if isinstance(body, list):
+        return body  # v1's GetQuotes answered with a bare array against its spec
+    if isinstance(body, dict) and key in body:
+        items = body[key]
+        if items is None:
+            return []  # the spec marks items nullable: null is an empty list
+        if isinstance(items, list):
+            return items
+    raise RuntimeError(
+        f"D-Tools v2 {path} {project_id}: expected an object with an "
+        f"'{key}' list, got {str(body)[:200]}")
+
+
+def _amount(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def owes_money(billing):
+    """True when a landed billing record holds an invoice not yet paid in full.
+
+    Judged on the amounts, not on `status`: the spec gives status no list of
+    values. Archived invoices are not chased.
+    """
+    for inv in (billing or {}).get("invoices") or []:
+        if not isinstance(inv, dict) or inv.get("archived"):
+            continue
+        if _amount(inv.get("paidAmount")) + 0.005 < _amount(inv.get("totalAmount")):
+            return True
+    return False
+
+
+def due_for_sweep(project, landed, today, recheck_days):
+    """Why this project's billing is fetched tonight, or None to skip it.
+
+    landed is the project's newest landed billing record, or None. In order:
+
+    - new: never landed (the first run, a new project, or one a dead run
+      never reached, which is what makes the sweep resumable).
+    - modified: the project changed since its billing was last landed.
+    - open: the project is not completed, so invoices are still being raised.
+    - unpaid: its landed invoices show money owed. A completed job with a
+      final invoice outstanding is the case receivables exist for, and the
+      payment arriving is not known to touch the project.
+    - recheck: none of the above, so nothing predicts a change. Each such
+      project is looked at once every recheck_days, on a day fixed by its id,
+      which bounds how stale the quietest project can be without asking
+      about every project every night.
+    """
+    if landed is None:
+        return "new"
+    try:
+        now_ts = util.parse_ts(project.get("modifiedDate"))
+        then_ts = util.parse_ts(landed.get("project_modified_date"))
+    except (TypeError, ValueError):
+        now_ts = then_ts = None
+    if now_ts != then_ts:
+        return "modified"
+    if not project.get("completedDate"):
+        return "open"
+    if owes_money(landed):
+        return "unpaid"
+    if recheck_days and recheck_days > 0:
+        slot = zlib.crc32(str(project.get("id")).encode()) % recheck_days
+        if slot == today.toordinal() % recheck_days:
+            return "recheck"
+    return None
+
+
+def run_billing(api, land, landed_state, limit=0, today=None):
+    """Projects due a look → their invoices and change orders. Returns rows.
+
+    landed_state() returns {project_id: newest landed billing record}. The
+    project list is read in full every run (it is the cheap part: a page per
+    hundred projects); limit caps the projects swept, not the list, so a
+    smoke run still picks from all of them.
+    """
+    conf = DTOOLS_V2["billing"]
+    today = today or datetime.now(timezone.utc).date()
+    listed = fetch_list(api, DTOOLS_V2["projects"], {})
+    landed = landed_state()
+    due, reasons = [], {}
+    for p in listed:
+        why = due_for_sweep(p, landed.get(str(p.get("id"))), today, conf["recheck_days"])
+        if why:
+            due.append(p)
+            reasons[why] = reasons.get(why, 0) + 1
+    log.info("billing: %d of %d projects due (%s)", len(due), len(listed),
+             ", ".join(f"{k} {v}" for k, v in sorted(reasons.items())) or "none")
+    if limit:
+        due = due[:limit]
+    if not due:
+        return land(BILLING, [], "project_id", "project_modified_date")
+    total = 0
+    for batch in batches_oldest_first(due, BATCH_SIZE):
+        records = []
+        for p in batch:
+            invoices = fetch_items(api, conf["invoices_path"], p["id"])
+            if invoices is None:
+                continue
+            records.append({"project_id": p["id"],
+                            "project_modified_date": p.get("modifiedDate"),
+                            "invoices": invoices,
+                            "change_orders": fetch_items(
+                                api, conf["change_orders_path"], p["id"])})
+        # Every swept project lands, with or without invoices: staging reads
+        # the newest record per project, so an invoice deleted in D-Tools
+        # only disappears if the emptier record that follows it is landed.
+        # The watermark runner.land writes for this entity is not read;
+        # landed_state decides what is due.
+        total += land(BILLING, records, "project_id", "project_modified_date")
+    return total
+
+
 def main():
     args, cfg, dataset, run_id = runner.setup("dtools", ENTITIES)
     st = settings(cfg.env)
@@ -274,6 +412,13 @@ def main():
 
     total = run_projects(api, land, watermark(PROJECTS), args.limit)
     total += run_purchase_orders(api, land, watermark(PURCHASE_ORDERS), args.limit)
+    # Last, so a refusal on the newer billing endpoints cannot cost the night
+    # its projects and purchase orders. A full refresh forgets what landed.
+    total += run_billing(
+        api, land,
+        lambda: {} if args.full_refresh
+        else bq_mod.latest_payloads(bq, cfg, dataset, BILLING.lower()),
+        args.limit)
     log.info("done: %d rows total", total)
 
 
