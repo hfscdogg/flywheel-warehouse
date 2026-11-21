@@ -1,5 +1,8 @@
 """BigQuery landing-table and watermark helpers (imports google-cloud-bigquery)."""
 
+import json
+
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 # Landing tables: full source record as JSON payload plus extraction metadata.
@@ -82,6 +85,34 @@ def get_watermark(bq, cfg, dataset, entity):
     except Exception:
         return None  # state table absent on first run
     return None
+
+
+def latest_payloads(bq, cfg, dataset, name):
+    """{_source_id: newest payload} for a landing table; {} if it is absent.
+
+    For an ingest whose next pull depends on what it landed before, not just
+    on a watermark (D-Tools billing: which projects still have an invoice
+    unpaid). Newest by load, since such a record can change while its
+    source-side modified time stands still.
+    """
+    table_id = f"{cfg.project_id}.{dataset}.{name}"
+    sql = f"""
+        SELECT _source_id, payload FROM `{table_id}`
+        WHERE _source_id IS NOT NULL
+        QUALIFY ROW_NUMBER() OVER (
+          PARTITION BY _source_id ORDER BY _loaded_at DESC) = 1
+    """
+    try:
+        rows = list(bq.query(sql).result())
+    except NotFound:
+        return {}  # landing table absent on first run
+    out = {}
+    for row in rows:
+        payload = row.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        out[row._source_id] = payload
+    return out
 
 
 def set_watermark(bq, cfg, dataset, entity, watermark_iso, run_id, recorded_at):

@@ -127,6 +127,27 @@ DTOOLS_V2 = {
                         "list_key": "purchaseOrders",
                         "total_key": "totalPurchaseOrders",
                         "detail_path": "/purchase-orders/{id}"},
+    # A project's billing: the invoices (payment requests) sent from D-Tools
+    # and its change orders, one GET each per project (spec read 2026-11-20:
+    # GET /projects/{id}/invoices and /projects/{id}/change-orders, both a
+    # V2ListResponse with an `items` array and no paging or changed-since
+    # parameter). An invoice carries number, status, amount, tax, totalAmount,
+    # paidAmount, paidDate, dueDate, billingDate, sharedOn, viewedOn and the
+    # accounting system's integrationNumber; its paymentPaymentTerms lines
+    # name the change order each part bills. There is no separate list of
+    # payment transactions and no log of emails sent.
+    #
+    # Nothing documented says a paid invoice moves its project's
+    # modifiedDate, so the changed-since list cannot be trusted to surface a
+    # payment. pipelines/dtools/v2.py due_for_sweep decides which projects
+    # are asked again each night; recheck_days is how long the quietest
+    # project (completed, unchanged, nothing owed) waits between looks.
+    #
+    # VERIFY on the first live run, as above: shapes are from the spec.
+    "billing": {"invoices_path": "/projects/{id}/invoices",
+                "change_orders_path": "/projects/{id}/change-orders",
+                "items_key": "items",
+                "recheck_days": 7},
     # No time entries: D-Tools records hours sold, not hours worked. Hours
     # worked are Zoho CRM meetings (ZOHO["modules"], Events).
 }
