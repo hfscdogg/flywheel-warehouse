@@ -116,6 +116,18 @@ equal the proposal's quote number. On 2026-10-03 only 550 of 1,733 deals
 closed since 2025 carried one, so `zoho_link` says, per project, whether it
 linked and if not why. Never fill the gap by matching names.
 
+## kpi_dtools_receivables — open invoices sent from D-Tools (D-Tools v2)
+
+One row per invoice D-Tools still shows as owed: project, client, balance and
+age. Livewire has sent its payment requests (deposits, progress payments,
+change orders) from D-Tools rather than QuickBooks since early 2026, so this
+is where current project receivables are. It is **D-Tools' view, not the
+books**: an invoice stays open until someone marks it paid in D-Tools, and on
+the first load most of the balance was more than 90 days old or undated,
+largely from before the move. Recent rows (0 to 60 days) are reliable; old
+ones are questions to check against QuickBooks before anyone is chased.
+Aged from the billing date, since almost no invoice carries a due date.
+
 ## kpi_project_margin — per-project margin (D-Tools + QBO)
 
 One row per D-Tools project: quoted price (no cost: the v1 endpoint carries
