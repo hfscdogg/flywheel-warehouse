@@ -214,6 +214,22 @@ re-runs against current status every week without a fresh roster;
 `status_source` and `status_as_of` say which feed answered and when. Both
 arrive as uploaded files — [docs/vendor-reports.md](../../docs/vendor-reports.md).
 
+## kpi_dtools_receivables — collections worklist (D-Tools + QBO)
+
+One row per D-Tools invoice that D-Tools still shows unpaid. Payment
+requests (deposits, progress payments, change orders) go out from D-Tools;
+QuickBooks holds the revenue invoices they are later applied to, and a
+deposit for future work is a QuickBooks payment with no invoice. Neither
+system alone says what is owed, so each row carries `next_step`: `collect`,
+`not_sent` (still a draft) or `check_quickbooks` (a QuickBooks payment for
+the exact amount exists, so D-Tools is probably just out of date).
+
+The QuickBooks link is by exact amount only, never by name, and is a hint
+for a person to confirm. It misses split and combined payments, so
+`collect` rows can still be paid, most often the old ones: read `age_days`
+and `project_stage` before chasing. `kpi_cash` remains the QuickBooks AR
+snapshot; the two are not additive.
+
 ## kpi_cash — cash position snapshot (QBO)
 
 Single row as of build time: AR total and aging buckets (current, 1–30,
