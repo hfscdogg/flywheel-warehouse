@@ -62,6 +62,18 @@ WITH loaded AS (
          'raw_dtools.v2_purchase_orders' AS raw_table
   FROM staging.stg_dtools__v2_po_lines
   UNION ALL
+  -- Billing is swept, not watermarked: every project with an unpaid invoice
+  -- is re-fetched nightly, so the newest load is always last night's.
+  SELECT 'stg_dtools__v2_invoices' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_dtools.v2_project_billing' AS raw_table
+  FROM staging.stg_dtools__v2_invoices
+  UNION ALL
+  SELECT 'stg_dtools__v2_change_orders' AS table_name, 3 AS max_age_days,
+         CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
+         'raw_dtools.v2_project_billing' AS raw_table
+  FROM staging.stg_dtools__v2_change_orders
+  UNION ALL
   SELECT 'stg_qbo__accounts' AS table_name, 3 AS max_age_days,
          CAST(NULL AS STRING) AS drop_prefix, MAX(loaded_at) AS newest,
          'raw_qbo.account' AS raw_table
